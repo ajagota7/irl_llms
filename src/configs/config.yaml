@@ -3,7 +3,13 @@ defaults:
   - rlhf: pythia_70m  # Default to pythia_70m config
   - _self_
 
+# Hydra settings
+hydra:
+  run:
+    dir: ${oc.env:PWD}/outputs/${now:%Y-%m-%d_%H-%M-%S}
+
 # Common settings
+now: ${now:%Y-%m-%d_%H-%M-%S}
 seed: 42
 output_dir: ${hydra:runtime.cwd}/outputs/${now:%Y-%m-%d_%H-%M-%S}
 push_to_hub: true

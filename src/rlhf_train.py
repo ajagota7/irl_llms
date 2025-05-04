@@ -19,7 +19,11 @@ from trl import (
     PPOTrainer,
     create_reference_model
 )
-from transformers import get_cosine_schedule_with_warmup
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    get_cosine_schedule_with_warmup
+)
 from huggingface_hub import HfApi
 
 from rlhf_utilities import (
@@ -33,7 +37,7 @@ from rlhf_utilities import (
 )
 
 
-@hydra.main(config_path="configs", config_name="config")
+@hydra.main(config_path="configs", config_name="config", version_base=None)
 def train_rlhf(cfg: DictConfig) -> None:
     """Main training function."""
     
@@ -387,7 +391,7 @@ def build_config_overrides(args):
     
     # Model selection
     if args.model:
-        overrides.append(f"model={args.model}")
+        overrides.append(f"rlhf={args.model}")
     
     # Training parameters
     if args.epochs:
@@ -450,7 +454,7 @@ if __name__ == "__main__":
                 overrides.append(f"{key}={value}")
     
     # Initialize and run with Hydra
-    with hydra.initialize_config_module(config_module="configs"):
+    with hydra.initialize_config_module(config_module="configs", version_base=None):
         # Compose the configuration
         cfg = hydra.compose(config_name="config", overrides=overrides)
         print(f"Running with configuration:\n{OmegaConf.to_yaml(cfg)}")
