@@ -103,25 +103,41 @@ def train_rlhf(cfg: DictConfig) -> None:
         num_training_steps=total_steps
     )
     
+    # Get PPO parameters from RLHF config if they exist
+    ppo_params = {
+        "model_name": cfg.model.name,
+        "learning_rate": cfg.model.learning_rate,
+        "log_with": "wandb" if wandb_run else None,
+        "batch_size": cfg.model.batch_size,
+        "mini_batch_size": cfg.model.mini_batch_size,
+        "forward_batch_size": cfg.model.forward_batch_size,
+        "gradient_accumulation_steps": cfg.model.gradient_accumulation_steps,
+    }
+    
+    # Add PPO-specific parameters from RLHF config if available
+    if hasattr(cfg.rlhf, 'model'):
+        rlhf_model = cfg.rlhf.model
+        if hasattr(rlhf_model, 'ppo_epochs'):
+            ppo_params["ppo_epochs"] = rlhf_model.ppo_epochs
+        if hasattr(rlhf_model, 'init_kl_coef'):
+            ppo_params["init_kl_coef"] = rlhf_model.init_kl_coef
+        if hasattr(rlhf_model, 'target'):
+            ppo_params["target"] = rlhf_model.target
+        if hasattr(rlhf_model, 'cliprange'):
+            ppo_params["cliprange"] = rlhf_model.cliprange
+        if hasattr(rlhf_model, 'cliprange_value'):
+            ppo_params["cliprange_value"] = rlhf_model.cliprange_value
+        if hasattr(rlhf_model, 'vf_coef'):
+            ppo_params["vf_coef"] = rlhf_model.vf_coef
+        if hasattr(rlhf_model, 'adap_kl_ctrl'):
+            ppo_params["adap_kl_ctrl"] = rlhf_model.adap_kl_ctrl
+        if hasattr(rlhf_model, 'use_score_norm'):
+            ppo_params["use_score_norm"] = rlhf_model.use_score_norm
+        if hasattr(rlhf_model, 'ratio_threshold'):
+            ppo_params["ratio_threshold"] = rlhf_model.ratio_threshold
+    
     # Create PPO config
-    ppo_config = PPOConfig(
-        model_name=cfg.model.name,
-        learning_rate=cfg.model.learning_rate,
-        log_with="wandb" if wandb_run else None,
-        ppo_epochs=cfg.model.ppo_epochs,
-        mini_batch_size=cfg.model.mini_batch_size,
-        batch_size=cfg.model.batch_size,
-        forward_batch_size=cfg.model.forward_batch_size,
-        gradient_accumulation_steps=cfg.model.gradient_accumulation_steps,
-        init_kl_coef=cfg.model.init_kl_coef,
-        target=cfg.model.target,
-        cliprange=cfg.model.cliprange,
-        cliprange_value=cfg.model.cliprange_value,
-        vf_coef=cfg.model.vf_coef,
-        adap_kl_ctrl=cfg.model.adap_kl_ctrl,
-        use_score_norm=cfg.model.use_score_norm,
-        ratio_threshold=cfg.model.ratio_threshold,
-    )
+    ppo_config = PPOConfig(**ppo_params)
     
     # Create PPO trainer
     ppo_trainer = PPOTrainer(

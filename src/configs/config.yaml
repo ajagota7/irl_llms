@@ -24,6 +24,17 @@ model:
   reward_model: null
   use_raw_logits: false
   
+  # PPO specific settings
+  ppo_epochs: 4
+  init_kl_coef: 0.2
+  target: 6
+  cliprange: 0.2
+  cliprange_value: 0.2
+  vf_coef: 0.1
+  adap_kl_ctrl: true
+  use_score_norm: true
+  ratio_threshold: 10.0
+  
   # Generation parameters
   generation:
     min_length: 5

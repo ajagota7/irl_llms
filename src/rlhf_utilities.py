@@ -92,7 +92,13 @@ def setup_wandb(config: Dict) -> Any:
         import wandb
         
         if config.wandb.name is None:
-            model_name = config.model.name.split('/')[-1]
+            # Get model name safely
+            model_name = "unknown-model"
+            if config.model.name is not None:
+                model_name = config.model.name.split('/')[-1]
+            elif hasattr(config.rlhf, 'model') and config.rlhf.model.name is not None:
+                model_name = config.rlhf.model.name.split('/')[-1]
+                
             config.wandb.name = f"{model_name}-{config.now}"
         
         run = wandb.init(
