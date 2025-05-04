@@ -19,6 +19,7 @@ from transformers import (
     set_seed
 )
 from datasets import load_dataset
+from omegaconf import OmegaConf
 
 
 class LengthSampler:
@@ -98,7 +99,7 @@ def setup_wandb(config: Dict) -> Any:
             project=config.wandb.project,
             entity=config.wandb.entity,
             name=config.wandb.name,
-            config=config,
+            config=OmegaConf.to_container(config, resolve=True),
             reinit=True
         )
         

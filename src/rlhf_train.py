@@ -395,43 +395,44 @@ def build_config_overrides(args):
     
     # Training parameters
     if args.epochs:
-        overrides.append(f"training.num_train_epochs={args.epochs}")
+        # Use + to append to the config instead of overriding
+        overrides.append(f"+training.num_train_epochs={args.epochs}")
     
     if args.batch_size:
-        overrides.append(f"model.batch_size={args.batch_size}")
+        overrides.append(f"+model.batch_size={args.batch_size}")
     
     if args.lr:
-        overrides.append(f"model.learning_rate={args.lr}")
+        overrides.append(f"+model.learning_rate={args.lr}")
     
     if args.seed:
-        overrides.append(f"training.seed={args.seed}")
+        overrides.append(f"+training.seed={args.seed}")
     
     # Output configuration
     if args.save_freq:
-        overrides.append(f"training.save_freq={args.save_freq}")
+        overrides.append(f"+training.save_freq={args.save_freq}")
     
     if args.eval_freq:
-        overrides.append(f"training.eval_freq={args.eval_freq}")
+        overrides.append(f"+training.eval_freq={args.eval_freq}")
     
     # HuggingFace Hub integration
     if args.push_to_hub:
-        overrides.append("output.push_to_hub=true")
+        overrides.append("+output.push_to_hub=true")
     
     if args.hf_org:
-        overrides.append(f"output.organization={args.hf_org}")
+        overrides.append(f"+output.organization={args.hf_org}")
     
     if args.hf_repo:
-        overrides.append(f"output.repository_name={args.hf_repo}")
+        overrides.append(f"+output.repository_name={args.hf_repo}")
     
     # WandB configuration
     if args.wandb_project:
-        overrides.append(f"wandb.project={args.wandb_project}")
+        overrides.append(f"+wandb.project={args.wandb_project}")
     
     if args.wandb_entity:
-        overrides.append(f"wandb.entity={args.wandb_entity}")
+        overrides.append(f"+wandb.entity={args.wandb_entity}")
     
     if args.wandb_name:
-        overrides.append(f"wandb.name={args.wandb_name}")
+        overrides.append(f"+wandb.name={args.wandb_name}")
     
     return overrides
 

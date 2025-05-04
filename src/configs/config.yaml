@@ -12,15 +12,50 @@ hydra:
 now: ${now:%Y-%m-%d_%H-%M-%S}
 seed: 42
 output_dir: ${hydra:runtime.cwd}/outputs/${now:%Y-%m-%d_%H-%M-%S}
-push_to_hub: true
-hub_model_id: null  # Will be set in command-line or individual configs
-hub_token: null     # Should be set via environment variable or command-line (securely)
 
-# Logging settings
-log_with: wandb    # Options: wandb, tensorboard, none
-wandb_project: irl_llms
-wandb_run_name: ${now:%Y-%m-%d_%H-%M-%S}
+# Model settings (base defaults that can be overridden by specific configs)
+model:
+  name: null
+  learning_rate: 1e-5
+  batch_size: 128
+  mini_batch_size: 8
+  forward_batch_size: 8
+  gradient_accumulation_steps: 8
+  reward_model: null
+  use_raw_logits: false
+  
+  # Generation parameters
+  generation:
+    min_length: 5
+    output_min_length: 15
+    output_max_length: 20
+    do_sample: true
+    top_k: 0.0
+    top_p: 1.0
 
-# Evaluation settings
-save_freq: 20
-eval_freq: 20
+# Training parameters
+training:
+  num_train_epochs: 100
+  save_freq: 20
+  eval_freq: 20
+  seed: 42
+
+# Dataset settings
+dataset:
+  name: null
+  toxicity_threshold: 0.3
+  input_min_text_length: 15
+  input_max_text_length: 20
+  test_size: 0.1
+
+# Output settings
+output:
+  push_to_hub: true
+  organization: null
+  repository_name: null
+
+# WandB settings
+wandb:
+  project: "irl_llms"
+  entity: null
+  name: null
