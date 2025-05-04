@@ -170,10 +170,13 @@ def evaluate_toxicity(
     
     for sample in tqdm(eval_samples, desc=f"Evaluating (epoch {epoch})"):
         query = sample["query"]
-        query_tensor = tokenizer(query, return_tensors="pt").to(device)
+        
+        # Tokenize the query - PPO trainer expects a list of input_ids, not a tensor
+        query_tensor = tokenizer(query, return_tensors="pt")
+        query_input_ids = query_tensor.input_ids.squeeze().to(device)  # Convert to 1D tensor
         
         # Generate response
-        response_tensor = ppo_trainer.generate(query_tensor.input_ids, **gen_kwargs)
+        response_tensor = ppo_trainer.generate(query_input_ids, **gen_kwargs)
         response = tokenizer.decode(response_tensor[0], skip_special_tokens=True)
         
         # Calculate toxicity
