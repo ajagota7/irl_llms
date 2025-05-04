@@ -6,7 +6,6 @@ import os
 import time
 import torch
 import hydra
-import argparse
 import pandas as pd
 import numpy as np
 from omegaconf import DictConfig, OmegaConf
@@ -48,9 +47,10 @@ def train_rlhf(cfg: DictConfig) -> None:
     print(f"Configuration:\n{OmegaConf.to_yaml(cfg)}")
     
     # Create output directories
-    os.makedirs(cfg.hydra.run.dir, exist_ok=True)
-    eval_dir = os.path.join(cfg.hydra.run.dir, "evaluation")
-    checkpoint_dir = os.path.join(cfg.hydra.run.dir, "checkpoints")
+    output_dir = os.path.join(os.getcwd(), f"outputs/{cfg.now}")
+    os.makedirs(output_dir, exist_ok=True)
+    eval_dir = os.path.join(output_dir, "evaluation")
+    checkpoint_dir = os.path.join(output_dir, "checkpoints")
     os.makedirs(eval_dir, exist_ok=True)
     os.makedirs(checkpoint_dir, exist_ok=True)
     
@@ -64,6 +64,19 @@ def train_rlhf(cfg: DictConfig) -> None:
     
     # Build dataset and tokenizer
     print("Building dataset...")
+    
+    # Use the model name from the rlhf config if the main model name is null
+    if cfg.model.name is None and hasattr(cfg.rlhf, 'model') and cfg.rlhf.model.name is not None:
+        cfg.model.name = cfg.rlhf.model.name
+    
+    # Use the dataset name from the rlhf config if the main dataset name is null
+    if cfg.dataset.name is None and hasattr(cfg.rlhf, 'dataset') and cfg.rlhf.dataset.name is not None:
+        cfg.dataset.name = cfg.rlhf.dataset.name
+    
+    # Use the reward model from the rlhf config if the main reward model is null
+    if cfg.model.reward_model is None and hasattr(cfg.rlhf, 'model') and cfg.rlhf.model.reward_model is not None:
+        cfg.model.reward_model = cfg.rlhf.model.reward_model
+    
     train_dataset, test_dataset, tokenizer = build_dataset(cfg)
     print(f"Train set: {len(train_dataset)} examples")
     print(f"Test set: {len(test_dataset)} examples")
@@ -251,7 +264,7 @@ def train_rlhf(cfg: DictConfig) -> None:
                 
                 # Save reward stats
                 reward_df = pd.DataFrame(reward_stats)
-                reward_df.to_csv(os.path.join(cfg.hydra.run.dir, "reward_stats.csv"), index=False)
+                reward_df.to_csv(os.path.join(output_dir, "reward_stats.csv"), index=False)
         
         # Run evaluation
         if (epoch + 1) % cfg.training.eval_freq == 0:
@@ -279,7 +292,7 @@ def train_rlhf(cfg: DictConfig) -> None:
                 wandb_run.log({"eval/toxicity": avg_toxicity, "eval/epoch": epoch+1})
     
     # Save final model
-    final_path = os.path.join(cfg.hydra.run.dir, "final-model")
+    final_path = os.path.join(output_dir, "final-model")
     print(f"Saving final model to {final_path}")
     
     if ppo_trainer.accelerator.is_main_process:
@@ -287,7 +300,7 @@ def train_rlhf(cfg: DictConfig) -> None:
         
         # Save final reward stats
         reward_df = pd.DataFrame(reward_stats)
-        reward_df.to_csv(os.path.join(cfg.hydra.run.dir, "final_reward_stats.csv"), index=False)
+        reward_df.to_csv(os.path.join(output_dir, "final_reward_stats.csv"), index=False)
         
         # Push to Hugging Face Hub if enabled
         if cfg.output.push_to_hub:
@@ -340,123 +353,12 @@ def train_rlhf(cfg: DictConfig) -> None:
     minutes, seconds = divmod(remainder, 60)
     
     print(f"Total training time: {int(hours)}h {int(minutes)}m {int(seconds)}s")
-    print(f"Training complete! Models and results saved to: {cfg.hydra.run.dir}")
+    print(f"Training complete! Models and results saved to: {output_dir}")
     
     # Return final toxicity for potential programmatic use
     return final_toxicity
 
 
-def parse_args():
-    """Parse command-line arguments."""
-    parser = argparse.ArgumentParser(description="RLHF Training for Model Detoxification")
-    
-    # Model selection
-    parser.add_argument(
-        "--model", 
-        type=str,
-        default="gpt_neo_125m",
-        choices=["pythia_70m", "pythia_160m", "pythia_410m", "pythia_1b", "gpt_neo_125m"],
-        help="Model to use"
-    )
-    
-    # Training parameters
-    parser.add_argument("--epochs", type=int, help="Number of training epochs")
-    parser.add_argument("--batch_size", type=int, help="Training batch size")
-    parser.add_argument("--lr", type=float, help="Learning rate")
-    parser.add_argument("--seed", type=int, help="Random seed")
-    
-    # Output configuration
-    parser.add_argument("--save_freq", type=int, help="Checkpoint save frequency (epochs)")
-    parser.add_argument("--eval_freq", type=int, help="Evaluation frequency (epochs)")
-    
-    # HuggingFace Hub integration
-    parser.add_argument("--push_to_hub", action="store_true", help="Push model to HuggingFace Hub")
-    parser.add_argument("--hf_org", type=str, help="HuggingFace organization name")
-    parser.add_argument("--hf_repo", type=str, help="HuggingFace repository name")
-    
-    # WandB configuration
-    parser.add_argument("--wandb_project", type=str, help="Weights & Biases project name")
-    parser.add_argument("--wandb_entity", type=str, help="Weights & Biases entity (username/team)")
-    parser.add_argument("--wandb_name", type=str, help="Weights & Biases run name")
-    
-    # Additional overrides
-    parser.add_argument("--config_file", type=str, help="Path to YAML config file with overrides")
-    
-    return parser.parse_args()
-
-
-def build_config_overrides(args):
-    """Build Hydra config overrides from command-line arguments."""
-    overrides = []
-    
-    # Model selection
-    if args.model:
-        overrides.append(f"rlhf={args.model}")
-    
-    # Training parameters
-    if args.epochs:
-        # Use direct override since the key already exists
-        overrides.append(f"training.num_train_epochs={args.epochs}")
-    
-    if args.batch_size:
-        overrides.append(f"model.batch_size={args.batch_size}")
-    
-    if args.lr:
-        overrides.append(f"model.learning_rate={args.lr}")
-    
-    if args.seed:
-        overrides.append(f"training.seed={args.seed}")
-    
-    # Output configuration
-    if args.save_freq:
-        overrides.append(f"training.save_freq={args.save_freq}")
-    
-    if args.eval_freq:
-        overrides.append(f"training.eval_freq={args.eval_freq}")
-    
-    # HuggingFace Hub integration
-    if args.push_to_hub:
-        overrides.append("output.push_to_hub=true")
-    
-    if args.hf_org:
-        overrides.append(f"output.organization={args.hf_org}")
-    
-    if args.hf_repo:
-        overrides.append(f"output.repository_name={args.hf_repo}")
-    
-    # WandB configuration
-    if args.wandb_project:
-        overrides.append(f"wandb.project={args.wandb_project}")
-    
-    if args.wandb_entity:
-        overrides.append(f"wandb.entity={args.wandb_entity}")
-    
-    if args.wandb_name:
-        overrides.append(f"wandb.name={args.wandb_name}")
-    
-    return overrides
-
-
 if __name__ == "__main__":
-    args = parse_args()
-    
-    # Build hydra config overrides
-    overrides = build_config_overrides(args)
-    
-    # Load additional overrides from file if provided
-    if args.config_file and os.path.exists(args.config_file):
-        config = OmegaConf.load(args.config_file)
-        # Convert config to overrides
-        for key, value in OmegaConf.to_container(config).items():
-            if isinstance(value, dict):
-                for subkey, subvalue in value.items():
-                    overrides.append(f"{key}.{subkey}={subvalue}")
-            else:
-                overrides.append(f"{key}={value}")
-    
-    # Initialize and run with Hydra
-    with hydra.initialize_config_module(config_module="configs", version_base=None):
-        # Compose the configuration
-        cfg = hydra.compose(config_name="config", overrides=overrides)
-        print(f"Running with configuration:\n{OmegaConf.to_yaml(cfg)}")
-        train_rlhf(cfg)
+    # Let Hydra handle all command-line arguments
+    train_rlhf()
