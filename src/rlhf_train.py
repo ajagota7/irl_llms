@@ -362,13 +362,23 @@ def train_rlhf(cfg: DictConfig) -> None:
                 f.write(OmegaConf.to_yaml(cfg))
             
             # Push to Hub
-            api = HfApi()
-            api.upload_folder(
-                folder_path=final_path,
-                repo_id=repo_id,
-                commit_message="Final model after RLHF training",
-                create_repo=True
-            )
+            try:
+                api = HfApi()
+                
+                # Check if the repository exists, create it if it doesn't
+                if not api.repo_exists(repo_id=repo_id):
+                    api.create_repo(repo_id=repo_id, private=False)
+                
+                # Upload the folder
+                api.upload_folder(
+                    folder_path=final_path,
+                    repo_id=repo_id,
+                    commit_message="Final model after RLHF training"
+                )
+                print(f"Successfully pushed model to {repo_id}")
+            except Exception as e:
+                print(f"Error pushing to Hugging Face Hub: {str(e)}")
+                print("Continuing without pushing to Hub.")
     
     # Final evaluation
     final_toxicity, _ = evaluate_toxicity(
