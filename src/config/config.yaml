@@ -1,0 +1,20 @@
+# Base configuration for irl_llms
+defaults:
+  - rlhf: pythia_70m  # Default to pythia_70m config
+  - _self_
+
+# Common settings
+seed: 42
+output_dir: ${hydra:runtime.cwd}/outputs/${now:%Y-%m-%d_%H-%M-%S}
+push_to_hub: true
+hub_model_id: null  # Will be set in command-line or individual configs
+hub_token: null     # Should be set via environment variable or command-line (securely)
+
+# Logging settings
+log_with: wandb    # Options: wandb, tensorboard, none
+wandb_project: irl_llms
+wandb_run_name: ${now:%Y-%m-%d_%H-%M-%S}
+
+# Evaluation settings
+save_freq: 20
+eval_freq: 20
