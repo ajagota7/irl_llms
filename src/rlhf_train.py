@@ -108,12 +108,33 @@ def train_rlhf(cfg: DictConfig) -> None:
         "model_name": cfg.model.name,
         "learning_rate": cfg.model.learning_rate,
         "log_with": "wandb" if wandb_run else None,
-        "batch_size": cfg.model.batch_size,
-        "mini_batch_size": cfg.model.mini_batch_size,
-        "forward_batch_size": cfg.model.forward_batch_size,
-        "gradient_accumulation_steps": cfg.model.gradient_accumulation_steps,
     }
     
+    # Handle batch size parameters to ensure they're compatible
+    batch_size = cfg.model.batch_size
+    mini_batch_size = cfg.model.mini_batch_size
+    gradient_accumulation_steps = cfg.model.gradient_accumulation_steps
+
+    # Ensure batch_size is a multiple of mini_batch_size * gradient_accumulation_steps
+    if batch_size % (mini_batch_size * gradient_accumulation_steps) != 0:
+        # Option 1: Adjust mini_batch_size to make it work
+        if batch_size >= gradient_accumulation_steps:
+            new_mini_batch_size = batch_size // gradient_accumulation_steps
+            print(f"Warning: Adjusting mini_batch_size from {mini_batch_size} to {new_mini_batch_size} to ensure compatibility with batch_size={batch_size}")
+            mini_batch_size = new_mini_batch_size
+        # Option 2: If that's not possible, adjust gradient_accumulation_steps
+        else:
+            new_gradient_accumulation_steps = 1
+            new_mini_batch_size = batch_size
+            print(f"Warning: Adjusting gradient_accumulation_steps from {gradient_accumulation_steps} to {new_gradient_accumulation_steps} and mini_batch_size from {mini_batch_size} to {new_mini_batch_size} to ensure compatibility with batch_size={batch_size}")
+            gradient_accumulation_steps = new_gradient_accumulation_steps
+            mini_batch_size = new_mini_batch_size
+
+    # Add the adjusted batch parameters
+    ppo_params["batch_size"] = batch_size
+    ppo_params["mini_batch_size"] = mini_batch_size
+    ppo_params["gradient_accumulation_steps"] = gradient_accumulation_steps
+
     # Add PPO-specific parameters from RLHF config if available
     if hasattr(cfg.rlhf, 'model'):
         rlhf_model = cfg.rlhf.model

@@ -131,148 +131,96 @@ def load_reward_model(model_id: str, device: str) -> Tuple[Any, Any]:
 
 
 def evaluate_toxicity(
-    model: Any,
-    ppo_trainer: Any,
-    tokenizer: Any,
-    reward_model: Any,
-    reward_tokenizer: Any,
-    dataset: Any,
-    config: Dict,
-    fixed_prompts: Optional[List[int]] = None,
-    epoch: Any = None
-) -> Tuple[float, List[float]]:
-    """Evaluate toxicity level of generated responses."""
+    model, 
+    ppo_trainer, 
+    tokenizer, 
+    reward_model, 
+    reward_tokenizer, 
+    dataset, 
+    config, 
+    epoch
+) -> Tuple[float, List[Dict]]:
+    """Evaluate model toxicity on a dataset."""
     
-    # Create output directories
-    eval_dir = os.path.join(config.hydra.run.dir, "evaluation")
+    # Create evaluation directory
+    output_dir = os.path.join(os.getcwd(), f"outputs/{config.now}")
+    eval_dir = os.path.join(output_dir, "evaluation")
     os.makedirs(eval_dir, exist_ok=True)
     
-    # Track fixed prompts across epochs for consistency
-    prompts_tracking_dir = os.path.join(eval_dir, "prompt_tracking")
-    os.makedirs(prompts_tracking_dir, exist_ok=True)
+    device = ppo_trainer.accelerator.device
     
-    persistent_prompts_file = os.path.join(prompts_tracking_dir, "persistent_prompt_indices.json")
-    
-    if fixed_prompts is None:
-        if os.path.exists(persistent_prompts_file):
-            # Load previously selected prompts
-            with open(persistent_prompts_file, 'r') as f:
-                fixed_prompts = json.load(f)
-        else:
-            # Select random prompts for tracking
-            dataset_size = min(len(dataset), 500)
-            fixed_prompts = random.sample(range(dataset_size), min(30, dataset_size))
-            with open(persistent_prompts_file, 'w') as f:
-                json.dump(fixed_prompts, f)
+    # Sample a subset of the dataset for evaluation
+    eval_size = min(100, len(dataset))
+    eval_indices = random.sample(range(len(dataset)), eval_size)
+    eval_samples = [dataset[i] for i in eval_indices]
     
     # Setup generation parameters
-    generation_kwargs = {
+    gen_kwargs = {
         "min_length": config.model.generation.min_length,
         "top_k": config.model.generation.top_k,
         "top_p": config.model.generation.top_p,
         "do_sample": config.model.generation.do_sample,
-        "pad_token_id": tokenizer.eos_token_id,
+        "pad_token_id": tokenizer.pad_token_id,
+        "max_new_tokens": config.model.generation.output_max_length,
     }
     
-    output_length_sampler = LengthSampler(
-        config.model.generation.output_min_length,
-        config.model.generation.output_max_length
-    )
-    
-    # Results tracking
+    # Generate responses and calculate toxicity
     toxicity_scores = []
-    fixed_prompt_results = {}
+    generations = []
     
-    # Number of samples to evaluate
-    n_samples = 100  # Configurable
-    eval_indices = range(min(n_samples, len(dataset)))
-    
-    for idx in tqdm(eval_indices, desc="Evaluating toxicity"):
-        # Get the input ids
-        item = dataset[idx]
-        query = item["input_ids"].to(ppo_trainer.accelerator.device)
-        query_text = item["query"]
+    for sample in tqdm(eval_samples, desc=f"Evaluating (epoch {epoch})"):
+        query = sample["query"]
+        query_tensor = tokenizer(query, return_tensors="pt").to(device)
         
-        # PPO trainer expects 1D tensor for query in generate
-        query = query.squeeze()
+        # Generate response
+        response_tensor = ppo_trainer.generate(query_tensor.input_ids, **gen_kwargs)
+        response = tokenizer.decode(response_tensor[0], skip_special_tokens=True)
         
-        gen_len = output_length_sampler()
-        generation_kwargs["max_new_tokens"] = gen_len
-        
+        # Calculate toxicity
+        inputs = reward_tokenizer(response, return_tensors="pt").to(device)
         with torch.no_grad():
-            # Generate response
-            response = ppo_trainer.generate(query, **generation_kwargs)
-            
-            # Decode the response
-            response_text = tokenizer.decode(response.squeeze()[-gen_len:])
-            
-            # Get toxicity score
-            toxicity_inputs = reward_tokenizer(
-                response_text,
-                padding=True,
-                truncation=True,
-                return_tensors="pt"
-            ).to(ppo_trainer.accelerator.device)
-            
-            # Get both raw logits and softmax probabilities
-            logits = reward_model(**toxicity_inputs).logits.float()
-            raw_score = logits[0][0].item()
-            softmax_score = torch.softmax(logits, dim=1)[0][0].item()
-            
-            toxicity_scores.append(raw_score)
-            
-            # Track fixed prompts separately
-            if idx in fixed_prompts:
-                fixed_prompt_results[idx] = {
-                    "prompt": query_text,
-                    "response": response_text,
-                    "raw_toxicity": raw_score,
-                    "softmax_toxicity": softmax_score
-                }
+            outputs = reward_model(**inputs)
+            toxicity = torch.sigmoid(outputs.logits)[0][0].item()
+        
+        toxicity_scores.append(toxicity)
+        generations.append({
+            "query": query,
+            "response": response,
+            "toxicity": toxicity
+        })
     
     # Calculate average toxicity
-    avg_toxicity = sum(toxicity_scores) / len(toxicity_scores) if toxicity_scores else 0
+    avg_toxicity = sum(toxicity_scores) / len(toxicity_scores)
     
-    # Track fixed prompts across epochs
-    if epoch is not None and fixed_prompt_results:
-        epoch_identifier = str(epoch) if isinstance(epoch, (int, float)) else epoch
-        
-        # Save detailed results
-        with open(os.path.join(prompts_tracking_dir, f"fixed_prompts_epoch_{epoch_identifier}.json"), 'w') as f:
-            json.dump(fixed_prompt_results, f, indent=2)
-        
-        # Update tracking CSV
-        tracking_csv = os.path.join(prompts_tracking_dir, "prompt_tracking.csv")
-        
-        # Check if file exists
-        file_exists = os.path.isfile(tracking_csv)
-        
-        # Create DataFrame for new data
-        rows = []
-        for idx, data in fixed_prompt_results.items():
-            rows.append({
-                'epoch': epoch_identifier,
-                'prompt_idx': idx,
-                'raw_toxicity': data['raw_toxicity'],
-                'softmax_toxicity': data['softmax_toxicity']
-            })
-        
-        new_df = pd.DataFrame(rows)
-        
-        if file_exists:
-            # Append to existing CSV
-            existing_df = pd.read_csv(tracking_csv)
-            combined_df = pd.concat([existing_df, new_df], ignore_index=True)
-            combined_df.to_csv(tracking_csv, index=False)
-        else:
-            # Create new CSV
-            new_df.to_csv(tracking_csv, index=False)
+    # Save generations to file
+    output_file = os.path.join(eval_dir, f"generations_epoch_{epoch}.json")
+    with open(output_file, "w") as f:
+        json.dump(generations, f, indent=2)
     
-    return avg_toxicity, toxicity_scores
+    # Create toxicity distribution plot
+    plt.figure(figsize=(10, 6))
+    plt.hist(toxicity_scores, bins=20, alpha=0.7)
+    plt.xlabel("Toxicity Score")
+    plt.ylabel("Frequency")
+    plt.title(f"Toxicity Distribution (Epoch {epoch})")
+    plt.axvline(avg_toxicity, color='r', linestyle='dashed', linewidth=2, label=f"Mean: {avg_toxicity:.4f}")
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    
+    # Save plot
+    plot_file = os.path.join(eval_dir, f"toxicity_dist_epoch_{epoch}.png")
+    plt.savefig(plot_file)
+    plt.close()
+    
+    return avg_toxicity, generations
 
 
-def analyze_prompt_tracking(tracking_dir: str, output_dir: str) -> None:
+def analyze_prompt_tracking(config: Dict) -> None:
     """Analyze the tracked prompts across epochs to show toxicity trends."""
+    
+    output_dir = os.path.join(os.getcwd(), f"outputs/{config.now}")
+    eval_dir = os.path.join(output_dir, "evaluation")
+    tracking_dir = os.path.join(eval_dir, "prompt_tracking")
     
     tracking_csv = os.path.join(tracking_dir, "prompt_tracking.csv")
     
