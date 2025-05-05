@@ -41,6 +41,109 @@ def main(cfg: DictConfig) -> None:
     with open(os.path.join(irl_cfg.output.base_dir, "configs", f"config_{timestamp}.yaml"), "w") as f:
         f.write(OmegaConf.to_yaml(irl_cfg))
     
+    # For "all" mode, run both dataset generation and training
+    if irl_cfg.mode == "all":
+        print("Running in 'all' mode: generating datasets and then training")
+        
+        # First, generate datasets
+        # Configure for original model dataset generation
+        dataset_cfg = OmegaConf.create(OmegaConf.to_container(irl_cfg, resolve=True))
+        dataset_cfg.mode = "generate_dataset"
+        dataset_cfg.dataset.model_name = dataset_cfg.dataset.original_model_name
+        
+        # Set up wandb if enabled
+        if dataset_cfg.logging.use_wandb:
+            model_name = dataset_cfg.dataset.original_model_name.split('/')[-1]
+            run_name = f"dataset_gen_original_{model_name}_{timestamp}"
+            wandb.init(
+                project=dataset_cfg.logging.project_name,
+                name=run_name,
+                config=OmegaConf.to_container(dataset_cfg, resolve=True),
+                mode=dataset_cfg.logging.wandb_mode
+            )
+        
+        # Generate original dataset
+        generator = DatasetGenerator(dataset_cfg)
+        original_data = generator.create_dataset()
+        original_dataset_path = generator.output_path
+        
+        # Update the config with the actual path
+        irl_cfg.dataset.original_dataset_path = original_dataset_path
+        
+        # Analyze dataset
+        generator.analyze_dataset()
+        
+        # Finish wandb run if active
+        if dataset_cfg.logging.use_wandb and wandb.run is not None:
+            wandb.finish()
+        
+        # Generate detoxified dataset if needed
+        if irl_cfg.dataset.original_model_name != irl_cfg.dataset.detoxified_model_name:
+            print(f"Generating dataset for detoxified model: {irl_cfg.dataset.detoxified_model_name}")
+            
+            # Configure for detoxified model dataset generation
+            dataset_cfg = OmegaConf.create(OmegaConf.to_container(irl_cfg, resolve=True))
+            dataset_cfg.mode = "generate_dataset"
+            dataset_cfg.dataset.model_name = dataset_cfg.dataset.detoxified_model_name
+            
+            # Set up wandb if enabled
+            if dataset_cfg.logging.use_wandb:
+                model_name = dataset_cfg.dataset.detoxified_model_name.split('/')[-1]
+                run_name = f"dataset_gen_detoxified_{model_name}_{timestamp}"
+                wandb.init(
+                    project=dataset_cfg.logging.project_name,
+                    name=run_name,
+                    config=OmegaConf.to_container(dataset_cfg, resolve=True),
+                    mode=dataset_cfg.logging.wandb_mode
+                )
+            
+            # Generate detoxified dataset
+            generator = DatasetGenerator(dataset_cfg)
+            detoxified_data = generator.create_dataset()
+            detoxified_dataset_path = generator.output_path
+            
+            # Update the config with the actual path
+            irl_cfg.dataset.detoxified_dataset_path = detoxified_dataset_path
+            
+            # Analyze dataset
+            generator.analyze_dataset()
+            
+            # Finish wandb run if active
+            if dataset_cfg.logging.use_wandb and wandb.run is not None:
+                wandb.finish()
+        else:
+            # If using the same model, just use a different temperature
+            print("Using same model for original and detoxified datasets with different temperature")
+            irl_cfg.dataset.detoxified_dataset_path = irl_cfg.dataset.original_dataset_path
+        
+        # Now proceed to training
+        print("Dataset generation complete. Moving to training phase...")
+        irl_cfg.mode = "train"
+        
+        # Set up wandb for training
+        if irl_cfg.logging.use_wandb:
+            original_model = irl_cfg.dataset.original_model_name.split('/')[-1]
+            detoxified_model = irl_cfg.dataset.detoxified_model_name.split('/')[-1]
+            run_name = f"irl_{irl_cfg.training.irl_method}_{original_model}_to_{detoxified_model}_{timestamp}"
+            
+            wandb.init(
+                project=irl_cfg.logging.project_name,
+                name=run_name,
+                config=OmegaConf.to_container(irl_cfg, resolve=True),
+                mode=irl_cfg.logging.wandb_mode
+            )
+        
+        # Train the model
+        results = train_irl(irl_cfg)
+        
+        # Finish wandb run if active
+        if irl_cfg.logging.use_wandb and wandb.run is not None:
+            wandb.finish()
+        
+        print(f"All mode complete with results: {results}")
+        return
+    
+    # Handle existing modes
     if irl_cfg.mode == "generate_dataset":
         # Generate original dataset
         print(f"Generating dataset for original model: {irl_cfg.dataset.original_model_name}")
