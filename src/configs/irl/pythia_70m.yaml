@@ -1,0 +1,26 @@
+# Configuration for Pythia-70M IRL
+
+# Mode to run
+mode: "train"  # "generate_dataset", "train", or "all"
+
+# Dataset settings
+dataset:
+  original_model_name: "EleutherAI/pythia-70M"
+  detoxified_model_name: "EleutherAI/pythia-70M"
+  original_dataset_path: null
+  detoxified_dataset_path: null
+
+model:
+  reward_model_base: "EleutherAI/pythia-70M"
+  use_half_precision: false
+  num_unfrozen_layers: 1
+
+training:
+  irl_method: "max_margin"
+  learning_rate: 1e-5
+  epochs: 20
+  batch_size: 8
+  eval_interval: 5
+
+output:
+  repo_name_prefix: "irl-pythia-70m"
