@@ -100,6 +100,7 @@ irl:
     hub_org: null
     hub_token: ${oc.env:HF_TOKEN,null}
     private: false
+    use_half_precision: null
   
   # Model settings
   model:

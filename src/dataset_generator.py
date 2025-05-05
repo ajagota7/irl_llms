@@ -87,7 +87,10 @@ class DatasetGenerator:
         print(f"Loading model: {model_name}")
 
         # Check if we should use half precision
-        use_half_precision = self.config.dataset.use_half_precision
+        use_half_precision = None
+        if hasattr(self.config.dataset, 'use_half_precision'):
+            use_half_precision = self.config.dataset.use_half_precision
+        
         if use_half_precision is None:
             # Automatically detect based on model size
             large_model = any(size in model_name.lower() for size in ["2.7b", "6b", "7b", "12b", "70b", "large"])
