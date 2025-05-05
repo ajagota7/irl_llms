@@ -9,6 +9,7 @@ import hydra
 import datetime
 from omegaconf import DictConfig, OmegaConf
 import wandb
+import argparse
 
 # Add the current directory to the path so we can import from src
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -17,14 +18,33 @@ from dataset_generator import generate_dataset, DatasetGenerator
 from irl_train import train_irl
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="IRL Detoxification")
+    parser.add_argument("--mode", type=str, default="train", 
+                        choices=["generate_dataset", "train", "all"],
+                        help="Mode to run: generate_dataset, train, or all")
+    return parser.parse_args()
+
 @hydra.main(config_path="configs", config_name="config", version_base=None)
 def main(cfg: DictConfig) -> None:
     """Main entry point for IRL detoxification."""
+    # Parse command-line arguments
+    args = parse_args()
+    
     # Get the IRL config
     irl_cfg = cfg.irl if hasattr(cfg, 'irl') else cfg
     
-    print(f"Running IRL detoxification with mode: {irl_cfg.mode}")
+    # Set the mode from command-line arguments
+    mode = args.mode
+    
+    print(f"Running IRL detoxification with mode: {mode}")
     print(f"Using configuration for model: {irl_cfg.model.reward_model_base}")
+    
+    # Update the mode in the irl config
+    if hasattr(irl_cfg, 'mode'):
+        irl_cfg.mode = mode
+    else:
+        OmegaConf.update(irl_cfg, "mode", mode)
     
     # Save the full config for reference
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")

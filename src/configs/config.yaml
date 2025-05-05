@@ -1,6 +1,7 @@
 # Base configuration for irl_llms
 defaults:
   - rlhf: pythia_70m  # Default to pythia_70m config
+  - irl: pythia_70m
   - _self_
 
 # Hydra settings
@@ -12,6 +13,9 @@ hydra:
 now: ${now:%Y-%m-%d_%H-%M-%S}
 seed: 42
 output_dir: ${hydra:runtime.cwd}/outputs/${now:%Y-%m-%d_%H-%M-%S}
+
+# Mode to run (top-level)
+mode: "train"  # "generate_dataset", "train", or "all"
 
 # Model settings (base defaults that can be overridden by specific configs)
 model:
@@ -70,3 +74,70 @@ wandb:
   project: "irl_llms"
   entity: null
   name: null
+
+
+# IRL base settings
+irl:
+  # Mode to run
+  mode: "train"  # "generate_dataset", "train", or "all"
+  
+  # Dataset settings
+  dataset:
+    original_model_name: null  # Model that generated the original toxic completions
+    detoxified_model_name: null  # Model that generated the detoxified completions
+    original_dataset_path: null  # Path to the original toxic dataset
+    detoxified_dataset_path: null  # Path to the detoxified dataset
+    cache_dir: ${hydra:runtime.cwd}/datasets
+    num_samples: 1000
+    max_new_tokens: 30
+    batch_size: 16
+    temperature: 0.7
+    top_p: 1.0
+    seed: ${seed}
+    use_cached: false
+    toxicity_threshold: 0.3
+    push_to_hub: false
+    hub_org: null
+    hub_token: ${oc.env:HF_TOKEN,null}
+    private: false
+  
+  # Model settings
+  model:
+    reward_model_base: null  # Base model for the reward model
+    use_half_precision: null  # Auto-determined
+    num_unfrozen_layers: 1
+  
+  # Training parameters
+  training:
+    irl_method: "max_margin"  # "max_margin" or "max_entropy"
+    learning_rate: 1e-5
+    epochs: 20
+    batch_size: 4
+    eval_interval: 5
+    max_length: 512
+    train_test_split: 0.8
+    grad_clip: 1.0
+    weight_decay: 0.01
+    margin: 0.1  # For max_margin
+    temperature: 0.1  # For max_entropy
+    adam_epsilon: 1e-8
+    seed: ${seed}
+  
+  # Evaluation settings
+  evaluation:
+    true_reward_model: "facebook/roberta-hate-speech-dynabench-r4-target"
+  
+  # Output settings
+  output:
+    base_dir: ${hydra:runtime.cwd}/outputs/irl
+    save_checkpoints: true
+    push_to_hub: false
+    hub_org: null
+    repo_name_prefix: "irl-reward-model"
+    private: false
+  
+  # Logging settings
+  logging:
+    project_name: "irl-detoxification"
+    use_wandb: true
+    wandb_mode: "online"  # "online", "offline", or "disabled"
