@@ -351,7 +351,8 @@ def push_to_hub(reward_model, tokenizer, config, checkpoint_suffix=None):
                 repo_id,
                 token=hub_token,
                 private=config.output.private,
-                exist_ok=True  # This will not raise an error if the repo already exists
+                exist_ok=True,  # This will not raise an error if the repo already exists
+                repo_type="model"  # Explicitly specify this is a model repository
             )
             print(f"Repository created or already exists: {repo_id}")
         except Exception as e:
@@ -378,13 +379,38 @@ def push_to_hub(reward_model, tokenizer, config, checkpoint_suffix=None):
                 f.write(f"- Detoxified model: {config.dataset.detoxified_model_name}\n\n")
                 f.write(f"Training method: {config.training.irl_method}\n")
                 f.write(f"Base model: {config.model.reward_model_base}\n")
+                
+                # Add YAML metadata for HF Hub
+                f.write("\n---\n")
+                f.write("tags:\n")
+                f.write("- toxicity\n")
+                f.write("- reward-model\n")
+                f.write("- irl\n")
+                f.write(f"- {model_name}\n")
+                f.write("library_name: transformers\n")
+                f.write("---\n")
             
-            # Push to hub
+            # Push to hub using the HfApi directly
             api = HfApi()
+            
+            # First create the repo explicitly
+            try:
+                api.create_repo(
+                    repo_id=repo_id,
+                    token=hub_token,
+                    private=config.output.private,
+                    exist_ok=True,
+                    repo_type="model"
+                )
+            except Exception as e:
+                print(f"Note: Repository may already exist: {e}")
+            
+            # Then upload the folder
             api.upload_folder(
                 folder_path=tmpdirname,
                 repo_id=repo_id,
-                token=hub_token
+                token=hub_token,
+                repo_type="model"
             )
             
             print(f"Model successfully pushed to HuggingFace Hub: {repo_id}")
