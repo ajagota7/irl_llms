@@ -9,7 +9,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from typing import Dict, List, Tuple, Any, Optional
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from huggingface_hub import HfApi
+from huggingface_hub import HfApi, create_repo
 from omegaconf import DictConfig, OmegaConf
 
 
@@ -319,48 +319,75 @@ def plot_score_distribution(original_scores, detoxified_scores, output_dir=None)
     return fig
 
 
-def push_to_hub(model, tokenizer, config, run_id=None):
-    """Push a reward model to the Hugging Face Hub."""
-    if not config.output.push_to_hub:
-        return None
-    
+def push_to_hub(reward_model, tokenizer, config, checkpoint_suffix=None):
+    """Push the model to the HuggingFace Hub."""
     try:
-        # Create a temporary directory for saving
+        # Get hub token from environment or config
+        hub_token = os.environ.get("HF_TOKEN", None)
+        if hub_token is None and hasattr(config.dataset, 'hub_token'):
+            hub_token = config.dataset.hub_token
+        
+        # Determine repository name
+        hub_org = config.output.hub_org if config.output.hub_org else ""
+        model_name = config.model.reward_model_base.split('/')[-1]
+        repo_prefix = config.output.repo_name_prefix
+        
+        if checkpoint_suffix:
+            repo_name = f"{repo_prefix}_{model_name}_{checkpoint_suffix}"
+        else:
+            repo_name = f"{repo_prefix}_{model_name}"
+        
+        # Add organization prefix if specified
+        if hub_org:
+            repo_id = f"{hub_org}/{repo_name}"
+        else:
+            repo_id = repo_name
+        
+        print(f"Preparing to push model to HuggingFace Hub: {repo_id}")
+        
+        # Create the repository if it doesn't exist
+        try:
+            create_repo(
+                repo_id,
+                token=hub_token,
+                private=config.output.private,
+                exist_ok=True  # This will not raise an error if the repo already exists
+            )
+            print(f"Repository created or already exists: {repo_id}")
+        except Exception as e:
+            print(f"Warning when creating repository: {e}")
+            # Continue anyway, as the error might be that the repo already exists
+        
+        # Save the model to a temporary directory
         import tempfile
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            # Save model and tokenizer
-            model_path = os.path.join(tmp_dir, "model.pt")
-            model.save(model_path)
-            tokenizer.save_pretrained(tmp_dir)
+        with tempfile.TemporaryDirectory() as tmpdirname:
+            # Save the model
+            reward_model.model.save_pretrained(tmpdirname)
+            tokenizer.save_pretrained(tmpdirname)
             
-            # Save config file
-            with open(os.path.join(tmp_dir, "irl_config.yaml"), "w") as f:
+            # Save the config
+            from omegaconf import OmegaConf
+            with open(os.path.join(tmpdirname, "irl_config.yaml"), "w") as f:
                 f.write(OmegaConf.to_yaml(config))
             
-            # Determine repository ID
-            if run_id:
-                repo_name = f"{config.output.repo_name_prefix}_{run_id}"
-            else:
-                model_base = config.model.reward_model_base.split('/')[-1]
-                repo_name = f"{config.output.repo_name_prefix}_{model_base}"
+            # Create a README with model information
+            with open(os.path.join(tmpdirname, "README.md"), "w") as f:
+                f.write(f"# Toxicity Reward Model: {model_name}\n\n")
+                f.write(f"This model was trained to distinguish between outputs from:\n")
+                f.write(f"- Original model: {config.dataset.original_model_name}\n")
+                f.write(f"- Detoxified model: {config.dataset.detoxified_model_name}\n\n")
+                f.write(f"Training method: {config.training.irl_method}\n")
+                f.write(f"Base model: {config.model.reward_model_base}\n")
             
-            repo_id = f"{config.output.hub_org}/{repo_name}" if config.output.hub_org else repo_name
-            
-            # Push to Hub
+            # Push to hub
             api = HfApi()
-            
-            # Check if repo exists and create it if it doesn't
-            if not api.repo_exists(repo_id=repo_id):
-                api.create_repo(repo_id=repo_id, private=config.output.private)
-            
-            # Upload the folder
             api.upload_folder(
-                folder_path=tmp_dir,
+                folder_path=tmpdirname,
                 repo_id=repo_id,
-                commit_message="Reward model from IRL training"
+                token=hub_token
             )
             
-            print(f"Successfully pushed model to {repo_id}")
+            print(f"Model successfully pushed to HuggingFace Hub: {repo_id}")
             return repo_id
     except Exception as e:
         print(f"Error pushing to Hugging Face Hub: {e}")
