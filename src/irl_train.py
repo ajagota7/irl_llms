@@ -561,8 +561,11 @@ class IRLTrainer:
 
 
 @hydra.main(config_path="configs", config_name="config")
-def train_irl(config: DictConfig) -> None:
+def train_irl(cfg: DictConfig) -> None:
     """Main training function."""
+    # Get the IRL config
+    config = cfg.irl if hasattr(cfg, 'irl') else cfg
+    
     print(f"Configuration:\n{OmegaConf.to_yaml(config)}")
     
     # Set up wandb if enabled

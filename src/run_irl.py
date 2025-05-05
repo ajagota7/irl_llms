@@ -11,13 +11,13 @@ from omegaconf import DictConfig, OmegaConf
 import wandb
 
 # Add the current directory to the path so we can import from src
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from .dataset_generator import generate_dataset, DatasetGenerator
-from .irl_train import train_irl
+from dataset_generator import generate_dataset, DatasetGenerator
+from irl_train import train_irl
 
 
-@hydra.main(config_path="src/configs", config_name="config")
+@hydra.main(config_path="configs", config_name="config")
 def main(cfg: DictConfig) -> None:
     """Main entry point for IRL detoxification."""
     # Get the IRL config
