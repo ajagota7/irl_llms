@@ -13,8 +13,8 @@ import wandb
 # Add the current directory to the path so we can import from src
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from src.dataset_generator import generate_dataset, DatasetGenerator
-from src.irl_train import train_irl
+from .dataset_generator import generate_dataset, DatasetGenerator
+from .irl_train import train_irl
 
 
 @hydra.main(config_path="src/configs", config_name="config")
