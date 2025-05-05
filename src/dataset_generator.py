@@ -39,12 +39,15 @@ class DatasetGenerator:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         # Extract the model name for dataset identification
-        model_name = config.dataset.original_model_name if hasattr(config.dataset, 'original_model_name') else config.dataset.model_name
-        model_name = model_name.replace('/', '_')
+        model_name = config.dataset.model_name
+        model_name_safe = model_name.replace('/', '_')
+        
+        # Determine if this is original or detoxified
+        is_original = (model_name == config.dataset.original_model_name)
+        model_type = "original" if is_original else "detoxified"
         
         # Create a unique identifier for this dataset generation
-        model_type = "original" if model_name == config.dataset.original_model_name.replace('/', '_') else "detoxified"
-        self.dataset_id = f"{model_name}_{config.dataset.num_samples}_samples_{model_type}"
+        self.dataset_id = f"{model_name_safe}_{config.dataset.num_samples}_samples_{model_type}"
         
         # Set random seed
         torch.manual_seed(config.dataset.seed)
