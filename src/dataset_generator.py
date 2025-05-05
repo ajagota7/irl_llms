@@ -43,7 +43,7 @@ class DatasetGenerator:
         model_name = model_name.replace('/', '_')
         
         # Create a unique identifier for this dataset generation
-        model_type = "original" if model_name == config.dataset.original_model_name else "detoxified"
+        model_type = "original" if model_name == config.dataset.original_model_name.replace('/', '_') else "detoxified"
         self.dataset_id = f"{model_name}_{config.dataset.num_samples}_samples_{model_type}"
         
         # Set random seed

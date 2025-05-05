@@ -9,6 +9,7 @@ import hydra
 import datetime
 from omegaconf import DictConfig, OmegaConf
 import wandb
+import json
 
 # Add the current directory to the path so we can import from src
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -141,6 +142,28 @@ def main(cfg: DictConfig) -> None:
             wandb.finish()
         
         print(f"All mode complete with results: {results}")
+        
+        # Compare datasets
+        print("\nComparing original and detoxified datasets:")
+        with open(irl_cfg.dataset.original_dataset_path, 'r') as f:
+            original_data = json.load(f)
+        with open(irl_cfg.dataset.detoxified_dataset_path, 'r') as f:
+            detoxified_data = json.load(f)
+        
+        # Check if they're identical
+        identical_count = sum(1 for i in range(min(len(original_data), len(detoxified_data))) 
+                             if original_data[i]['output'] == detoxified_data[i]['output'])
+        
+        print(f"Total samples: {len(original_data)}")
+        print(f"Identical outputs: {identical_count} ({identical_count/len(original_data)*100:.2f}%)")
+        
+        # Sample comparison
+        print("\nSample comparison (first 3 examples):")
+        for i in range(min(3, len(original_data))):
+            print(f"\nPrompt: {original_data[i]['prompt'][:100]}...")
+            print(f"Original: {original_data[i]['output'][:100]}...")
+            print(f"Detoxified: {detoxified_data[i]['output'][:100]}...")
+        
         return
     
     # Handle existing modes
