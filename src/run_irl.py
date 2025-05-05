@@ -17,7 +17,7 @@ from dataset_generator import generate_dataset, DatasetGenerator
 from irl_train import train_irl
 
 
-@hydra.main(config_path="configs", config_name="config")
+@hydra.main(config_path="configs", config_name="config", version_base=None)
 def main(cfg: DictConfig) -> None:
     """Main entry point for IRL detoxification."""
     # Get the IRL config

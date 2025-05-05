@@ -560,7 +560,7 @@ class IRLTrainer:
         print(f"Training complete. Model saved to {self.model_dir}")
 
 
-@hydra.main(config_path="configs", config_name="config")
+@hydra.main(config_path="configs", config_name="config", version_base=None)
 def train_irl(cfg: DictConfig) -> None:
     """Main training function."""
     # Get the IRL config
