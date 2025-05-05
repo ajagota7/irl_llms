@@ -9,7 +9,6 @@ import hydra
 import datetime
 from omegaconf import DictConfig, OmegaConf
 import wandb
-import argparse
 
 # Add the current directory to the path so we can import from src
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -18,24 +17,14 @@ from dataset_generator import generate_dataset, DatasetGenerator
 from irl_train import train_irl
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(description="IRL Detoxification")
-    parser.add_argument("--mode", type=str, default="train", 
-                        choices=["generate_dataset", "train", "all"],
-                        help="Mode to run: generate_dataset, train, or all")
-    return parser.parse_args()
-
 @hydra.main(config_path="configs", config_name="config", version_base=None)
 def main(cfg: DictConfig) -> None:
     """Main entry point for IRL detoxification."""
-    # Parse command-line arguments
-    args = parse_args()
-    
     # Get the IRL config
     irl_cfg = cfg.irl if hasattr(cfg, 'irl') else cfg
     
-    # Set the mode from command-line arguments
-    mode = args.mode
+    # Get the mode from the top-level config
+    mode = cfg.mode if hasattr(cfg, 'mode') else "train"
     
     print(f"Running IRL detoxification with mode: {mode}")
     print(f"Using configuration for model: {irl_cfg.model.reward_model_base}")
@@ -52,7 +41,7 @@ def main(cfg: DictConfig) -> None:
     with open(os.path.join(irl_cfg.output.base_dir, "configs", f"config_{timestamp}.yaml"), "w") as f:
         f.write(OmegaConf.to_yaml(irl_cfg))
     
-    if irl_cfg.mode == "generate_dataset" or irl_cfg.mode == "all":
+    if irl_cfg.mode == "generate_dataset":
         # Generate original dataset
         print(f"Generating dataset for original model: {irl_cfg.dataset.original_model_name}")
         
@@ -124,7 +113,7 @@ def main(cfg: DictConfig) -> None:
             print("Using same model for original and detoxified datasets with different temperature")
             irl_cfg.dataset.detoxified_dataset_path = irl_cfg.dataset.original_dataset_path
     
-    if irl_cfg.mode == "train" or irl_cfg.mode == "all":
+    if irl_cfg.mode == "train":
         # Train model
         print(f"Training reward model using {irl_cfg.training.irl_method} IRL...")
         
