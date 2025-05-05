@@ -1,0 +1,22 @@
+# Configuration for GPT-Neo-125M IRL
+
+dataset:
+  original_model_name: "EleutherAI/gpt-neo-125m"
+  detoxified_model_name: "EleutherAI/gpt-neo-125m-detoxified"
+  original_dataset_path: "${hydra:runtime.cwd}/datasets/gpt-neo-125m-original.json"
+  detoxified_dataset_path: "${hydra:runtime.cwd}/datasets/gpt-neo-125m-detoxified.json"
+
+model:
+  reward_model_base: "EleutherAI/gpt-neo-125m"
+  use_half_precision: false
+  num_unfrozen_layers: 1
+
+training:
+  irl_method: "max_margin"
+  learning_rate: 1e-5
+  epochs: 20
+  batch_size: 6
+  eval_interval: 5
+
+output:
+  repo_name_prefix: "irl-gpt-neo-125m"

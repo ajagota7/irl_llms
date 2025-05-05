@@ -1,0 +1,23 @@
+# Configuration for Pythia-1B IRL
+
+dataset:
+  original_model_name: "EleutherAI/pythia-1b"
+  detoxified_model_name: "EleutherAI/pythia-1b-deduped"
+  original_dataset_path: "${hydra:runtime.cwd}/datasets/pythia-1b-original.json"
+  detoxified_dataset_path: "${hydra:runtime.cwd}/datasets/pythia-1b-detoxified.json"
+
+model:
+  reward_model_base: "EleutherAI/pythia-1b"
+  use_half_precision: true
+  num_unfrozen_layers: 1
+
+training:
+  irl_method: "max_margin"
+  learning_rate: 2e-6
+  epochs: 10
+  batch_size: 2
+  gradient_accumulation_steps: 4
+  eval_interval: 2
+
+output:
+  repo_name_prefix: "irl-pythia-1b"

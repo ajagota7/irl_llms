@@ -1,0 +1,22 @@
+# Configuration for Pythia-160M IRL
+
+dataset:
+  original_model_name: "EleutherAI/pythia-160m"
+  detoxified_model_name: "EleutherAI/pythia-160m-deduped"
+  original_dataset_path: "${hydra:runtime.cwd}/datasets/pythia-160m-original.json"
+  detoxified_dataset_path: "${hydra:runtime.cwd}/datasets/pythia-160m-detoxified.json"
+
+model:
+  reward_model_base: "EleutherAI/pythia-160m"
+  use_half_precision: false
+  num_unfrozen_layers: 1
+
+training:
+  irl_method: "max_margin"
+  learning_rate: 8e-6
+  epochs: 20
+  batch_size: 6
+  eval_interval: 5
+
+output:
+  repo_name_prefix: "irl-pythia-160m"
