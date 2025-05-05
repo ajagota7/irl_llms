@@ -54,6 +54,8 @@ def main(cfg: DictConfig) -> None:
         # Load prompts once to ensure both datasets use the same prompts
         base_cfg = OmegaConf.create(OmegaConf.to_container(irl_cfg, resolve=True))
         base_cfg.mode = "generate_dataset"
+        # Set a default model_name for the base generator
+        base_cfg.dataset.model_name = base_cfg.dataset.original_model_name
         base_generator = DatasetGenerator(base_cfg)
         prompts = base_generator.load_prompts()
         
