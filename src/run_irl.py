@@ -81,6 +81,8 @@ def main(cfg: DictConfig) -> None:
             
             # Configure for detoxified model dataset generation
             dataset_cfg = OmegaConf.create(OmegaConf.to_container(irl_cfg, resolve=True))
+            # Add debug print to verify the model name
+            print(f"Setting model_name to: {dataset_cfg.dataset.detoxified_model_name}")
             dataset_cfg.dataset.model_name = dataset_cfg.dataset.detoxified_model_name
             
             # Set up wandb if enabled

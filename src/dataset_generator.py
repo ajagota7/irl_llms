@@ -43,7 +43,8 @@ class DatasetGenerator:
         model_name = model_name.replace('/', '_')
         
         # Create a unique identifier for this dataset generation
-        self.dataset_id = f"{model_name}_{config.dataset.num_samples}_samples"
+        model_type = "original" if model_name == config.dataset.original_model_name else "detoxified"
+        self.dataset_id = f"{model_name}_{config.dataset.num_samples}_samples_{model_type}"
         
         # Set random seed
         torch.manual_seed(config.dataset.seed)
@@ -83,8 +84,8 @@ class DatasetGenerator:
 
     def generate_completions(self):
         """Generate completions from the specified model."""
-        model_name = self.config.dataset.original_model_name if hasattr(self.config.dataset, 'original_model_name') else self.config.dataset.model_name
-        print(f"Loading model: {model_name}")
+        model_name = self.config.dataset.model_name
+        print(f"DEBUG: Loading model with name: {model_name}")
 
         # Check if we should use half precision
         use_half_precision = None
