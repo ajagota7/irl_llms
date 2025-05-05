@@ -83,8 +83,8 @@ irl:
   
   # Dataset settings
   dataset:
-    original_model_name: null  # Model that generated the original toxic completions
-    detoxified_model_name: null  # Model that generated the detoxified completions
+    original_model_name: "EleutherAI/pythia-70M"  # Model that generated the original toxic completions
+    detoxified_model_name: "ajagota71/pythia-70m-detox-epoch-100"  # Model that generated the detoxified completions
     original_dataset_path: null  # Path to the original toxic dataset
     detoxified_dataset_path: null  # Path to the detoxified dataset
     cache_dir: ${hydra:runtime.cwd}/datasets
