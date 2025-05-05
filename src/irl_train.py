@@ -15,6 +15,8 @@ from tqdm import tqdm
 from transformers import AutoTokenizer, RobertaTokenizer, AutoModelForSequenceClassification
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 from scipy import stats
+import json
+from datasets import load_dataset
 
 from src.irl_utilities import (
     RewardModel, 
@@ -97,21 +99,31 @@ class IRLTrainer:
             torch_dtype=torch.float16
         ).to(self.device)
         
-    def prepare_data(self, original_dataset, detoxified_dataset):
+    def prepare_data(self, original_dataset_path, detoxified_dataset_path):
         """Prepare data for training."""
-        # Load the datasets
-        print(f"Loading original dataset: {original_dataset}")
-        original_data = []
-        with open(original_dataset, 'r') as f:
-            import json
-            original_data = json.load(f)
-            
-        print(f"Loading detoxified dataset: {detoxified_dataset}")
-        detoxified_data = []
-        with open(detoxified_dataset, 'r') as f:
-            import json
-            detoxified_data = json.load(f)
-            
+        print(f"Loading datasets from: {original_dataset_path} and {detoxified_dataset_path}")
+        
+        # Check if paths are HuggingFace dataset IDs
+        if not os.path.exists(original_dataset_path) and '/' in original_dataset_path:
+            print(f"Loading original dataset from HuggingFace: {original_dataset_path}")
+            original_data = load_dataset(original_dataset_path)
+            if 'train' in original_data:
+                original_data = original_data['train']
+        else:
+            # Load from local file
+            with open(original_dataset_path, 'r') as f:
+                original_data = json.load(f)
+        
+        if not os.path.exists(detoxified_dataset_path) and '/' in detoxified_dataset_path:
+            print(f"Loading detoxified dataset from HuggingFace: {detoxified_dataset_path}")
+            detoxified_data = load_dataset(detoxified_dataset_path)
+            if 'train' in detoxified_data:
+                detoxified_data = detoxified_data['train']
+        else:
+            # Load from local file
+            with open(detoxified_dataset_path, 'r') as f:
+                detoxified_data = json.load(f)
+        
         # Verify data lengths match
         if len(original_data) != len(detoxified_data):
             print("Warning: Dataset lengths don't match!")
@@ -454,7 +466,6 @@ class IRLTrainer:
         # Save metrics
         metrics_path = os.path.join(checkpoint_dir, "metrics.json")
         with open(metrics_path, "w") as f:
-            import json
             json.dump(self.metrics_history[-1], f, indent=2)
         
         # Save training info
@@ -470,7 +481,6 @@ class IRLTrainer:
         
         info_path = os.path.join(checkpoint_dir, "training_info.json")
         with open(info_path, "w") as f:
-            import json
             json.dump(info, f, indent=2)
         
         # Log to wandb if configured
@@ -510,7 +520,6 @@ class IRLTrainer:
         # Save all metrics
         metrics_path = os.path.join(self.model_dir, "metrics.json")
         with open(metrics_path, "w") as f:
-            import json
             json.dump(self.metrics_history, f, indent=2)
         
         # Save config
@@ -530,7 +539,6 @@ class IRLTrainer:
         
         info_path = os.path.join(self.model_dir, "training_info.json")
         with open(info_path, "w") as f:
-            import json
             json.dump(info, f, indent=2)
         
         # Plot metrics
