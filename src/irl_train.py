@@ -103,24 +103,51 @@ class IRLTrainer:
         """Prepare data for training."""
         print(f"Loading datasets from: {original_dataset_path} and {detoxified_dataset_path}")
         
-        # Check if paths are HuggingFace dataset IDs
-        if not os.path.exists(original_dataset_path) and '/' in original_dataset_path:
+        # Function to determine if a path is a HuggingFace dataset ID
+        def is_hf_dataset(path):
+            return '/' in path and not os.path.exists(path)
+        
+        # Load original dataset
+        if is_hf_dataset(original_dataset_path):
             print(f"Loading original dataset from HuggingFace: {original_dataset_path}")
-            original_data = load_dataset(original_dataset_path)
-            if 'train' in original_data:
-                original_data = original_data['train']
+            try:
+                original_ds = load_dataset(original_dataset_path)
+                if isinstance(original_ds, dict) and 'train' in original_ds:
+                    original_data = original_ds['train']
+                else:
+                    original_data = original_ds
+                
+                # Convert to list of dictionaries if needed
+                if hasattr(original_data, 'to_pandas'):
+                    original_data = original_data.to_pandas().to_dict('records')
+            except Exception as e:
+                print(f"Error loading dataset from HuggingFace: {e}")
+                raise
         else:
             # Load from local file
+            print(f"Loading original dataset from local file: {original_dataset_path}")
             with open(original_dataset_path, 'r') as f:
                 original_data = json.load(f)
         
-        if not os.path.exists(detoxified_dataset_path) and '/' in detoxified_dataset_path:
+        # Load detoxified dataset
+        if is_hf_dataset(detoxified_dataset_path):
             print(f"Loading detoxified dataset from HuggingFace: {detoxified_dataset_path}")
-            detoxified_data = load_dataset(detoxified_dataset_path)
-            if 'train' in detoxified_data:
-                detoxified_data = detoxified_data['train']
+            try:
+                detoxified_ds = load_dataset(detoxified_dataset_path)
+                if isinstance(detoxified_ds, dict) and 'train' in detoxified_ds:
+                    detoxified_data = detoxified_ds['train']
+                else:
+                    detoxified_data = detoxified_ds
+                
+                # Convert to list of dictionaries if needed
+                if hasattr(detoxified_data, 'to_pandas'):
+                    detoxified_data = detoxified_data.to_pandas().to_dict('records')
+            except Exception as e:
+                print(f"Error loading dataset from HuggingFace: {e}")
+                raise
         else:
             # Load from local file
+            print(f"Loading detoxified dataset from local file: {detoxified_dataset_path}")
             with open(detoxified_dataset_path, 'r') as f:
                 detoxified_data = json.load(f)
         
