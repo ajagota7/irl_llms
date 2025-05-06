@@ -321,7 +321,17 @@ def plot_score_distribution(original_scores, detoxified_scores, output_dir=None)
 
 def push_to_hub(reward_model, tokenizer, config, checkpoint_suffix=None):
     """Push the model to the HuggingFace Hub."""
+    import os
+    import time  # Added this import which was missing
+    from omegaconf import OmegaConf
+    from huggingface_hub import HfApi, create_repo
+    
     try:
+        # Get hub token from environment or config
+        hub_token = os.environ.get("HF_TOKEN", None)
+        if hub_token is None and hasattr(config.dataset, 'hub_token'):
+            hub_token = config.dataset.hub_token
+        
         # Determine repository name
         hub_org = config.output.hub_org if hasattr(config.output, 'hub_org') else ""
         model_name = config.model.reward_model_base.split('/')[-1]
@@ -366,7 +376,7 @@ def push_to_hub(reward_model, tokenizer, config, checkpoint_suffix=None):
         
         # Check if the repository exists, create it if it doesn't
         if not api.repo_exists(repo_id=repo_id):
-            api.create_repo(repo_id=repo_id, private=config.output.private)
+            api.create_repo(repo_id=repo_id, private=getattr(config.output, 'private', False))
         
         # Upload the folder
         api.upload_folder(
