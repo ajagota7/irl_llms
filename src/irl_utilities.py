@@ -320,36 +320,66 @@ def plot_score_distribution(original_scores, detoxified_scores, output_dir=None)
 
 
 def push_to_hub(reward_model, tokenizer, config, checkpoint_suffix=None):
-    """Push the model to the HuggingFace Hub using simplified approach."""
+    """Push the model to the HuggingFace Hub with proper authentication."""
     import os
+    import subprocess
     from huggingface_hub import HfApi, login
     from omegaconf import OmegaConf
     
     try:
-        # Get token from environment
-        token = os.environ.get("HF_TOKEN")
-        if token is None:
-            print("No HF_TOKEN found in environment. Authentication may fail.")
-        else:
-            # Login explicitly with the token
-            login(token=token, add_to_git_credential=True)
+        # First, let's handle authentication properly
+        # Try multiple authentication approaches
         
-        # Create a very simple repo name
-        model_base = config.model.reward_model_base.split('/')[-1]
-        repo_name = f"irl-{model_base}"
+        # 1. Check if a user token is available in Colab
+        try:
+            # This is how Colab stores the HF token after login
+            hf_token_command = "cat /root/.huggingface/token"
+            result = subprocess.run(hf_token_command, shell=True, capture_output=True, text=True)
+            if result.returncode == 0 and result.stdout.strip():
+                token = result.stdout.strip()
+                print("Found HuggingFace token from Colab environment.")
+                # Login with this token
+                login(token=token)
+            else:
+                # Check environment variable
+                token = os.environ.get("HF_TOKEN")
+                if token:
+                    print("Using HF_TOKEN from environment variable.")
+                    login(token=token)
+                else:
+                    print("No HuggingFace token found. Will attempt to use existing credentials if available.")
+        except Exception as auth_error:
+            print(f"Authentication note: {auth_error}")
+            print("Continuing with existing credentials if available.")
+        
+        # Determine repository name using config values
+        # Use lowercase to avoid case sensitivity issues
+        model_base = config.model.reward_model_base.split('/')[-1].lower()
+        
+        # Use the repo_name_prefix from config (or a default value if not set)
+        repo_prefix = getattr(config.output, 'repo_name_prefix', "irl-reward-model")
+        
+        # Create repository name
         if checkpoint_suffix:
-            repo_name = f"{repo_name}-{checkpoint_suffix}"
+            repo_name = f"{repo_prefix}-{model_base}-{checkpoint_suffix}"
+        else:
+            repo_name = f"{repo_prefix}-{model_base}"
         
-        # No organization prefix - keep it simple
-        repo_id = repo_name
+        # Replace characters that might cause issues
+        repo_name = repo_name.replace('_', '-')
         
-        print(f"Pushing model to Hugging Face Hub: {repo_id}")
+        # Handle organization if specified
+        org = getattr(config.output, 'hub_org', None)
+        repo_id = f"{org}/{repo_name}" if org else repo_name
         
-        # Create a simple output directory 
-        output_dir = os.path.join(os.getcwd(), f"hf_upload_{repo_id}")
+        print(f"Preparing to push model to HuggingFace Hub: {repo_id}")
+        
+        # Create output directory with consistent naming
+        output_dir = os.path.join(os.getcwd(), f"hf_upload_{repo_name}")
         os.makedirs(output_dir, exist_ok=True)
         
         # Save model and tokenizer
+        print(f"Saving model files to {output_dir}...")
         reward_model.model.save_pretrained(output_dir)
         tokenizer.save_pretrained(output_dir)
         
@@ -357,39 +387,57 @@ def push_to_hub(reward_model, tokenizer, config, checkpoint_suffix=None):
         with open(os.path.join(output_dir, "config.yaml"), "w") as f:
             f.write(OmegaConf.to_yaml(config))
         
-        # Create a simple README
+        # Create a valid README with proper YAML metadata
         with open(os.path.join(output_dir, "README.md"), "w") as f:
-            f.write(f"# IRL Reward Model for {model_base}\n\n")
-            f.write("This model was trained using inverse reinforcement learning.\n\n")
+            f.write(f"# {repo_name}\n\n")
+            f.write(f"This model was trained to distinguish between outputs from:\n")
+            f.write(f"- Original model: {config.dataset.original_model_name}\n")
+            f.write(f"- Detoxified model: {config.dataset.detoxified_model_name}\n\n")
+            f.write(f"Training method: {config.training.irl_method}\n")
+            f.write(f"Base model: {config.model.reward_model_base}\n\n")
+            
+            # Add yaml metadata with proper formatting
             f.write("---\n")
+            f.write("language: en\n")
             f.write("tags:\n")
             f.write("- reward-model\n")
             f.write("- toxicity\n")
+            f.write("- irl\n")
             f.write("library_name: transformers\n")
+            f.write(f"base_model: {model_base}\n")
+            f.write("pipeline_tag: text-classification\n")
             f.write("---\n")
         
-        # Use HfApi to create and push to repository
+        # Use HfApi to interact with Hugging Face
         api = HfApi()
         
-        # First, try to create the repository
+        # Create the repository with explicit settings
         try:
             print(f"Creating repository: {repo_id}")
-            api.create_repo(repo_id=repo_id, exist_ok=True)
+            api.create_repo(
+                repo_id=repo_id,
+                private=getattr(config.output, 'private', False),
+                exist_ok=True,
+                repo_type="model"  # Explicitly set repo type
+            )
             print(f"Repository created: {repo_id}")
         except Exception as e:
-            print(f"Note about repository creation: {e}")
+            print(f"Repository creation note: {e}")
         
-        # Now upload the files
-        print(f"Uploading model files to {repo_id}...")
-        api.upload_folder(
+        # Upload files with full debugging information
+        print(f"Uploading files to {repo_id}...")
+        result = api.upload_folder(
             folder_path=output_dir,
             repo_id=repo_id,
-            commit_message="Upload IRL reward model"
+            commit_message="Upload IRL reward model",
+            verbose=True  # Add more debugging
         )
         
-        print(f"Successfully pushed model to HuggingFace Hub: {repo_id}")
+        print(f"Upload completed. Result: {result}")
         return repo_id
         
     except Exception as e:
-        print(f"Error pushing to HuggingFace Hub: {e}")
+        print(f"Error in push_to_hub: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return None
