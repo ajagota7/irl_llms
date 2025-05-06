@@ -320,105 +320,80 @@ def plot_score_distribution(original_scores, detoxified_scores, output_dir=None)
 
 
 def push_to_hub(reward_model, tokenizer, config, checkpoint_suffix=None):
-    """Push the model to the HuggingFace Hub."""
+    """Push the model to the HuggingFace Hub following the RLHF pattern."""
     import os
-    import time
     from omegaconf import OmegaConf
-    from huggingface_hub import HfApi, create_repo
+    from huggingface_hub import HfApi
     
     try:
-        # Get hub token from environment or config
-        hub_token = os.environ.get("HF_TOKEN", None)
-        if hub_token is None and hasattr(config.dataset, 'hub_token'):
-            hub_token = config.dataset.hub_token
+        # Determine repository name similar to RLHF
+        model_short_name = config.model.reward_model_base.split('/')[-1]
         
-        # Determine repository name - make it shorter and more conventional
-        model_name = config.model.reward_model_base.split('/')[-1]
-        
-        # Create a simpler, shorter repo name
         if checkpoint_suffix:
-            repo_name = f"irl-{model_name}-{checkpoint_suffix}"
+            repo_name = f"{config.output.repo_name_prefix}_{model_short_name}_{checkpoint_suffix}"
         else:
-            repo_name = f"irl-{model_name}"
+            repo_name = f"{config.output.repo_name_prefix}_{model_short_name}"
         
-        # Add organization prefix if specified
-        hub_org = config.output.hub_org if hasattr(config.output, 'hub_org') and config.output.hub_org else None
-        if hub_org:
-            repo_id = f"{hub_org}/{repo_name}"
-        else:
-            repo_id = repo_name
+        # Prepare repository ID
+        hub_org = getattr(config.output, 'hub_org', None)
+        repo_id = f"{hub_org}/{repo_name}" if hub_org else repo_name
         
-        print(f"Preparing to push model to HuggingFace Hub: {repo_id}")
+        print(f"Pushing model to Hugging Face Hub: {repo_id}")
         
-        # Create a permanent directory
-        output_dir = os.path.join(os.getcwd(), f"hf_upload_{model_name}_{int(time.time())}")
+        # Create output directory (using permanent directory)
+        output_dir = os.path.join(os.getcwd(), f"hf_model_{repo_name}")
         os.makedirs(output_dir, exist_ok=True)
         
-        # Save the model and tokenizer
+        # Save model and tokenizer (exactly like RLHF)
         reward_model.model.save_pretrained(output_dir)
         tokenizer.save_pretrained(output_dir)
         
-        # Save the config
+        # Save config file (exactly like RLHF)
         with open(os.path.join(output_dir, "irl_config.yaml"), "w") as f:
             f.write(OmegaConf.to_yaml(config))
         
-        # Create a proper README with metadata
+        # Create README with proper metadata
         with open(os.path.join(output_dir, "README.md"), "w") as f:
-            f.write(f"# IRL Reward Model: {model_name}\n\n")
-            f.write(f"This model was trained to distinguish between outputs from:\n")
+            f.write(f"# {repo_name}\n\n")
+            f.write(f"This is a reward model trained using IRL to distinguish between outputs from:\n")
             f.write(f"- Original model: {config.dataset.original_model_name}\n")
             f.write(f"- Detoxified model: {config.dataset.detoxified_model_name}\n\n")
             f.write(f"Training method: {config.training.irl_method}\n")
             f.write(f"Base model: {config.model.reward_model_base}\n\n")
             
-            # Add proper YAML metadata that HF expects
+            # Add proper YAML metadata
             f.write("---\n")
             f.write("tags:\n")
             f.write("- reward-model\n")
             f.write("- toxicity\n")
             f.write("- irl\n")
             f.write("library_name: transformers\n")
-            f.write(f"base_model: {config.model.reward_model_base}\n")
+            f.write(f"base_model: {config.model.reward_model_base.replace('/', '-')}\n")
             f.write("---\n")
         
-        # Use HfApi directly to interact with Hugging Face
+        # Use HfApi exactly like RLHF
         api = HfApi()
         
-        # First create the repo explicitly - THIS IS THE CRITICAL STEP THAT WAS FAILING
-        try:
+        # Check if repository exists, create it if it doesn't (exactly like RLHF)
+        if not api.repo_exists(repo_id=repo_id):
             print(f"Creating repository: {repo_id}")
-            api.create_repo(
-                repo_id=repo_id,
-                token=hub_token,
-                private=getattr(config.output, 'private', False),
-                exist_ok=True,
-                repo_type="model"
-            )
+            api.create_repo(repo_id=repo_id, private=getattr(config.output, 'private', False))
             print(f"Repository created: {repo_id}")
-            
-            # Add a small delay to ensure repo is registered
-            time.sleep(2)
-            
-        except Exception as repo_error:
-            print(f"Error creating repository: {repo_error}")
-            # Don't return here, try the upload anyway
+        else:
+            print(f"Repository already exists: {repo_id}")
         
-        # Then upload the folder
-        try:
-            print(f"Uploading model to: {repo_id}")
-            api.upload_folder(
-                folder_path=output_dir,
-                repo_id=repo_id,
-                token=hub_token,
-                commit_message="IRL reward model upload"
-            )
-            print(f"Model successfully pushed to HuggingFace Hub: {repo_id}")
-            return repo_id
-            
-        except Exception as upload_error:
-            print(f"Error uploading to repository: {upload_error}")
-            return None
+        # Upload folder (exactly like RLHF)
+        print(f"Uploading model to: {repo_id}")
+        api.upload_folder(
+            folder_path=output_dir,
+            repo_id=repo_id,
+            commit_message="IRL reward model"
+        )
+        
+        print(f"Successfully pushed model to HuggingFace Hub: {repo_id}")
+        return repo_id
         
     except Exception as e:
-        print(f"Error in push_to_hub function: {e}")
+        print(f"Error pushing to Hugging Face Hub: {str(e)}")
+        print("Continuing without pushing to Hub.")
         return None
