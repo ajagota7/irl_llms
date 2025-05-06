@@ -322,13 +322,8 @@ def plot_score_distribution(original_scores, detoxified_scores, output_dir=None)
 def push_to_hub(reward_model, tokenizer, config, checkpoint_suffix=None):
     """Push the model to the HuggingFace Hub."""
     try:
-        # Get hub token from environment or config
-        hub_token = os.environ.get("HF_TOKEN", None)
-        if hub_token is None and hasattr(config.dataset, 'hub_token'):
-            hub_token = config.dataset.hub_token
-        
         # Determine repository name
-        hub_org = config.output.hub_org if config.output.hub_org else ""
+        hub_org = config.output.hub_org if hasattr(config.output, 'hub_org') else ""
         model_name = config.model.reward_model_base.split('/')[-1]
         repo_prefix = config.output.repo_name_prefix
         
@@ -345,76 +340,44 @@ def push_to_hub(reward_model, tokenizer, config, checkpoint_suffix=None):
         
         print(f"Preparing to push model to HuggingFace Hub: {repo_id}")
         
-        # Create the repository if it doesn't exist
-        try:
-            create_repo(
-                repo_id,
-                token=hub_token,
-                private=config.output.private,
-                exist_ok=True,  # This will not raise an error if the repo already exists
-                repo_type="model"  # Explicitly specify this is a model repository
-            )
-            print(f"Repository created or already exists: {repo_id}")
-        except Exception as e:
-            print(f"Warning when creating repository: {e}")
-            # Continue anyway, as the error might be that the repo already exists
+        # Create a permanent directory instead of temporary
+        output_dir = os.path.join(os.getcwd(), f"hf_upload_{model_name}_{int(time.time())}")
+        os.makedirs(output_dir, exist_ok=True)
         
-        # Save the model to a temporary directory
-        import tempfile
-        with tempfile.TemporaryDirectory() as tmpdirname:
-            # Save the model
-            reward_model.model.save_pretrained(tmpdirname)
-            tokenizer.save_pretrained(tmpdirname)
-            
-            # Save the config
-            from omegaconf import OmegaConf
-            with open(os.path.join(tmpdirname, "irl_config.yaml"), "w") as f:
-                f.write(OmegaConf.to_yaml(config))
-            
-            # Create a README with model information
-            with open(os.path.join(tmpdirname, "README.md"), "w") as f:
-                f.write(f"# Toxicity Reward Model: {model_name}\n\n")
-                f.write(f"This model was trained to distinguish between outputs from:\n")
-                f.write(f"- Original model: {config.dataset.original_model_name}\n")
-                f.write(f"- Detoxified model: {config.dataset.detoxified_model_name}\n\n")
-                f.write(f"Training method: {config.training.irl_method}\n")
-                f.write(f"Base model: {config.model.reward_model_base}\n")
-                
-                # Add YAML metadata for HF Hub
-                f.write("\n---\n")
-                f.write("tags:\n")
-                f.write("- toxicity\n")
-                f.write("- reward-model\n")
-                f.write("- irl\n")
-                f.write(f"- {model_name}\n")
-                f.write("library_name: transformers\n")
-                f.write("---\n")
-            
-            # Push to hub using the HfApi directly
-            api = HfApi()
-            
-            # First create the repo explicitly
-            try:
-                api.create_repo(
-                    repo_id=repo_id,
-                    token=hub_token,
-                    private=config.output.private,
-                    exist_ok=True,
-                    repo_type="model"
-                )
-            except Exception as e:
-                print(f"Note: Repository may already exist: {e}")
-            
-            # Then upload the folder
-            api.upload_folder(
-                folder_path=tmpdirname,
-                repo_id=repo_id,
-                token=hub_token,
-                repo_type="model"
-            )
-            
-            print(f"Model successfully pushed to HuggingFace Hub: {repo_id}")
-            return repo_id
+        # Save the model
+        reward_model.model.save_pretrained(output_dir)
+        tokenizer.save_pretrained(output_dir)
+        
+        # Save the config
+        with open(os.path.join(output_dir, "irl_config.yaml"), "w") as f:
+            f.write(OmegaConf.to_yaml(config))
+        
+        # Create README
+        with open(os.path.join(output_dir, "README.md"), "w") as f:
+            f.write(f"# Toxicity Reward Model: {model_name}\n\n")
+            f.write(f"This model was trained to distinguish between outputs from:\n")
+            f.write(f"- Original model: {config.dataset.original_model_name}\n")
+            f.write(f"- Detoxified model: {config.dataset.detoxified_model_name}\n\n")
+            f.write(f"Training method: {config.training.irl_method}\n")
+            f.write(f"Base model: {config.model.reward_model_base}\n")
+        
+        # Use HfApi directly like in RLHF implementation
+        api = HfApi()
+        
+        # Check if the repository exists, create it if it doesn't
+        if not api.repo_exists(repo_id=repo_id):
+            api.create_repo(repo_id=repo_id, private=config.output.private)
+        
+        # Upload the folder
+        api.upload_folder(
+            folder_path=output_dir,
+            repo_id=repo_id,
+            commit_message="IRL reward model"
+        )
+        
+        print(f"Model successfully pushed to HuggingFace Hub: {repo_id}")
+        return repo_id
+        
     except Exception as e:
         print(f"Error pushing to Hugging Face Hub: {e}")
         return None
