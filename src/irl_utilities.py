@@ -424,16 +424,15 @@ def push_to_hub(reward_model, tokenizer, config, checkpoint_suffix=None):
         except Exception as e:
             print(f"Repository creation note: {e}")
         
-        # Upload files with full debugging information
+        # Upload files without the verbose parameter
         print(f"Uploading files to {repo_id}...")
         result = api.upload_folder(
             folder_path=output_dir,
             repo_id=repo_id,
-            commit_message="Upload IRL reward model",
-            verbose=True  # Add more debugging
+            commit_message="Upload IRL reward model"
         )
         
-        print(f"Upload completed. Result: {result}")
+        print(f"Upload completed successfully to {repo_id}")
         return repo_id
         
     except Exception as e:
