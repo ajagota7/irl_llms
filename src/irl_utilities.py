@@ -320,80 +320,76 @@ def plot_score_distribution(original_scores, detoxified_scores, output_dir=None)
 
 
 def push_to_hub(reward_model, tokenizer, config, checkpoint_suffix=None):
-    """Push the model to the HuggingFace Hub following the RLHF pattern."""
+    """Push the model to the HuggingFace Hub using simplified approach."""
     import os
+    from huggingface_hub import HfApi, login
     from omegaconf import OmegaConf
-    from huggingface_hub import HfApi
     
     try:
-        # Determine repository name similar to RLHF
-        model_short_name = config.model.reward_model_base.split('/')[-1]
-        
-        if checkpoint_suffix:
-            repo_name = f"{config.output.repo_name_prefix}_{model_short_name}_{checkpoint_suffix}"
+        # Get token from environment
+        token = os.environ.get("HF_TOKEN")
+        if token is None:
+            print("No HF_TOKEN found in environment. Authentication may fail.")
         else:
-            repo_name = f"{config.output.repo_name_prefix}_{model_short_name}"
+            # Login explicitly with the token
+            login(token=token, add_to_git_credential=True)
         
-        # Prepare repository ID
-        hub_org = getattr(config.output, 'hub_org', None)
-        repo_id = f"{hub_org}/{repo_name}" if hub_org else repo_name
+        # Create a very simple repo name
+        model_base = config.model.reward_model_base.split('/')[-1]
+        repo_name = f"irl-{model_base}"
+        if checkpoint_suffix:
+            repo_name = f"{repo_name}-{checkpoint_suffix}"
+        
+        # No organization prefix - keep it simple
+        repo_id = repo_name
         
         print(f"Pushing model to Hugging Face Hub: {repo_id}")
         
-        # Create output directory (using permanent directory)
-        output_dir = os.path.join(os.getcwd(), f"hf_model_{repo_name}")
+        # Create a simple output directory 
+        output_dir = os.path.join(os.getcwd(), f"hf_upload_{repo_id}")
         os.makedirs(output_dir, exist_ok=True)
         
-        # Save model and tokenizer (exactly like RLHF)
+        # Save model and tokenizer
         reward_model.model.save_pretrained(output_dir)
         tokenizer.save_pretrained(output_dir)
         
-        # Save config file (exactly like RLHF)
-        with open(os.path.join(output_dir, "irl_config.yaml"), "w") as f:
+        # Save config
+        with open(os.path.join(output_dir, "config.yaml"), "w") as f:
             f.write(OmegaConf.to_yaml(config))
         
-        # Create README with proper metadata
+        # Create a simple README
         with open(os.path.join(output_dir, "README.md"), "w") as f:
-            f.write(f"# {repo_name}\n\n")
-            f.write(f"This is a reward model trained using IRL to distinguish between outputs from:\n")
-            f.write(f"- Original model: {config.dataset.original_model_name}\n")
-            f.write(f"- Detoxified model: {config.dataset.detoxified_model_name}\n\n")
-            f.write(f"Training method: {config.training.irl_method}\n")
-            f.write(f"Base model: {config.model.reward_model_base}\n\n")
-            
-            # Add proper YAML metadata
+            f.write(f"# IRL Reward Model for {model_base}\n\n")
+            f.write("This model was trained using inverse reinforcement learning.\n\n")
             f.write("---\n")
             f.write("tags:\n")
             f.write("- reward-model\n")
             f.write("- toxicity\n")
-            f.write("- irl\n")
             f.write("library_name: transformers\n")
-            f.write(f"base_model: {config.model.reward_model_base.replace('/', '-')}\n")
             f.write("---\n")
         
-        # Use HfApi exactly like RLHF
+        # Use HfApi to create and push to repository
         api = HfApi()
         
-        # Check if repository exists, create it if it doesn't (exactly like RLHF)
-        if not api.repo_exists(repo_id=repo_id):
+        # First, try to create the repository
+        try:
             print(f"Creating repository: {repo_id}")
-            api.create_repo(repo_id=repo_id, private=getattr(config.output, 'private', False))
+            api.create_repo(repo_id=repo_id, exist_ok=True)
             print(f"Repository created: {repo_id}")
-        else:
-            print(f"Repository already exists: {repo_id}")
+        except Exception as e:
+            print(f"Note about repository creation: {e}")
         
-        # Upload folder (exactly like RLHF)
-        print(f"Uploading model to: {repo_id}")
+        # Now upload the files
+        print(f"Uploading model files to {repo_id}...")
         api.upload_folder(
             folder_path=output_dir,
             repo_id=repo_id,
-            commit_message="IRL reward model"
+            commit_message="Upload IRL reward model"
         )
         
         print(f"Successfully pushed model to HuggingFace Hub: {repo_id}")
         return repo_id
         
     except Exception as e:
-        print(f"Error pushing to Hugging Face Hub: {str(e)}")
-        print("Continuing without pushing to Hub.")
+        print(f"Error pushing to HuggingFace Hub: {e}")
         return None
