@@ -320,56 +320,76 @@ def plot_score_distribution(original_scores, detoxified_scores, output_dir=None)
 
 
 def push_to_hub(reward_model, tokenizer, config, checkpoint_suffix=None):
-    """Push the model to the HuggingFace Hub - minimalist version."""
+    """Push the model to the HuggingFace Hub using a user namespace instead of root."""
     import os
     from huggingface_hub import HfApi
     from omegaconf import OmegaConf
     
     try:
-        # Create a simple repository name with a prefix matching your successful uploads
+        # Use your username rather than trying to create at the root level
+        # Most likely your successful uploads are in YOUR namespace
+        username = "ajagota71"  # Replace with your actual HF username
+        
+        # Create a simple, short repo name
         model_name = config.model.reward_model_base.split('/')[-1].lower()
         
         if checkpoint_suffix:
-            repo_name = f"hf_model_toxicity-reward-model-{model_name}-{checkpoint_suffix}"
+            repo_name = f"irl-reward-{model_name}-{checkpoint_suffix}"
         else:
-            repo_name = f"hf_model_toxicity-reward-model-{model_name}"
+            repo_name = f"irl-reward-{model_name}"
         
-        # No organization prefix - use exactly what worked before
-        repo_id = repo_name
+        # Use username namespace - this is critical!
+        repo_id = f"{username}/{repo_name}"
         
         print(f"Pushing model to HuggingFace Hub: {repo_id}")
         
-        # Create a local directory matching the repo name
-        output_dir = os.path.join(os.getcwd(), repo_name)
+        # Create a simple output directory
+        output_dir = os.path.join(os.getcwd(), f"hf_upload_{repo_name}")
         os.makedirs(output_dir, exist_ok=True)
         
-        # Save model, tokenizer and config
+        # Save model and tokenizer
         print(f"Saving model files to {output_dir}")
         reward_model.model.save_pretrained(output_dir)
         tokenizer.save_pretrained(output_dir)
         
+        # Save config
         with open(os.path.join(output_dir, "config.yaml"), "w") as f:
             f.write(OmegaConf.to_yaml(config))
         
-        # Create a simple README
+        # Create README
         with open(os.path.join(output_dir, "README.md"), "w") as f:
-            f.write(f"# Toxicity Reward Model\n\n")
+            f.write(f"# IRL Reward Model\n\n")
+            f.write(f"This model was trained using {config.training.irl_method} IRL to learn toxicity reward signals.\n\n")
             f.write(f"Base model: {config.model.reward_model_base}\n")
+            f.write(f"Original model: {config.dataset.original_model_name}\n")
+            f.write(f"Detoxified model: {config.dataset.detoxified_model_name}\n\n")
+            # Proper metadata section
+            f.write("---\n")
+            f.write("tags:\n")
+            f.write("- toxicity\n")
+            f.write("- reward-model\n")
+            f.write("library_name: transformers\n")
+            f.write("---\n")
         
-        # Use HfApi with simplest possible approach
+        # Use HfApi
         api = HfApi()
         
-        # Create repository - no repo_type parameter
+        # Create repository with explicit username namespace
         print(f"Creating repository: {repo_id}")
-        api.create_repo(repo_id=repo_id, exist_ok=True)
-        print(f"Repository created: {repo_id}")
+        try:
+            api.create_repo(
+                repo_id=repo_id,
+                exist_ok=True
+            )
+            print(f"Repository created: {repo_id}")
+        except Exception as e:
+            print(f"Note on repository creation: {e}")
         
-        # Upload files - exactly as RLHF does it
+        # Upload folder
         print(f"Uploading files to {repo_id}")
         api.upload_folder(
             folder_path=output_dir,
-            repo_id=repo_id,
-            commit_message="Upload model"
+            repo_id=repo_id
         )
         
         print(f"Successfully uploaded model to {repo_id}")
