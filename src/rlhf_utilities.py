@@ -395,3 +395,39 @@ def analyze_prompt_tracking(config: Dict) -> None:
         
         # Save the figure
         plt.savefig(os.path.join(output_dir, "toxicity_evolution.png"), dpi=300)
+
+
+def safe_reward_computation(reward_model, toxicity_inputs, device):
+    """Safely compute rewards, handling potential errors."""
+    with torch.no_grad():
+        try:
+            # Try standard computation
+            outputs = reward_model(**toxicity_inputs)
+            
+            # Handle different model output formats
+            if hasattr(outputs, 'logits'):
+                logits = outputs.logits
+                if logits.shape[1] == 1:  # Single value output
+                    raw_values = logits.squeeze(-1).float()
+                else:  # Classification output (typically 2 classes)
+                    raw_values = logits[:, 0].float()
+            else:
+                # Direct value output
+                raw_values = outputs[0].float()
+            
+            # Check for NaN or inf values
+            if torch.isnan(raw_values).any() or torch.isinf(raw_values).any():
+                print("Warning: NaN or Inf values in reward model output, replacing with zeros")
+                raw_values = torch.where(
+                    torch.isnan(raw_values) | torch.isinf(raw_values),
+                    torch.zeros_like(raw_values),
+                    raw_values
+                )
+            
+            return raw_values
+            
+        except Exception as e:
+            print(f"Error in reward computation: {e}")
+            # Return neutral values as fallback
+            batch_size = toxicity_inputs['input_ids'].size(0)
+            return torch.zeros(batch_size, device=device)

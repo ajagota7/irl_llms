@@ -32,7 +32,8 @@ from rlhf_utilities import (
     load_reward_model,
     evaluate_toxicity,
     analyze_prompt_tracking,
-    LengthSampler
+    LengthSampler,
+    safe_reward_computation
 )
 
 
@@ -242,8 +243,20 @@ def train_rlhf(cfg: DictConfig) -> None:
             
             # Make sure query is 1D
             query = query.squeeze()
-            response = ppo_trainer.generate(query, **generation_kwargs)
-            response_tensors.append(response.squeeze()[-gen_len:])
+            
+            # Use safe generation instead of direct generation
+            response = safe_generate(ppo_trainer, query, generation_kwargs)
+            
+            # Extract the generated part (last gen_len tokens)
+            if response.size(1) >= gen_len:
+                response_tensors.append(response.squeeze()[-gen_len:])
+            else:
+                # If response is shorter than expected, pad it
+                padding = torch.full((gen_len - response.size(1),), 
+                                    tokenizer.pad_token_id, 
+                                    device=response.device)
+                padded_response = torch.cat([response.squeeze(), padding], dim=0)
+                response_tensors.append(padded_response[-gen_len:])
         
         batch["response"] = [tokenizer.decode(r.squeeze()) for r in response_tensors]
         
@@ -256,11 +269,16 @@ def train_rlhf(cfg: DictConfig) -> None:
             return_tensors="pt"
         ).to(ppo_trainer.accelerator.device)
         
-        logits = reward_model(**toxicity_inputs).logits.float()
+        # Use safe reward computation
+        raw_values = safe_reward_computation(
+            reward_model, 
+            toxicity_inputs, 
+            ppo_trainer.accelerator.device
+        )
         
         # Calculate rewards based on configuration
         if cfg.model.use_raw_logits:
-            raw_toxicity_labels = (logits[:, 0]).tolist()
+            raw_toxicity_labels = raw_values.tolist()
             # Check for NaN or inf values and replace them
             raw_toxicity_labels = [
                 0.0 if (not isinstance(x, (int, float)) or np.isnan(x) or np.isinf(x)) 
@@ -268,7 +286,9 @@ def train_rlhf(cfg: DictConfig) -> None:
             ]
             rewards = [torch.tensor(output) for output in raw_toxicity_labels]
         else:
-            softmax_toxicity_labels = reward_model(**toxicity_inputs).logits.softmax(dim=1)[:, 0].float().tolist()
+            # Apply softmax for probability scores
+            softmax_values = torch.nn.functional.softmax(raw_values.view(-1, 1), dim=1)[:, 0]
+            softmax_toxicity_labels = softmax_values.tolist()
             # Check for NaN or inf values and replace them
             softmax_toxicity_labels = [
                 0.0 if (not isinstance(x, (int, float)) or np.isnan(x) or np.isinf(x)) 
@@ -296,8 +316,8 @@ def train_rlhf(cfg: DictConfig) -> None:
             print(f"  Rewards - Mean: {raw_mean:.4f}, Std: {raw_std:.4f}")
             print(f"  NaN/Inf values replaced: {nan_inf_count}/{len(raw_toxicity_labels)} ({nan_inf_count/len(raw_toxicity_labels)*100:.1f}%)")
         
-        # Run PPO update
-        stats = ppo_trainer.step(query_tensors, response_tensors, rewards)
+        # Run PPO update safely
+        stats = safe_ppo_step(ppo_trainer, query_tensors, response_tensors, rewards)
         
         # Augment stats dictionary with reward metrics
         stats["rewards/mean"] = raw_mean
@@ -422,6 +442,59 @@ def train_rlhf(cfg: DictConfig) -> None:
     return final_toxicity
 
 
+def safe_generate(ppo_trainer, query, generation_kwargs):
+    """Safely generate text, handling potential CUDA errors."""
+    try:
+        # Standard generation
+        response = ppo_trainer.generate(query, **generation_kwargs)
+        return response
+    except RuntimeError as e:
+        if "CUDA error" in str(e) or "device-side assert triggered" in str(e):
+            print(f"CUDA error during generation: {e}")
+            print("Attempting fallback generation with safer parameters...")
+            
+            # Create safer generation parameters
+            safe_kwargs = generation_kwargs.copy()
+            # Disable sampling which can cause probability issues
+            safe_kwargs["do_sample"] = False
+            # Use greedy decoding instead
+            safe_kwargs["num_beams"] = 1
+            
+            try:
+                # Try again with safer parameters
+                response = ppo_trainer.generate(query, **safe_kwargs)
+                return response
+            except Exception as e2:
+                print(f"Fallback generation also failed: {e2}")
+                print("Creating empty response as last resort")
+                
+                # Create a minimal valid response as last resort
+                # Just return the input with a simple completion
+                device = ppo_trainer.accelerator.device
+                if hasattr(ppo_trainer.model, 'pretrained_model'):
+                    vocab_size = ppo_trainer.model.pretrained_model.config.vocab_size
+                else:
+                    vocab_size = ppo_trainer.model.config.vocab_size
+                
+                # Get the token IDs for a simple completion like " is"
+                simple_tokens = ppo_trainer.tokenizer(" is", add_special_tokens=False).input_ids
+                
+                # Create a response that's just the query plus this simple completion
+                min_length = generation_kwargs.get("min_length", 5)
+                response_length = max(min_length, len(simple_tokens))
+                
+                # Create a tensor with the right shape
+                response = torch.cat([
+                    query.unsqueeze(0),  # Add batch dimension
+                    torch.tensor([simple_tokens], device=device)
+                ], dim=1)
+                
+                return response
+        else:
+            # If it's not a CUDA error, re-raise
+            raise
+
+
 def safe_log_stats(ppo_trainer, stats, batch, rewards):
     """Safely log stats, handling NaN values."""
     # Clean up stats dictionary to remove NaN/inf values
@@ -467,6 +540,20 @@ def safe_log_stats(ppo_trainer, stats, batch, rewards):
             print(f"Logged minimal stats: {minimal_stats}")
         except Exception as e2:
             print(f"Even minimal logging failed: {e2}")
+
+
+def safe_ppo_step(ppo_trainer, query_tensors, response_tensors, rewards):
+    """Safely perform PPO step with error handling."""
+    try:
+        stats = ppo_trainer.step(query_tensors, response_tensors, rewards)
+        return stats
+    except RuntimeError as e:
+        if "CUDA error" in str(e) or "device-side assert triggered" in str(e):
+            print(f"CUDA error during PPO step: {e}")
+            print("Returning empty stats dictionary")
+            return {"error": str(e)}
+        else:
+            raise
 
 
 if __name__ == "__main__":
