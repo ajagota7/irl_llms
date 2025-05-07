@@ -320,30 +320,39 @@ def plot_score_distribution(original_scores, detoxified_scores, output_dir=None)
 
 
 def push_to_hub(reward_model, tokenizer, config, checkpoint_suffix=None):
-    """Push the model to the HuggingFace Hub using a user namespace instead of root."""
+    """Push the model to the HuggingFace Hub using either specified hub_org or default username."""
     import os
     from huggingface_hub import HfApi
     from omegaconf import OmegaConf
     
     try:
-        # Use your username rather than trying to create at the root level
-        # Most likely your successful uploads are in YOUR namespace
-        username = "ajagota71"  # Replace with your actual HF username
+        # Check if hub_org is provided in config
+        hub_org = None
+        if hasattr(config.output, 'hub_org') and config.output.hub_org:
+            hub_org = config.output.hub_org
         
-        # Create a simple, short repo name
-        model_name = config.model.reward_model_base.split('/')[-1].lower()
+        # If hub_org is not provided, use default username
+        if not hub_org:
+            hub_org = "ajagota71"  # Default username if not specified
+        
+        # Create repository name from config or use default
+        model_short_name = config.model.reward_model_base.split('/')[-1].lower()
+        repo_prefix = getattr(config.output, 'repo_name_prefix', "irl-reward")
         
         if checkpoint_suffix:
-            repo_name = f"irl-reward-{model_name}-{checkpoint_suffix}"
+            repo_name = f"{repo_prefix}-{model_short_name}-{checkpoint_suffix}"
         else:
-            repo_name = f"irl-reward-{model_name}"
+            repo_name = f"{repo_prefix}-{model_short_name}"
         
-        # Use username namespace - this is critical!
-        repo_id = f"{username}/{repo_name}"
+        # Ensure repo name uses hyphens, not underscores
+        repo_name = repo_name.replace('_', '-')
+        
+        # Construct full repository ID with username/organization
+        repo_id = f"{hub_org}/{repo_name}"
         
         print(f"Pushing model to HuggingFace Hub: {repo_id}")
         
-        # Create a simple output directory
+        # Create output directory
         output_dir = os.path.join(os.getcwd(), f"hf_upload_{repo_name}")
         os.makedirs(output_dir, exist_ok=True)
         
@@ -356,43 +365,56 @@ def push_to_hub(reward_model, tokenizer, config, checkpoint_suffix=None):
         with open(os.path.join(output_dir, "config.yaml"), "w") as f:
             f.write(OmegaConf.to_yaml(config))
         
-        # Create README
+        # Create README with proper metadata
         with open(os.path.join(output_dir, "README.md"), "w") as f:
-            f.write(f"# IRL Reward Model\n\n")
+            f.write(f"# {repo_name}\n\n")
             f.write(f"This model was trained using {config.training.irl_method} IRL to learn toxicity reward signals.\n\n")
             f.write(f"Base model: {config.model.reward_model_base}\n")
             f.write(f"Original model: {config.dataset.original_model_name}\n")
             f.write(f"Detoxified model: {config.dataset.detoxified_model_name}\n\n")
             # Proper metadata section
             f.write("---\n")
+            f.write("language: en\n")
             f.write("tags:\n")
             f.write("- toxicity\n")
             f.write("- reward-model\n")
+            f.write("- irl\n")
             f.write("library_name: transformers\n")
+            f.write(f"base_model: {model_short_name}\n")
+            f.write("pipeline_tag: text-classification\n")
             f.write("---\n")
         
-        # Use HfApi
+        # Use HfApi to create repository and upload
         api = HfApi()
         
-        # Create repository with explicit username namespace
+        # Create repository
         print(f"Creating repository: {repo_id}")
         try:
             api.create_repo(
                 repo_id=repo_id,
+                private=getattr(config.output, 'private', False),
                 exist_ok=True
             )
             print(f"Repository created: {repo_id}")
         except Exception as e:
-            print(f"Note on repository creation: {e}")
+            print(f"Repository creation note: {e}")
         
-        # Upload folder
+        # Upload files
         print(f"Uploading files to {repo_id}")
         api.upload_folder(
             folder_path=output_dir,
-            repo_id=repo_id
+            repo_id=repo_id,
+            commit_message="Upload IRL reward model"
         )
         
         print(f"Successfully uploaded model to {repo_id}")
+        
+        # Add message indicating whether it was uploaded to the explicitly set hub_org
+        if hasattr(config.output, 'hub_org') and config.output.hub_org:
+            print(f"Model pushed to HuggingFace: {repo_id} (using explicitly set hub_org)")
+        else:
+            print(f"Model pushed to HuggingFace: {repo_id} (using default username)")
+            
         return repo_id
         
     except Exception as e:
