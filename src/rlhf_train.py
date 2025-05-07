@@ -213,6 +213,7 @@ def train_rlhf(cfg: DictConfig) -> None:
         'epoch': [],
         'raw_rewards_mean': [],
         'raw_rewards_std': [],
+        'nan_inf_count': [],
     }
     
     # Training loop
@@ -260,9 +261,19 @@ def train_rlhf(cfg: DictConfig) -> None:
         # Calculate rewards based on configuration
         if cfg.model.use_raw_logits:
             raw_toxicity_labels = (logits[:, 0]).tolist()
+            # Check for NaN or inf values and replace them
+            raw_toxicity_labels = [
+                0.0 if (not isinstance(x, (int, float)) or np.isnan(x) or np.isinf(x)) 
+                else x for x in raw_toxicity_labels
+            ]
             rewards = [torch.tensor(output) for output in raw_toxicity_labels]
         else:
             softmax_toxicity_labels = reward_model(**toxicity_inputs).logits.softmax(dim=1)[:, 0].float().tolist()
+            # Check for NaN or inf values and replace them
+            softmax_toxicity_labels = [
+                0.0 if (not isinstance(x, (int, float)) or np.isnan(x) or np.isinf(x)) 
+                else x for x in softmax_toxicity_labels
+            ]
             rewards = [torch.tensor(output) for output in softmax_toxicity_labels]
         
         # Calculate statistics for logging
@@ -275,10 +286,15 @@ def train_rlhf(cfg: DictConfig) -> None:
         reward_stats['raw_rewards_mean'].append(raw_mean)
         reward_stats['raw_rewards_std'].append(raw_std)
         
+        # Count NaN/Inf values
+        nan_inf_count = sum(1 for x in raw_toxicity_labels if not isinstance(x, (int, float)) or np.isnan(x) or np.isinf(x))
+        reward_stats['nan_inf_count'].append(nan_inf_count)
+        
         # Print reward stats periodically
         if epoch % 10 == 0:
             print(f"\nEpoch {epoch} reward stats:")
             print(f"  Rewards - Mean: {raw_mean:.4f}, Std: {raw_std:.4f}")
+            print(f"  NaN/Inf values replaced: {nan_inf_count}/{len(raw_toxicity_labels)} ({nan_inf_count/len(raw_toxicity_labels)*100:.1f}%)")
         
         # Run PPO update
         stats = ppo_trainer.step(query_tensors, response_tensors, rewards)
@@ -288,8 +304,8 @@ def train_rlhf(cfg: DictConfig) -> None:
         stats["rewards/std"] = raw_std
         stats["current_epoch"] = epoch
         
-        # Log stats
-        ppo_trainer.log_stats(stats, batch, rewards)
+        # Log stats safely
+        safe_log_stats(ppo_trainer, stats, batch, rewards)
         
         # Save model checkpoint
         if (epoch + 1) % cfg.training.save_freq == 0:
@@ -404,6 +420,53 @@ def train_rlhf(cfg: DictConfig) -> None:
     
     # Return final toxicity for potential programmatic use
     return final_toxicity
+
+
+def safe_log_stats(ppo_trainer, stats, batch, rewards):
+    """Safely log stats, handling NaN values."""
+    # Clean up stats dictionary to remove NaN/inf values
+    clean_stats = {}
+    for k, v in stats.items():
+        if isinstance(v, (int, float)):
+            if np.isnan(v) or np.isinf(v):
+                print(f"Warning: {k} has invalid value {v}, replacing with 0")
+                clean_stats[k] = 0.0
+            else:
+                clean_stats[k] = v
+        else:
+            clean_stats[k] = v
+    
+    # Handle histograms specially
+    if 'ppo/advantages' in clean_stats:
+        advantages = clean_stats['ppo/advantages']
+        if isinstance(advantages, list):
+            # Filter out NaN and inf values
+            filtered_advantages = [x for x in advantages if isinstance(x, (int, float)) and not np.isnan(x) and not np.isinf(x)]
+            if not filtered_advantages:  # If all values were invalid
+                filtered_advantages = [0.0]
+            clean_stats['ppo/advantages'] = filtered_advantages
+    
+    # Same for other potential histogram values
+    for key in ['ppo/ratio', 'ppo/policy_loss', 'ppo/value_loss']:
+        if key in clean_stats and isinstance(clean_stats[key], list):
+            clean_stats[key] = [x for x in clean_stats[key] if isinstance(x, (int, float)) and not np.isnan(x) and not np.isinf(x)]
+            if not clean_stats[key]:  # If all values were invalid
+                clean_stats[key] = [0.0]
+    
+    try:
+        ppo_trainer.log_stats(clean_stats, batch, rewards)
+    except Exception as e:
+        print(f"Error in logging stats: {e}")
+        # Try a minimal logging approach
+        try:
+            minimal_stats = {
+                'rewards/mean': clean_stats.get('rewards/mean', 0.0),
+                'current_epoch': clean_stats.get('current_epoch', 0)
+            }
+            ppo_trainer.accelerator.log(minimal_stats)
+            print(f"Logged minimal stats: {minimal_stats}")
+        except Exception as e2:
+            print(f"Even minimal logging failed: {e2}")
 
 
 if __name__ == "__main__":

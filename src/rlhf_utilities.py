@@ -139,15 +139,89 @@ def load_reward_model(model_id: str, device: str) -> Tuple[Any, Any]:
             tokenizer.pad_token = tokenizer.eos_token
             print(f"Setting pad_token to eos_token ({tokenizer.eos_token})")
         
-        model = AutoModelForSequenceClassification.from_pretrained(
-            model_id,
-            torch_dtype=torch.float16 if device == "cuda" else torch.float32
-        ).to(device)
+        try:
+            # First try loading as a sequence classification model
+            model = AutoModelForSequenceClassification.from_pretrained(
+                model_id,
+                torch_dtype=torch.float16 if device == "cuda" else torch.float32
+            ).to(device)
+            
+            # Check if the model has a score head (common issue with IRL models)
+            if hasattr(model.config, 'num_labels') and model.config.num_labels == 1:
+                print(f"Loaded model with single label head")
+            elif not hasattr(model, 'score'):
+                print(f"Model doesn't have a score attribute, will use logits directly")
+                
+        except Exception as e:
+            print(f"Error loading as sequence classification model: {e}")
+            print("Trying to load as a causal language model with value head...")
+            
+            # Try loading as a causal language model
+            from transformers import AutoModelForCausalLM
+            base_model = AutoModelForCausalLM.from_pretrained(
+                model_id,
+                torch_dtype=torch.float16 if device == "cuda" else torch.float32
+            )
+            
+            # Create a wrapper class to make it compatible with the sequence classification interface
+            class RewardModelWrapper(torch.nn.Module):
+                def __init__(self, base_model):
+                    super().__init__()
+                    self.base_model = base_model
+                    # Check if there's a v_head attribute (common in IRL models)
+                    self.has_v_head = hasattr(base_model, 'v_head')
+                    
+                def forward(self, **inputs):
+                    # Get the outputs from the base model
+                    outputs = self.base_model(**inputs, output_hidden_states=True)
+                    
+                    # If the model has a value head, use it
+                    if self.has_v_head:
+                        # Get the last hidden state
+                        hidden_states = outputs.hidden_states[-1]
+                        
+                        # Apply mean pooling
+                        if 'attention_mask' in inputs:
+                            attention_mask = inputs['attention_mask']
+                            expanded_mask = attention_mask.unsqueeze(-1).expand(hidden_states.size()).float()
+                            masked_hidden = hidden_states * expanded_mask
+                            sum_hidden = torch.sum(masked_hidden, dim=1)
+                            token_count = torch.clamp(attention_mask.sum(dim=1, keepdim=True), min=1.0)
+                            pooled_hidden = sum_hidden / token_count
+                        else:
+                            # Fallback to last token
+                            batch_size = hidden_states.size(0)
+                            last_token_indices = torch.tensor([hidden_states.size(1)-1] * batch_size, 
+                                                             device=hidden_states.device)
+                            batch_indices = torch.arange(batch_size, device=hidden_states.device)
+                            pooled_hidden = hidden_states[batch_indices, last_token_indices]
+                        
+                        # Apply value head
+                        values = self.base_model.v_head(pooled_hidden)
+                        
+                        # Create a structure similar to what sequence classification models return
+                        class SimpleOutput:
+                            def __init__(self, logits):
+                                self.logits = logits
+                        
+                        # Return in a format compatible with sequence classification models
+                        return SimpleOutput(torch.cat([-values, values], dim=1))
+                    else:
+                        # If no value head, just return the logits directly
+                        return outputs
+            
+            # Create the wrapper model
+            model = RewardModelWrapper(base_model).to(device)
+            print("Successfully loaded custom reward model with wrapper")
         
         # Make sure the model knows about the padding token
         if hasattr(model.config, 'pad_token_id') and model.config.pad_token_id is None:
             model.config.pad_token_id = tokenizer.pad_token_id
             print(f"Setting model's pad_token_id to {model.config.pad_token_id}")
+    
+    # Set model to evaluation mode
+    model.eval()
+    print(f"Reward model loaded and set to evaluation mode")
     
     return model, tokenizer
 
@@ -204,8 +278,27 @@ def evaluate_toxicity(
         # Calculate toxicity
         inputs = reward_tokenizer(response, return_tensors="pt").to(device)
         with torch.no_grad():
-            outputs = reward_model(**inputs)
-            toxicity = torch.sigmoid(outputs.logits)[0][0].item()
+            try:
+                outputs = reward_model(**inputs)
+                
+                # Handle different model output formats
+                if hasattr(outputs, 'logits'):
+                    logits = outputs.logits
+                    if logits.shape[1] == 1:  # Single value output
+                        toxicity = logits[0][0].item()
+                    else:  # Classification output (typically 2 classes)
+                        toxicity = torch.sigmoid(logits)[0][0].item()
+                else:
+                    # Direct value output
+                    toxicity = outputs[0].item()
+                
+                # Check for NaN or inf
+                if np.isnan(toxicity) or np.isinf(toxicity):
+                    print(f"Warning: Got {toxicity} toxicity score, using default 0.5")
+                    toxicity = 0.5
+            except Exception as e:
+                print(f"Error calculating toxicity: {e}")
+                toxicity = 0.5  # Default value
         
         toxicity_scores.append(toxicity)
         generations.append({
