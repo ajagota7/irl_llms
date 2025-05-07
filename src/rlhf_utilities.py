@@ -133,10 +133,21 @@ def load_reward_model(model_id: str, device: str) -> Tuple[Any, Any]:
         # Use Auto classes for your custom reward models
         from transformers import AutoModelForSequenceClassification, AutoTokenizer
         tokenizer = AutoTokenizer.from_pretrained(model_id)
+        
+        # Set padding token for GPTNeoX models
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+            print(f"Setting pad_token to eos_token ({tokenizer.eos_token})")
+        
         model = AutoModelForSequenceClassification.from_pretrained(
             model_id,
             torch_dtype=torch.float16 if device == "cuda" else torch.float32
         ).to(device)
+        
+        # Make sure the model knows about the padding token
+        if hasattr(model.config, 'pad_token_id') and model.config.pad_token_id is None:
+            model.config.pad_token_id = tokenizer.pad_token_id
+            print(f"Setting model's pad_token_id to {model.config.pad_token_id}")
     
     return model, tokenizer
 
