@@ -40,38 +40,50 @@ class RewardModel(torch.nn.Module):
         # Freeze the base model
         self._freeze_base_model(num_unfrozen_layers)
 
-    def _freeze_base_model(self, num_unfrozen_layers):
-        """Freeze the base model, except for the last few layers."""
-        # First freeze all parameters
+    def _freeze_base_model(self, num_unfrozen_layers=0):
+        """Freeze all parameters except the last few layers and the value head."""
+        # First, freeze all parameters
         for param in self.model.parameters():
             param.requires_grad = False
-
-        # Then unfreeze the last n layers
-        if num_unfrozen_layers > 0:
-            try:
-                # For different model architectures, handle this differently
-                if hasattr(self.model, 'transformer'):
-                    # For GPT-Neo and similar models
-                    layers = self.model.transformer.h
-                    for i in range(1, num_unfrozen_layers + 1):
-                        layer_idx = len(layers) - i
-                        for param in layers[layer_idx].parameters():
-                            param.requires_grad = True
-                elif hasattr(self.model, 'model') and hasattr(self.model.model, 'layers'):
-                    # For some newer models
-                    layers = self.model.model.layers
-                    for i in range(1, num_unfrozen_layers + 1):
-                        layer_idx = len(layers) - i
-                        for param in layers[layer_idx].parameters():
-                            param.requires_grad = True
-                else:
-                    print("Unsupported model architecture. All parameters frozen except value head.")
-            except Exception as e:
-                print(f"Error unfreezing layers: {e}")
-
-        # Always unfreeze the value head
-        for param in self.v_head.parameters():
+        
+        # For different model architectures, handle this differently
+        if hasattr(self.model, 'transformer'):
+            # For GPT-Neo and similar models
+            layers = self.model.transformer.h
+            if num_unfrozen_layers > 0:
+                print(f"Unfreezing the last {num_unfrozen_layers} layers of the transformer.")
+                for i in range(len(layers) - num_unfrozen_layers, len(layers)):
+                    for param in layers[i].parameters():
+                        param.requires_grad = True
+        elif hasattr(self.model, 'model') and hasattr(self.model.model, 'layers'):
+            # For some newer models
+            layers = self.model.model.layers
+            if num_unfrozen_layers > 0:
+                print(f"Unfreezing the last {num_unfrozen_layers} layers of the model.")
+                for i in range(len(layers) - num_unfrozen_layers, len(layers)):
+                    for param in layers[i].parameters():
+                        param.requires_grad = True
+        # Add Pythia model architecture support
+        elif hasattr(self.model, 'gpt_neox'):
+            # For Pythia models which use GPT-NeoX architecture
+            layers = self.model.gpt_neox.layers
+            if num_unfrozen_layers > 0:
+                print(f"Unfreezing the last {num_unfrozen_layers} layers of Pythia model.")
+                for i in range(len(layers) - num_unfrozen_layers, len(layers)):
+                    for param in layers[i].parameters():
+                        param.requires_grad = True
+        else:
+            print("Unsupported model architecture. All parameters frozen except value head.")
+        
+        # Unfreeze value head parameters
+        for param in self.value_head.parameters():
             param.requires_grad = True
+        
+        # Calculate trainable parameters
+        total_params = sum(p.numel() for p in self.parameters())
+        trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        print(f"Total parameters: {total_params:,}")
+        print(f"Trainable parameters: {trainable_params:,} ({trainable_params / total_params:.2%})")
 
     def forward(self, input_ids, attention_mask=None):
         """Forward pass through the model."""
