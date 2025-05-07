@@ -41,11 +41,11 @@ class RewardModel(torch.nn.Module):
         self._freeze_base_model(num_unfrozen_layers)
 
     def _freeze_base_model(self, num_unfrozen_layers=0):
-        """Freeze all parameters except the last few layers and the value head."""
-        # First, freeze all parameters
+        """Freeze the base model, except for the last few layers."""
+        # First freeze all parameters
         for param in self.model.parameters():
             param.requires_grad = False
-        
+
         # For different model architectures, handle this differently
         if hasattr(self.model, 'transformer'):
             # For GPT-Neo and similar models
@@ -75,10 +75,10 @@ class RewardModel(torch.nn.Module):
         else:
             print("Unsupported model architecture. All parameters frozen except value head.")
         
-        # Unfreeze value head parameters
-        for param in self.value_head.parameters():
+        # Always unfreeze the value head - FIXED THIS LINE
+        for param in self.v_head.parameters():
             param.requires_grad = True
-        
+            
         # Calculate trainable parameters
         total_params = sum(p.numel() for p in self.parameters())
         trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
