@@ -2,7 +2,7 @@
 
 dataset:
   original_model_name: "EleutherAI/pythia-1b"
-  detoxified_model_name: "EleutherAI/pythia-1b-deduped"
+  detoxified_model_name: "ajagota71/pythia-1b-detox-epoch-100"
   original_dataset_path: "${hydra:runtime.cwd}/datasets/pythia-1b-original.json"
   detoxified_dataset_path: "${hydra:runtime.cwd}/datasets/pythia-1b-detoxified.json"
 

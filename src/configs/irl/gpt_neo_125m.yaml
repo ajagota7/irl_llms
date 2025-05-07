@@ -2,7 +2,7 @@
 
 dataset:
   original_model_name: "EleutherAI/gpt-neo-125m"
-  detoxified_model_name: "EleutherAI/gpt-neo-125m-detoxified"
+  detoxified_model_name: "ajagota71/gpt-neo-125m-detox-epoch-100"
   original_dataset_path: "${hydra:runtime.cwd}/datasets/gpt-neo-125m-original.json"
   detoxified_dataset_path: "${hydra:runtime.cwd}/datasets/gpt-neo-125m-detoxified.json"
 
