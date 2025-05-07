@@ -133,7 +133,7 @@ irl:
     base_dir: ${hydra:runtime.cwd}/outputs/irl
     save_checkpoints: true
     push_to_hub: false
-    hub_org: ajagota71
+    hub_org: "ajagota71"
     repo_name_prefix: "irl-reward-model"
     private: false
   
