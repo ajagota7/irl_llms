@@ -119,13 +119,24 @@ def setup_wandb(config: Dict) -> Any:
 
 
 def load_reward_model(model_id: str, device: str) -> Tuple[Any, Any]:
-    """Load toxicity model for reward calculation."""
+    """Load reward model for RLHF training."""
     
-    tokenizer = RobertaTokenizer.from_pretrained(model_id)
-    model = RobertaForSequenceClassification.from_pretrained(
-        model_id,
-        torch_dtype=torch.float16 if device == "cuda" else torch.float32
-    ).to(device)
+    # Check if this is a RoBERTa model (original implementation)
+    if "roberta" in model_id.lower():
+        from transformers import RobertaForSequenceClassification, RobertaTokenizer
+        tokenizer = RobertaTokenizer.from_pretrained(model_id)
+        model = RobertaForSequenceClassification.from_pretrained(
+            model_id,
+            torch_dtype=torch.float16 if device == "cuda" else torch.float32
+        ).to(device)
+    else:
+        # Use Auto classes for your custom reward models
+        from transformers import AutoModelForSequenceClassification, AutoTokenizer
+        tokenizer = AutoTokenizer.from_pretrained(model_id)
+        model = AutoModelForSequenceClassification.from_pretrained(
+            model_id,
+            torch_dtype=torch.float16 if device == "cuda" else torch.float32
+        ).to(device)
     
     return model, tokenizer
 
