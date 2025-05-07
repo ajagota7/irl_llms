@@ -193,6 +193,159 @@ class IRLTrainer:
             
             yield batch_original, batch_detoxified
             
+    def evaluate(self, data, split="test"):
+        """Evaluate the reward model on the given data split."""
+        self.reward_model.eval()
+        self.true_reward_model.eval()
+        
+        original_outputs = []
+        detoxified_outputs = []
+        ground_truth_labels = []  # 1 for original (toxic), 0 for detoxified (non-toxic)
+        true_rewards = []
+        all_texts = []
+        
+        # Process in batches
+        batch_size = self.config.training.batch_size
+        
+        with torch.no_grad():
+            # Process original (toxic) examples in batches
+            for i in range(0, len(data['original']), batch_size):
+                batch = data['original'][i:i+batch_size]
+                texts = [item['output'] for item in batch]
+                all_texts.extend(texts)
+                
+                # Tokenize
+                inputs = self.tokenizer(
+                    texts,
+                    return_tensors="pt",
+                    padding=True,
+                    truncation=True,
+                    max_length=self.config.training.max_length
+                )
+                # Move to device
+                inputs = {k: v.to(self.device) for k, v in inputs.items()}
+                
+                # Get learned rewards
+                rewards = self.reward_model(**inputs)
+                
+                # Convert to list of floats
+                rewards_list = rewards.squeeze().cpu().tolist()
+                
+                # Handle single item case
+                if not isinstance(rewards_list, list):
+                    rewards_list = [rewards_list]
+                
+                original_outputs.extend(rewards_list)
+                
+                # Add ground truth labels
+                ground_truth_labels.extend([1] * len(batch))
+            
+            # Process detoxified examples in batches
+            for i in range(0, len(data['detoxified']), batch_size):
+                batch = data['detoxified'][i:i+batch_size]
+                texts = [item['output'] for item in batch]
+                all_texts.extend(texts)
+                
+                # Tokenize
+                inputs = self.tokenizer(
+                    texts,
+                    return_tensors="pt",
+                    padding=True,
+                    truncation=True,
+                    max_length=self.config.training.max_length
+                )
+                # Move to device
+                inputs = {k: v.to(self.device) for k, v in inputs.items()}
+                
+                # Get learned rewards
+                rewards = self.reward_model(**inputs)
+                
+                # Convert to list of floats
+                rewards_list = rewards.squeeze().cpu().tolist()
+                
+                # Handle single item case
+                if not isinstance(rewards_list, list):
+                    rewards_list = [rewards_list]
+                
+                detoxified_outputs.extend(rewards_list)
+                
+                # Add ground truth labels
+                ground_truth_labels.extend([0] * len(batch))
+        
+        # Compute true rewards using the ground truth model
+        for i in range(0, len(all_texts), batch_size):
+            batch_texts = all_texts[i:i+batch_size]
+            
+            # Tokenize for the true reward model
+            inputs = self.true_reward_tokenizer(
+                batch_texts,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=self.config.training.max_length
+            ).to(self.device)
+            
+            # Get true rewards
+            logits = self.true_reward_model(**inputs).logits
+            
+            # Use the first logit (non-toxic) as the reward
+            batch_rewards = logits[:, 0].cpu().tolist()
+            true_rewards.extend(batch_rewards)
+        
+        # Get all outputs together
+        all_outputs = original_outputs + detoxified_outputs
+        
+        # Compute metrics
+        metrics = {}
+        
+        # Convert learned rewards to binary predictions
+        # Higher reward should indicate less toxic (more detoxified)
+        threshold = np.mean(all_outputs)  # Simple threshold
+        learned_predictions = (np.array(all_outputs) > threshold).astype(int)
+        learned_predictions = 1 - learned_predictions  # Invert to match ground truth (1=toxic)
+        
+        # Accuracy
+        metrics[f'{split}_accuracy'] = accuracy_score(ground_truth_labels, learned_predictions)
+        
+        # F1 Score
+        metrics[f'{split}_f1'] = f1_score(ground_truth_labels, learned_predictions)
+        
+        # AUC-ROC
+        metrics[f'{split}_auc_roc'] = roc_auc_score(ground_truth_labels, [-x for x in all_outputs])  # Invert for ROC
+        
+        # Correlation with true rewards
+        metrics[f'{split}_pearson_correlation'] = np.corrcoef([x for x in all_outputs], true_rewards)[0, 1]
+        metrics[f'{split}_spearman_correlation'] = stats.spearmanr([x for x in all_outputs], true_rewards).correlation
+        metrics[f'{split}_kendall_tau'] = stats.kendalltau([x for x in all_outputs], true_rewards).correlation
+        
+        # Average predicted rewards
+        metrics[f'{split}_avg_original_reward'] = np.mean(original_outputs)
+        metrics[f'{split}_avg_detoxified_reward'] = np.mean(detoxified_outputs)
+        metrics[f'{split}_reward_diff'] = metrics[f'{split}_avg_detoxified_reward'] - metrics[f'{split}_avg_original_reward']
+        
+        # True reward model metrics
+        # Convert true rewards to binary predictions
+        true_threshold = np.mean(true_rewards)
+        true_predictions = (np.array(true_rewards) > true_threshold).astype(int)
+        true_predictions = 1 - true_predictions  # Invert to match ground truth (1=toxic)
+        
+        # Accuracy against true reward model predictions
+        metrics[f'{split}_true_reward_accuracy'] = accuracy_score(true_predictions, learned_predictions)
+        
+        # F1 Score against true reward model predictions
+        metrics[f'{split}_true_reward_f1'] = f1_score(true_predictions, learned_predictions)
+        
+        # Plot score distribution if it's the test set
+        if split == "test":
+            fig = plot_score_distribution(original_outputs, detoxified_outputs, self.eval_dir)
+            
+            # Log the plot to wandb
+            if self.config.logging.use_wandb and wandb.run is not None:
+                wandb.log({"score_distribution": wandb.Image(fig)})
+        
+        # Return metrics
+        return metrics
+    
     def train(self, train_data, test_data):
         """Train the reward model."""
         # Record model names for tracking
@@ -221,9 +374,29 @@ class IRLTrainer:
             eps=self.config.training.adam_epsilon
         )
         
+        # Evaluate at epoch 0 (before training)
+        print("Evaluating at epoch 0 (before training)...")
+        train_metrics = self.evaluate(train_data, split="train")
+        test_metrics = self.evaluate(test_data, split="test")
+        
+        # Combine metrics
+        metrics = {**train_metrics, **test_metrics}
+        metrics['epoch'] = 0
+        metrics['loss'] = 0.0  # No loss yet
+        self.metrics_history.append(metrics)
+        
+        # Print metrics
+        print(f"Metrics at epoch 0 (before training):")
+        for k, v in metrics.items():
+            if isinstance(v, (int, float)):
+                print(f"  {k}: {v:.4f}")
+        
+        # Log metrics to wandb
+        if self.config.logging.use_wandb and wandb.run is not None:
+            wandb.log(metrics, step=0)
+        
         # Training loop
         print(f"Starting training with {self.config.training.irl_method} IRL...")
-        self.metrics_history = []
         
         for epoch in range(self.config.training.epochs):
             self.reward_model.train()
@@ -303,16 +476,14 @@ class IRLTrainer:
             avg_loss = sum(epoch_losses) / len(epoch_losses) if epoch_losses else float('nan')
             print(f"Epoch {epoch+1}/{self.config.training.epochs}, Loss: {avg_loss:.4f}")
             
-            # Log loss to wandb
-            if self.config.logging.use_wandb and wandb.run is not None:
-                wandb.log({"train_loss": avg_loss, "epoch": epoch + 1})
-            
             # Evaluate periodically
             if (epoch + 1) % self.config.training.eval_interval == 0 or epoch == self.config.training.epochs - 1:
                 print(f"Evaluating at epoch {epoch+1}...")
-                metrics = self.evaluate(test_data)
+                train_metrics = self.evaluate(train_data, split="train")
+                test_metrics = self.evaluate(test_data, split="test")
                 
-                # Add epoch and loss to metrics
+                # Combine metrics
+                metrics = {**train_metrics, **test_metrics}
                 metrics['epoch'] = epoch + 1
                 metrics['loss'] = avg_loss
                 self.metrics_history.append(metrics)
@@ -323,160 +494,23 @@ class IRLTrainer:
                     if isinstance(v, (int, float)):
                         print(f"  {k}: {v:.4f}")
                 
-                # Log metrics to wandb
+                # Log metrics to wandb with step=epoch+1 to ensure proper tracking
                 if self.config.logging.use_wandb and wandb.run is not None:
-                    wandb.log(metrics)
+                    wandb.log(metrics, step=epoch+1)
                 
                 # Save checkpoint if configured
                 if self.config.output.save_checkpoints:
                     self.save_checkpoint(epoch + 1)
+            else:
+                # Log just the loss for non-evaluation epochs
+                if self.config.logging.use_wandb and wandb.run is not None:
+                    wandb.log({"loss": avg_loss}, step=epoch+1)
         
         # Save the final model
         self.save_model()
         
         return self.reward_model, self.metrics_history
         
-    def evaluate(self, test_data):
-        """Evaluate the reward model."""
-        self.reward_model.eval()
-        self.true_reward_model.eval()
-        
-        original_outputs = []
-        detoxified_outputs = []
-        ground_truth_labels = []  # 1 for original (toxic), 0 for detoxified (non-toxic)
-        
-        # Process in batches
-        batch_size = self.config.training.batch_size
-        
-        with torch.no_grad():
-            # Process original (toxic) examples in batches
-            for i in range(0, len(test_data['original']), batch_size):
-                batch = test_data['original'][i:i+batch_size]
-                texts = [item['output'] for item in batch]
-                
-                # Tokenize
-                inputs = self.tokenizer(
-                    texts,
-                    return_tensors="pt",
-                    padding=True,
-                    truncation=True,
-                    max_length=self.config.training.max_length
-                )
-                # Move to device
-                inputs = {k: v.to(self.device) for k, v in inputs.items()}
-                
-                # Get learned rewards
-                rewards = self.reward_model(**inputs)
-                
-                # Convert to list of floats
-                rewards_list = rewards.squeeze().cpu().tolist()
-                
-                # Handle single item case
-                if not isinstance(rewards_list, list):
-                    rewards_list = [rewards_list]
-                
-                original_outputs.extend(rewards_list)
-                
-                # Add ground truth labels
-                ground_truth_labels.extend([1] * len(batch))
-            
-            # Process detoxified examples in batches
-            for i in range(0, len(test_data['detoxified']), batch_size):
-                batch = test_data['detoxified'][i:i+batch_size]
-                texts = [item['output'] for item in batch]
-                
-                # Tokenize
-                inputs = self.tokenizer(
-                    texts,
-                    return_tensors="pt",
-                    padding=True,
-                    truncation=True,
-                    max_length=self.config.training.max_length
-                )
-                # Move to device
-                inputs = {k: v.to(self.device) for k, v in inputs.items()}
-                
-                # Get learned rewards
-                rewards = self.reward_model(**inputs)
-                
-                # Convert to list of floats
-                rewards_list = rewards.squeeze().cpu().tolist()
-                
-                # Handle single item case
-                if not isinstance(rewards_list, list):
-                    rewards_list = [rewards_list]
-                
-                detoxified_outputs.extend(rewards_list)
-                
-                # Add ground truth labels
-                ground_truth_labels.extend([0] * len(batch))
-        
-        # Compute true rewards using the ground truth model
-        true_rewards = []
-        all_texts = [test_data['original'][i]['output'] for i in range(len(test_data['original']))] + \
-                    [test_data['detoxified'][i]['output'] for i in range(len(test_data['detoxified']))]
-        
-        # Process in batches
-        for i in range(0, len(all_texts), batch_size):
-            batch_texts = all_texts[i:i+batch_size]
-            
-            # Tokenize for the true reward model
-            inputs = self.true_reward_tokenizer(
-                batch_texts,
-                return_tensors="pt",
-                padding=True,
-                truncation=True,
-                max_length=self.config.training.max_length
-            ).to(self.device)
-            
-            # Get true rewards
-            logits = self.true_reward_model(**inputs).logits
-            
-            # Use the first logit (non-toxic) as the reward
-            batch_rewards = logits[:, 0].cpu().tolist()
-            true_rewards.extend(batch_rewards)
-        
-        # Get all outputs together
-        all_outputs = original_outputs + detoxified_outputs
-        
-        # Compute metrics
-        metrics = {}
-        
-        # Convert learned rewards to binary predictions
-        # Higher reward should indicate less toxic (more detoxified)
-        threshold = np.mean(all_outputs)  # Simple threshold
-        learned_predictions = (np.array(all_outputs) > threshold).astype(int)
-        learned_predictions = 1 - learned_predictions  # Invert to match ground truth (1=toxic)
-        
-        # Accuracy
-        metrics['accuracy'] = accuracy_score(ground_truth_labels, learned_predictions)
-        
-        # F1 Score
-        metrics['f1'] = f1_score(ground_truth_labels, learned_predictions)
-        
-        # AUC-ROC
-        metrics['auc_roc'] = roc_auc_score(ground_truth_labels, [-x for x in all_outputs])  # Invert for ROC
-        
-        # Correlation with true rewards
-        metrics['pearson_correlation'] = np.corrcoef([x for x in all_outputs], true_rewards)[0, 1]
-        metrics['spearman_correlation'] = stats.spearmanr([x for x in all_outputs], true_rewards).correlation
-        metrics['kendall_tau'] = stats.kendalltau([x for x in all_outputs], true_rewards).correlation
-        
-        # Average predicted rewards
-        metrics['avg_original_reward'] = np.mean(original_outputs)
-        metrics['avg_detoxified_reward'] = np.mean(detoxified_outputs)
-        metrics['reward_diff'] = metrics['avg_detoxified_reward'] - metrics['avg_original_reward']
-        
-        # Plot score distribution
-        fig = plot_score_distribution(original_outputs, detoxified_outputs, self.eval_dir)
-        
-        # Log the plot to wandb
-        if self.config.logging.use_wandb and wandb.run is not None:
-            wandb.log({"score_distribution": wandb.Image(fig)})
-        
-        # Return metrics
-        return metrics
-    
     def save_checkpoint(self, epoch):
         """Save a model checkpoint."""
         # Create checkpoint directory

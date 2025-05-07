@@ -235,49 +235,105 @@ def plot_metrics(metrics_history, output_dir=None):
 
     epochs_list = [m['epoch'] for m in metrics_history]
 
-    # Create figure with 2x2 subplots
-    fig, axes = plt.subplots(2, 2, figsize=(18, 12))
+    # Create figure with 3x2 subplots
+    fig, axes = plt.subplots(3, 2, figsize=(18, 18))
 
-    # Plot accuracy and F1
+    # Plot train vs test accuracy
     ax1 = axes[0, 0]
-    ax1.plot(epochs_list, [m['accuracy'] for m in metrics_history], 'o-', label='Accuracy')
-    ax1.plot(epochs_list, [m['f1'] for m in metrics_history], 's-', label='F1 Score')
-    ax1.plot(epochs_list, [m['auc_roc'] for m in metrics_history], '^-', label='AUC-ROC')
+    if 'train_accuracy' in metrics_history[0] and 'test_accuracy' in metrics_history[0]:
+        ax1.plot(epochs_list, [m['train_accuracy'] for m in metrics_history], 'o-', label='Train Accuracy')
+        ax1.plot(epochs_list, [m['test_accuracy'] for m in metrics_history], 's-', label='Test Accuracy')
+        ax1.plot(epochs_list, [m['train_f1'] for m in metrics_history], '^-', label='Train F1')
+        ax1.plot(epochs_list, [m['test_f1'] for m in metrics_history], 'v-', label='Test F1')
+    else:
+        # Backward compatibility
+        ax1.plot(epochs_list, [m['accuracy'] for m in metrics_history], 'o-', label='Accuracy')
+        ax1.plot(epochs_list, [m['f1'] for m in metrics_history], 's-', label='F1 Score')
+    
     ax1.set_xlabel('Epoch')
     ax1.set_ylabel('Score')
     ax1.set_title('Classification Metrics')
     ax1.legend()
     ax1.grid(True, alpha=0.3)
 
-    # Plot correlations
+    # Plot AUC-ROC
     ax2 = axes[0, 1]
-    ax2.plot(epochs_list, [m['pearson_correlation'] for m in metrics_history], 'o-', label='Pearson')
-    ax2.plot(epochs_list, [m['spearman_correlation'] for m in metrics_history], 's-', label='Spearman')
-    ax2.plot(epochs_list, [m['kendall_tau'] for m in metrics_history], '^-', label='Kendall Tau')
+    if 'train_auc_roc' in metrics_history[0] and 'test_auc_roc' in metrics_history[0]:
+        ax2.plot(epochs_list, [m['train_auc_roc'] for m in metrics_history], 'o-', label='Train AUC-ROC')
+        ax2.plot(epochs_list, [m['test_auc_roc'] for m in metrics_history], 's-', label='Test AUC-ROC')
+    else:
+        # Backward compatibility
+        ax2.plot(epochs_list, [m['auc_roc'] for m in metrics_history], 'o-', label='AUC-ROC')
+    
     ax2.set_xlabel('Epoch')
-    ax2.set_ylabel('Correlation')
-    ax2.set_title('Correlation with True Reward')
+    ax2.set_ylabel('Score')
+    ax2.set_title('AUC-ROC')
     ax2.legend()
     ax2.grid(True, alpha=0.3)
 
-    # Plot average rewards
+    # Plot correlations
     ax3 = axes[1, 0]
-    ax3.plot(epochs_list, [m['avg_original_reward'] for m in metrics_history], 'r-', label='Original (Toxic)')
-    ax3.plot(epochs_list, [m['avg_detoxified_reward'] for m in metrics_history], 'g-', label='Detoxified')
-    ax3.plot(epochs_list, [m['reward_diff'] for m in metrics_history], 'b--', label='Difference')
+    if 'train_pearson_correlation' in metrics_history[0]:
+        ax3.plot(epochs_list, [m['train_pearson_correlation'] for m in metrics_history], 'o-', label='Train Pearson')
+        ax3.plot(epochs_list, [m['test_pearson_correlation'] for m in metrics_history], 's-', label='Test Pearson')
+    else:
+        # Backward compatibility
+        ax3.plot(epochs_list, [m['pearson_correlation'] for m in metrics_history], 'o-', label='Pearson')
+        ax3.plot(epochs_list, [m['spearman_correlation'] for m in metrics_history], 's-', label='Spearman')
+        ax3.plot(epochs_list, [m['kendall_tau'] for m in metrics_history], '^-', label='Kendall Tau')
+    
     ax3.set_xlabel('Epoch')
-    ax3.set_ylabel('Average Reward')
-    ax3.set_title('Average Predicted Rewards')
+    ax3.set_ylabel('Correlation')
+    ax3.set_title('Correlation with True Reward')
     ax3.legend()
     ax3.grid(True, alpha=0.3)
 
-    # Plot loss
+    # Plot average rewards
     ax4 = axes[1, 1]
-    ax4.plot(epochs_list, [m['loss'] for m in metrics_history], 'o-')
+    if 'test_avg_original_reward' in metrics_history[0]:
+        ax4.plot(epochs_list, [m['test_avg_original_reward'] for m in metrics_history], 'r-', label='Original (Toxic)')
+        ax4.plot(epochs_list, [m['test_avg_detoxified_reward'] for m in metrics_history], 'g-', label='Detoxified')
+        ax4.plot(epochs_list, [m['test_reward_diff'] for m in metrics_history], 'b--', label='Difference')
+    else:
+        # Backward compatibility
+        ax4.plot(epochs_list, [m['avg_original_reward'] for m in metrics_history], 'r-', label='Original (Toxic)')
+        ax4.plot(epochs_list, [m['avg_detoxified_reward'] for m in metrics_history], 'g-', label='Detoxified')
+        ax4.plot(epochs_list, [m['reward_diff'] for m in metrics_history], 'b--', label='Difference')
+    
     ax4.set_xlabel('Epoch')
-    ax4.set_ylabel('Loss')
-    ax4.set_title('Training Loss')
+    ax4.set_ylabel('Average Reward')
+    ax4.set_title('Average Predicted Rewards')
+    ax4.legend()
     ax4.grid(True, alpha=0.3)
+
+    # Plot loss
+    ax5 = axes[2, 0]
+    ax5.plot(epochs_list, [m['loss'] for m in metrics_history], 'o-')
+    ax5.set_xlabel('Epoch')
+    ax5.set_ylabel('Loss')
+    ax5.set_title('Training Loss')
+    ax5.grid(True, alpha=0.3)
+    
+    # Plot true reward model agreement
+    ax6 = axes[2, 1]
+    if 'train_true_reward_accuracy' in metrics_history[0]:
+        ax6.plot(epochs_list, [m['train_true_reward_accuracy'] for m in metrics_history], 'o-', 
+                label='Train True Reward Accuracy')
+        ax6.plot(epochs_list, [m['test_true_reward_accuracy'] for m in metrics_history], 's-', 
+                label='Test True Reward Accuracy')
+        ax6.plot(epochs_list, [m['train_true_reward_f1'] for m in metrics_history], '^-', 
+                label='Train True Reward F1')
+        ax6.plot(epochs_list, [m['test_true_reward_f1'] for m in metrics_history], 'v-', 
+                label='Test True Reward F1')
+    else:
+        ax6.text(0.5, 0.5, 'No true reward metrics available', 
+                horizontalalignment='center', verticalalignment='center', transform=ax6.transAxes)
+    
+    ax6.set_xlabel('Epoch')
+    ax6.set_ylabel('Score')
+    ax6.set_title('Agreement with True Reward Model')
+    ax6.legend()
+    ax6.grid(True, alpha=0.3)
 
     plt.tight_layout()
 
