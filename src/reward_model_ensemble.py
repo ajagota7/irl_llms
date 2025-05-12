@@ -897,15 +897,24 @@ class RewardModelEnsembleAnalyzer:
             "some_right_count": some_right
         }
         
-    def analyze_raw_scores(self, use_train=False):
+    def analyze_raw_scores_irl_method(self, use_train=False):
         """
-        Analyze raw prediction scores from each model for original and detoxified texts.
+        Analyze raw prediction scores using the exact same methodology as in IRL training.
         
         Args:
             use_train: If True, analyze training set, otherwise test set
         """
         dataset_type = "TRAIN" if use_train else "TEST"
-        print(f"\nAnalyzing raw scores on {dataset_type} set...")
+        print(f"\nAnalyzing raw scores (IRL method) on {dataset_type} set...")
+        
+        # Import the exact scoring function from irl_utilities if available
+        try:
+            from irl_train import score_toxicity
+            use_irl_score_function = True
+            print("Using score_toxicity function from irl_train.py")
+        except ImportError:
+            use_irl_score_function = False
+            print("Could not import score_toxicity from irl_train.py, using direct model inference")
         
         # Select the appropriate dataset
         if use_train:
@@ -920,19 +929,45 @@ class RewardModelEnsembleAnalyzer:
         
         # Get predictions for each model
         for seed, model in self.reward_models.items():
-            # Get scores for original (toxic) texts
-            original_scores = self.get_model_predictions(
-                original_texts,
-                model, 
-                self.reward_tokenizers[seed]
-            )
+            # Score using the exact IRL method if available
+            if use_irl_score_function:
+                # Use the score_toxicity function from irl_train.py
+                original_scores = score_toxicity(original_texts, model, self.reward_tokenizers[seed], batch_size=self.batch_size)
+                detoxified_scores = score_toxicity(detoxified_texts, model, self.reward_tokenizers[seed], batch_size=self.batch_size)
+            else:
+                # Score directly using the model
+                original_scores = []
+                detoxified_scores = []
+                
+                # Process original texts
+                for text in original_texts:
+                    inputs = self.reward_tokenizers[seed](
+                        text, 
+                        return_tensors="pt", 
+                        truncation=True,
+                        max_length=self.max_length
+                    ).to(device)
+                    
+                    with torch.no_grad():
+                        score = model(inputs.input_ids, inputs.attention_mask).item()
+                    original_scores.append(score)
+                    
+                # Process detoxified texts
+                for text in detoxified_texts:
+                    inputs = self.reward_tokenizers[seed](
+                        text, 
+                        return_tensors="pt", 
+                        truncation=True,
+                        max_length=self.max_length
+                    ).to(device)
+                    
+                    with torch.no_grad():
+                        score = model(inputs.input_ids, inputs.attention_mask).item()
+                    detoxified_scores.append(score)
             
-            # Get scores for detoxified texts
-            detoxified_scores = self.get_model_predictions(
-                detoxified_texts,
-                model, 
-                self.reward_tokenizers[seed]
-            )
+            # Convert to numpy arrays
+            original_scores = np.array(original_scores)
+            detoxified_scores = np.array(detoxified_scores)
             
             # Calculate statistics
             original_mean = np.mean(original_scores)
@@ -944,81 +979,63 @@ class RewardModelEnsembleAnalyzer:
                 "detoxified_mean": float(detoxified_mean),
                 "score_difference": float(score_diff),
                 "original_std": float(np.std(original_scores)),
-                "detoxified_std": float(np.std(detoxified_scores))
+                "detoxified_std": float(np.std(detoxified_scores)),
+                "original_min": float(np.min(original_scores)),
+                "original_max": float(np.max(original_scores)),
+                "detoxified_min": float(np.min(detoxified_scores)),
+                "detoxified_max": float(np.max(detoxified_scores))
             }
             
-            print(f"Seed {seed} - Original mean: {original_mean:.4f}, Detoxified mean: {detoxified_mean:.4f}, Diff: {score_diff:.4f}")
+            print(f"Seed {seed} - Original mean: {original_mean:.4f} (range: {np.min(original_scores):.4f} to {np.max(original_scores):.4f})")
+            print(f"Seed {seed} - Detoxified mean: {detoxified_mean:.4f} (range: {np.min(detoxified_scores):.4f} to {np.max(detoxified_scores):.4f})")
+            print(f"Seed {seed} - Diff: {score_diff:.4f}")
         
         # Calculate ensemble scores (mean across models)
-        ensemble_original_scores = []
-        ensemble_detoxified_scores = []
-        
-        for seed in self.reward_models.keys():
-            # Get scores for original (toxic) texts
-            original_scores = self.get_model_predictions(
-                original_texts,
-                self.reward_models[seed], 
-                self.reward_tokenizers[seed]
-            )
+        if len(self.reward_models) > 0:
+            # Calculate ensemble statistics
+            ensemble_original_mean = np.mean([all_scores[seed]["original_mean"] for seed in self.reward_models.keys()])
+            ensemble_detoxified_mean = np.mean([all_scores[seed]["detoxified_mean"] for seed in self.reward_models.keys()])
+            ensemble_score_diff = ensemble_detoxified_mean - ensemble_original_mean
             
-            # Get scores for detoxified texts
-            detoxified_scores = self.get_model_predictions(
-                detoxified_texts,
-                self.reward_models[seed], 
-                self.reward_tokenizers[seed]
-            )
+            all_scores["ensemble"] = {
+                "original_mean": float(ensemble_original_mean),
+                "detoxified_mean": float(ensemble_detoxified_mean),
+                "score_difference": float(ensemble_score_diff)
+            }
             
-            ensemble_original_scores.append(original_scores)
-            ensemble_detoxified_scores.append(detoxified_scores)
-        
-        # Calculate mean across models
-        ensemble_original = np.mean(ensemble_original_scores, axis=0)
-        ensemble_detoxified = np.mean(ensemble_detoxified_scores, axis=0)
-        
-        # Calculate statistics for ensemble
-        ensemble_original_mean = np.mean(ensemble_original)
-        ensemble_detoxified_mean = np.mean(ensemble_detoxified)
-        ensemble_score_diff = ensemble_detoxified_mean - ensemble_original_mean
-        
-        all_scores["ensemble"] = {
-            "original_mean": float(ensemble_original_mean),
-            "detoxified_mean": float(ensemble_detoxified_mean),
-            "score_difference": float(ensemble_score_diff),
-            "original_std": float(np.std(ensemble_original)),
-            "detoxified_std": float(np.std(ensemble_detoxified))
-        }
-        
-        print(f"Ensemble - Original mean: {ensemble_original_mean:.4f}, Detoxified mean: {ensemble_detoxified_mean:.4f}, Diff: {ensemble_score_diff:.4f}")
+            print(f"Ensemble - Original mean: {ensemble_original_mean:.4f}, Detoxified mean: {ensemble_detoxified_mean:.4f}, Diff: {ensemble_score_diff:.4f}")
         
         # Save results
         file_prefix = "train_" if use_train else "test_"
-        with open(os.path.join(self.output_dir, f'{file_prefix}raw_scores.json'), 'w') as f:
+        with open(os.path.join(self.output_dir, f'{file_prefix}raw_scores_irl_method.json'), 'w') as f:
             json.dump(all_scores, f, indent=2)
         
         # Create a visualization
         plt.figure(figsize=(12, 6))
         
         # Set up data for plotting
-        seeds = list(self.reward_models.keys()) + ["ensemble"]
-        original_means = [all_scores[seed]["original_mean"] for seed in seeds]
-        detoxified_means = [all_scores[seed]["detoxified_mean"] for seed in seeds]
-        
-        x = np.arange(len(seeds))
-        width = 0.35
-        
-        # Create grouped bar chart
-        plt.bar(x - width/2, original_means, width, label='Original (Toxic)')
-        plt.bar(x + width/2, detoxified_means, width, label='Detoxified')
-        
-        plt.xlabel('Model Seed')
-        plt.ylabel('Mean Score')
-        plt.title(f'Raw Score Comparison ({dataset_type} Set, Pythia-{self.model_size})')
-        plt.xticks(x, seeds)
-        plt.legend()
-        plt.grid(axis='y', linestyle='--', alpha=0.7)
-        plt.tight_layout()
-        plt.savefig(os.path.join(self.output_dir, f'{file_prefix}raw_scores.png'))
-        plt.close()
+        seeds = list(self.reward_models.keys())
+        if len(seeds) > 0:
+            seeds.append("ensemble")
+            original_means = [all_scores[seed]["original_mean"] for seed in seeds]
+            detoxified_means = [all_scores[seed]["detoxified_mean"] for seed in seeds]
+            
+            x = np.arange(len(seeds))
+            width = 0.35
+            
+            # Create grouped bar chart
+            plt.bar(x - width/2, original_means, width, label='Original (Toxic)')
+            plt.bar(x + width/2, detoxified_means, width, label='Detoxified')
+            
+            plt.xlabel('Model Seed')
+            plt.ylabel('Mean Score')
+            plt.title(f'Raw Score Comparison - IRL Method ({dataset_type} Set, Pythia-{self.model_size})')
+            plt.xticks(x, seeds)
+            plt.legend()
+            plt.grid(axis='y', linestyle='--', alpha=0.7)
+            plt.tight_layout()
+            plt.savefig(os.path.join(self.output_dir, f'{file_prefix}raw_scores_irl_method.png'))
+            plt.close()
         
         return all_scores
         
@@ -1032,10 +1049,14 @@ class RewardModelEnsembleAnalyzer:
         results["correlations"] = self.analyze_model_correlations()
         self.analyze_feature_representations()
         
-        # Analyze raw scores on both train and test sets
+        # Analyze raw scores using both methods
         print("\n=== Analyzing Raw Scores ===")
         results["test_raw_scores"] = self.analyze_raw_scores(use_train=False)
         results["train_raw_scores"] = self.analyze_raw_scores(use_train=True)
+        
+        print("\n=== Analyzing Raw Scores (IRL Method) ===")
+        results["test_raw_scores_irl"] = self.analyze_raw_scores_irl_method(use_train=False)
+        results["train_raw_scores_irl"] = self.analyze_raw_scores_irl_method(use_train=True)
         
         # Evaluate on test set (default)
         print("\n=== Evaluating on TEST set ===")
