@@ -528,11 +528,19 @@ class RewardModelEnsembleAnalyzer:
             plt.savefig(os.path.join(self.output_dir, 'pca_all_embeddings.png'))
             plt.close()
         
-    def evaluate_individual_models(self):
+    def evaluate_individual_models(self, use_train=False):
         """
-        Evaluate each individual model's performance on the test dataset.
+        Evaluate each individual model's performance on the dataset.
+        
+        Args:
+            use_train: If True, evaluate on training set, otherwise on test set
         """
-        print("Evaluating individual models...")
+        dataset_type = "TRAIN" if use_train else "TEST"
+        print(f"Evaluating individual models on {dataset_type} set...")
+        
+        # Select the appropriate dataset
+        texts = self.train_texts if use_train else self.test_texts
+        labels = self.train_labels if use_train else self.test_labels
         
         results = {}
         
@@ -540,9 +548,9 @@ class RewardModelEnsembleAnalyzer:
         for seed, model in self.reward_models.items():
             print(f"Evaluating model with seed {seed}...")
             
-            # Get predictions on test set
+            # Get predictions
             predictions = self.get_model_predictions(
-                self.test_texts,  # Use test set
+                texts,
                 model, 
                 self.reward_tokenizers[seed]
             )
@@ -554,9 +562,9 @@ class RewardModelEnsembleAnalyzer:
             binary_preds = 1 - binary_preds  # Invert to match ground truth (1=toxic)
             
             # Calculate metrics
-            accuracy = accuracy_score(self.test_labels, binary_preds)
-            f1 = f1_score(self.test_labels, binary_preds)
-            auc_roc = roc_auc_score(self.test_labels, [-x for x in predictions])  # Invert for ROC
+            accuracy = accuracy_score(labels, binary_preds)
+            f1 = f1_score(labels, binary_preds)
+            auc_roc = roc_auc_score(labels, [-x for x in predictions])  # Invert for ROC
             
             # Store results
             results[seed] = {
@@ -568,9 +576,10 @@ class RewardModelEnsembleAnalyzer:
             }
             
             print(f"Seed {seed} - Accuracy: {accuracy:.4f}, F1: {f1:.4f}, AUC-ROC: {auc_roc:.4f}")
-            
+        
         # Save results
-        with open(os.path.join(self.output_dir, 'individual_model_results.json'), 'w') as f:
+        file_prefix = "train_" if use_train else "test_"
+        with open(os.path.join(self.output_dir, f'{file_prefix}individual_model_results.json'), 'w') as f:
             # Convert numpy arrays to lists for JSON serialization
             serializable_results = {}
             for seed, result in results.items():
@@ -579,7 +588,7 @@ class RewardModelEnsembleAnalyzer:
                     if k not in ["predictions", "binary_predictions"]
                 }
             json.dump(serializable_results, f, indent=2)
-            
+        
         # Plot performance comparison
         seeds = list(results.keys())
         accuracies = [results[seed]["accuracy"] for seed in seeds]
@@ -594,28 +603,36 @@ class RewardModelEnsembleAnalyzer:
         plt.bar(x, f1_scores, width, label='F1 Score')
         plt.bar(x + width, auc_scores, width, label='AUC-ROC')
         
-        plt.xlabel('Seed')
+        plt.xlabel('Model Seed')
         plt.ylabel('Score')
-        plt.title(f'Performance Metrics by Seed (Pythia-{self.model_size})')
+        plt.title(f'Individual Model Performance ({dataset_type} Set, Pythia-{self.model_size})')
         plt.xticks(x, seeds)
         plt.legend()
         plt.tight_layout()
-        plt.savefig(os.path.join(self.output_dir, 'individual_model_performance.png'))
+        plt.savefig(os.path.join(self.output_dir, f'{file_prefix}individual_performance.png'))
         plt.close()
         
         return results
         
-    def evaluate_ensemble_methods(self):
+    def evaluate_ensemble_methods(self, use_train=False):
         """
         Evaluate different ensemble methods for combining model predictions.
+        
+        Args:
+            use_train: If True, evaluate on training set, otherwise on test set
         """
-        print("Evaluating ensemble methods...")
+        dataset_type = "TRAIN" if use_train else "TEST"
+        print(f"Evaluating ensemble methods on {dataset_type} set...")
+        
+        # Select the appropriate dataset
+        texts = self.train_texts if use_train else self.test_texts
+        labels = self.train_labels if use_train else self.test_labels
         
         # Get predictions from all models
         all_predictions = {}
         for seed, model in self.reward_models.items():
             predictions = self.get_model_predictions(
-                self.all_texts, 
+                texts, 
                 model, 
                 self.reward_tokenizers[seed]
             )
@@ -644,9 +661,9 @@ class RewardModelEnsembleAnalyzer:
             binary_preds = 1 - binary_preds  # Invert to match ground truth (1=toxic)
             
             # Calculate metrics
-            accuracy = accuracy_score(self.all_labels, binary_preds)
-            f1 = f1_score(self.all_labels, binary_preds)
-            auc_roc = roc_auc_score(self.all_labels, [-x for x in ensemble_preds])  # Invert for ROC
+            accuracy = accuracy_score(labels, binary_preds)
+            f1 = f1_score(labels, binary_preds)
+            auc_roc = roc_auc_score(labels, [-x for x in ensemble_preds])  # Invert for ROC
             
             # Store results
             ensemble_results[method_name] = {
@@ -658,7 +675,8 @@ class RewardModelEnsembleAnalyzer:
             print(f"Ensemble ({method_name}) - Accuracy: {accuracy:.4f}, F1: {f1:.4f}, AUC-ROC: {auc_roc:.4f}")
             
         # Save results
-        with open(os.path.join(self.output_dir, 'ensemble_results.json'), 'w') as f:
+        file_prefix = "train_" if use_train else "test_"
+        with open(os.path.join(self.output_dir, f'{file_prefix}ensemble_results.json'), 'w') as f:
             json.dump(ensemble_results, f, indent=2)
             
         # Plot performance comparison
@@ -681,11 +699,11 @@ class RewardModelEnsembleAnalyzer:
         plt.xticks(x, methods)
         plt.legend()
         plt.tight_layout()
-        plt.savefig(os.path.join(self.output_dir, 'ensemble_performance.png'))
+        plt.savefig(os.path.join(self.output_dir, f'{file_prefix}ensemble_performance.png'))
         plt.close()
         
         # Compare best ensemble with best individual model
-        individual_results = self.evaluate_individual_models()
+        individual_results = self.evaluate_individual_models(use_train=use_train)
         best_individual_seed = max(individual_results.keys(), key=lambda s: individual_results[s]["auc_roc"])
         best_individual = individual_results[best_individual_seed]
         
@@ -704,7 +722,7 @@ class RewardModelEnsembleAnalyzer:
         }
         
         # Save comparison
-        with open(os.path.join(self.output_dir, 'best_model_comparison.json'), 'w') as f:
+        with open(os.path.join(self.output_dir, f'{file_prefix}best_model_comparison.json'), 'w') as f:
             # Remove predictions from the output
             if "predictions" in comparison["best_individual"]:
                 del comparison["best_individual"]["predictions"]
@@ -725,17 +743,25 @@ class RewardModelEnsembleAnalyzer:
         
         return ensemble_results, comparison
         
-    def analyze_error_patterns(self):
+    def analyze_error_patterns(self, use_train=False):
         """
         Analyze patterns in model errors to understand where models disagree.
+        
+        Args:
+            use_train: If True, analyze training set, otherwise test set
         """
-        print("Analyzing error patterns...")
+        dataset_type = "TRAIN" if use_train else "TEST"
+        print(f"Analyzing error patterns on {dataset_type} set...")
+        
+        # Select the appropriate dataset
+        texts = self.train_texts if use_train else self.test_texts
+        labels = self.train_labels if use_train else self.test_labels
         
         # Get predictions from all models
         all_model_preds = {}
         for seed, model in self.reward_models.items():
             predictions = self.get_model_predictions(
-                self.test_texts,  # Use test set for evaluation
+                texts, 
                 model, 
                 self.reward_tokenizers[seed]
             )
@@ -749,7 +775,7 @@ class RewardModelEnsembleAnalyzer:
         
         # Create a DataFrame with all predictions
         df = pd.DataFrame(all_model_preds)
-        df['true_label'] = self.test_labels
+        df['true_label'] = labels
         
         # Calculate disagreement rate between models
         model_cols = [col for col in df.columns if col != 'true_label']
@@ -799,76 +825,52 @@ class RewardModelEnsembleAnalyzer:
         # Run all analyses
         results["correlations"] = self.analyze_model_correlations()
         self.analyze_feature_representations()
-        results["individual_performance"] = self.evaluate_individual_models()
-        results["ensemble_performance"], results["best_comparison"] = self.evaluate_ensemble_methods()
-        results["error_patterns"] = self.analyze_error_patterns()
+        
+        # Evaluate on test set (default)
+        print("\n=== Evaluating on TEST set ===")
+        results["test_individual_performance"] = self.evaluate_individual_models(use_train=False)
+        results["test_ensemble_performance"], results["test_best_comparison"] = self.evaluate_ensemble_methods(use_train=False)
+        results["test_error_patterns"] = self.analyze_error_patterns(use_train=False)
+        
+        # Evaluate on train set
+        print("\n=== Evaluating on TRAIN set ===")
+        results["train_individual_performance"] = self.evaluate_individual_models(use_train=True)
+        results["train_ensemble_performance"], results["train_best_comparison"] = self.evaluate_ensemble_methods(use_train=True)
+        results["train_error_patterns"] = self.analyze_error_patterns(use_train=True)
         
         # Save summary results
         summary = {
             "model_size": self.model_size,
             "seeds": self.seeds,
             "num_models": len(self.reward_models),
-            "dataset_size": len(self.all_texts) // 2,  # Divide by 2 because we have original + detoxified
+            "dataset_size": {
+                "train": len(self.train_texts) // 2,  # Divide by 2 because we have original + detoxified
+                "test": len(self.test_texts) // 2
+            }
         }
         
+        # Extract key correlation metrics
         if isinstance(results["correlations"], pd.DataFrame):
-            # Extract key correlation metrics
+            model_cols = [f"seed_{seed}" for seed in self.seeds if seed in self.reward_models]
+            
             if len(model_cols) > 1:
                 model_corr = results["correlations"].loc[model_cols, model_cols]
                 avg_model_corr = (model_corr.sum().sum() - len(model_cols)) / (len(model_cols) * (len(model_cols) - 1))
                 summary["average_model_correlation"] = avg_model_corr
                 
             if "ground_truth" in results["correlations"].columns:
-                gt_corr = results["correlations"].loc["ground_truth", model_cols].mean()
+                gt_corr = results["correlations"].loc[model_cols, "ground_truth"].mean()
                 summary["average_ground_truth_correlation"] = gt_corr
                 
             if "true_label" in results["correlations"].columns:
-                label_corr = results["correlations"].loc["true_label", model_cols].mean()
+                label_corr = results["correlations"].loc[model_cols, "true_label"].mean()
                 summary["average_label_correlation"] = label_corr
         
-        # Add ensemble improvement metrics
-        if "best_comparison" in results:
-            best_individual = results["best_comparison"]["best_individual"]
-            best_ensemble = results["best_comparison"]["best_ensemble"]
-            
-            # Calculate improvement percentages
-            accuracy_improvement = (best_ensemble["accuracy"] - best_individual["accuracy"]) / best_individual["accuracy"] * 100
-            f1_improvement = (best_ensemble["f1"] - best_individual["f1"]) / best_individual["f1"] * 100
-            auc_improvement = (best_ensemble["auc_roc"] - best_individual["auc_roc"]) / best_individual["auc_roc"] * 100
-            
-            summary["ensemble_improvements"] = {
-                "accuracy_improvement_percent": accuracy_improvement,
-                "f1_improvement_percent": f1_improvement,
-                "auc_improvement_percent": auc_improvement,
-                "best_individual_seed": best_individual["seed"],
-                "best_ensemble_method": best_ensemble["method"]
-            }
-            
-        # Add error pattern metrics
-        if "error_patterns" in results:
-            summary["disagreement_rate"] = results["error_patterns"]["disagreement_rate"]
-            summary["all_wrong_count"] = results["error_patterns"]["all_wrong_count"]
-            summary["some_right_count"] = results["error_patterns"]["some_right_count"]
-            
         # Save summary
         with open(os.path.join(self.output_dir, 'analysis_summary.json'), 'w') as f:
             json.dump(summary, f, indent=2)
             
-        print("\nAnalysis Summary:")
-        for key, value in summary.items():
-            if isinstance(value, dict):
-                print(f"{key}:")
-                for subkey, subvalue in value.items():
-                    if isinstance(subvalue, float):
-                        print(f"  {subkey}: {subvalue:.4f}")
-                    else:
-                        print(f"  {subkey}: {subvalue}")
-            elif isinstance(value, float):
-                print(f"{key}: {value:.4f}")
-            else:
-                print(f"{key}: {value}")
-                
-        return summary
+        return results
 
 
 def analyze_across_model_sizes(
