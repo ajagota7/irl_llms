@@ -109,67 +109,96 @@ class RewardModelEnsembleAnalyzer:
                 # Create reward model using the same architecture as in IRL training
                 model = RewardModel(base_model_name, device=device, num_unfrozen_layers=0)
                 
-                # Try different file paths for the checkpoint
+                # Try to load the model directly from the HF Hub
                 try:
-                    # First try the standard path
-                    checkpoint_path = hf_hub_download(
-                        repo_id=model_id,
-                        filename="pytorch_model.bin"
-                    )
-                except Exception as e1:
+                    print(f"Attempting to load full model from {model_id}")
+                    # Try to load the full model directly
+                    from_pretrained_kwargs = {
+                        "torch_dtype": torch.float16 if torch.cuda.is_available() else torch.float32,
+                        "device_map": "auto" if torch.cuda.is_available() else None,
+                    }
+                    
+                    # Try to load the full model directly
+                    model = RewardModel.from_pretrained(model_id, **from_pretrained_kwargs)
+                    print(f"Successfully loaded full model for seed {seed}")
+                except Exception as e:
+                    print(f"Could not load full model: {e}")
+                    print("Trying to load state dict instead...")
+                    
+                    # Try different file paths for the checkpoint
                     try:
-                        # Try the model.safetensors path
+                        # First try the standard path
                         checkpoint_path = hf_hub_download(
                             repo_id=model_id,
-                            filename="model.safetensors"
+                            filename="pytorch_model.bin"
                         )
-                    except Exception as e2:
-                        # Try to list files in the repo to find the right path
+                    except Exception as e1:
                         try:
-                            files = list_repo_files(model_id)
-                            print(f"Files in repository {model_id}: {files}")
-                            
-                            # Look for files that might contain model weights
-                            model_files = [f for f in files if f.endswith('.bin') or f.endswith('.pt') or f.endswith('.safetensors')]
-                            
-                            if model_files:
-                                checkpoint_path = hf_hub_download(
-                                    repo_id=model_id,
-                                    filename=model_files[0]
-                                )
-                            else:
-                                raise ValueError(f"No model files found in repository {model_id}")
-                        except Exception as e3:
-                            print(f"Could not find model files: {e3}")
-                            raise ValueError(f"Failed to load model for seed {seed}: {e1}, {e2}, {e3}")
-                
-                # Load state dict
-                if checkpoint_path.endswith('.safetensors'):
-                    from safetensors import safe_open
-                    with safe_open(checkpoint_path, framework="pt") as f:
-                        state_dict = {key: f.get_tensor(key) for key in f.keys()}
-                else:
-                    state_dict = torch.load(checkpoint_path, map_location=device)
-                
-                # If the state dict has a 'v_head' key, use it directly
-                if 'v_head' in state_dict:
-                    model.v_head.load_state_dict(state_dict['v_head'])
-                # Otherwise, try to extract the value head weights from the full state dict
-                else:
-                    # Look for the value head weights in the state dict
-                    v_head_weights = {k: v for k, v in state_dict.items() if 'v_head' in k or 'score' in k}
+                            # Try the model.safetensors path
+                            checkpoint_path = hf_hub_download(
+                                repo_id=model_id,
+                                filename="model.safetensors"
+                            )
+                        except Exception as e2:
+                            # Try to list files in the repo to find the right path
+                            try:
+                                files = list_repo_files(model_id)
+                                print(f"Files in repository {model_id}: {files}")
+                                
+                                # Look for files that might contain model weights
+                                model_files = [f for f in files if f.endswith('.bin') or f.endswith('.pt') or f.endswith('.safetensors')]
+                                
+                                if model_files:
+                                    checkpoint_path = hf_hub_download(
+                                        repo_id=model_id,
+                                        filename=model_files[0]
+                                    )
+                                else:
+                                    raise ValueError(f"No model files found in repository {model_id}")
+                            except Exception as e3:
+                                print(f"Could not find model files: {e3}")
+                                raise ValueError(f"Failed to load model for seed {seed}: {e1}, {e2}, {e3}")
+                    
+                    # Load state dict
+                    if checkpoint_path.endswith('.safetensors'):
+                        from safetensors import safe_open
+                        with safe_open(checkpoint_path, framework="pt") as f:
+                            state_dict = {key: f.get_tensor(key) for key in f.keys()}
+                    else:
+                        state_dict = torch.load(checkpoint_path, map_location=device)
+                    
+                    # Look for value head weights with different possible prefixes
+                    v_head_weights = {}
+                    v_head_prefixes = ['v_head.', 'reward_model.v_head.', 'score.', 'reward_model.score.', '']
+                    
+                    for prefix in v_head_prefixes:
+                        v_head_keys = [k for k in state_dict.keys() if k.startswith(prefix) and ('weight' in k or 'bias' in k)]
+                        if v_head_keys:
+                            print(f"Found value head keys with prefix '{prefix}': {v_head_keys}")
+                            for k in v_head_keys:
+                                # Remove the prefix to match the model's v_head keys
+                                new_key = k.replace(prefix, '')
+                                v_head_weights[new_key] = state_dict[k]
+                            break
+                    
                     if v_head_weights:
-                        # Rename keys if needed
-                        renamed_weights = {}
-                        for k, v in v_head_weights.items():
-                            if 'score.weight' in k:
-                                renamed_weights['weight'] = v
-                            elif 'score.bias' in k:
-                                renamed_weights['bias'] = v
-                            else:
-                                renamed_weights[k.split('.')[-1]] = v
-                        
-                        model.v_head.load_state_dict(renamed_weights)
+                        print(f"Loading value head weights: {list(v_head_weights.keys())}")
+                        # Try to load the weights into the v_head
+                        try:
+                            model.v_head.load_state_dict(v_head_weights)
+                            print(f"Successfully loaded value head weights for seed {seed}")
+                        except Exception as e:
+                            print(f"Error loading value head weights: {e}")
+                            print(f"Value head state dict keys: {model.v_head.state_dict().keys()}")
+                            print(f"Loaded weights keys: {v_head_weights.keys()}")
+                            
+                            # Try to manually set the weights
+                            if 'weight' in v_head_weights and hasattr(model.v_head, 'weight'):
+                                model.v_head.weight.data.copy_(v_head_weights['weight'])
+                                print("Manually set weight")
+                            if 'bias' in v_head_weights and hasattr(model.v_head, 'bias'):
+                                model.v_head.bias.data.copy_(v_head_weights['bias'])
+                                print("Manually set bias")
                     else:
                         print(f"Warning: Could not find value head weights for seed {seed}")
                         print(f"Available keys: {list(state_dict.keys())[:10]}...")
