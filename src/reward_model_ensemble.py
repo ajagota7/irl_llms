@@ -134,122 +134,114 @@ class RewardModelEnsembleAnalyzer:
         print("Loading datasets...")
         
         try:
-            # Function to safely load a dataset from HuggingFace
+            # Define a helper function to load datasets
             def safe_load_dataset(dataset_path):
                 print(f"Loading dataset: {dataset_path}")
                 
+                # Try multiple methods to load the dataset
                 try:
-                    # Try different approaches to load the dataset
+                    # Method 1: Standard loading
                     try:
-                        # First try: standard load_dataset with force_redownload
                         ds = load_dataset(dataset_path, download_mode="force_redownload")
+                        if isinstance(ds, dict) and 'train' in ds:
+                            return ds['train']
+                        return ds
                     except Exception as e1:
                         print(f"Standard loading failed: {e1}")
+                
+                    # Method 2: With auth token
+                    try:
+                        ds = load_dataset(dataset_path, use_auth_token=True)
+                        if isinstance(ds, dict) and 'train' in ds:
+                            return ds['train']
+                        return ds
+                    except Exception as e2:
+                        print(f"Loading with auth token failed: {e2}")
+                
+                    # Method 3: Streaming mode
+                    try:
+                        ds = load_dataset(dataset_path, streaming=True)
+                        return list(ds.take(10000))  # Take a large number to ensure we get all data
+                    except Exception as e3:
+                        print(f"Streaming mode failed: {e3}")
+                
+                    # Method 4: Direct file download
+                    files = list_repo_files(dataset_path, repo_type="dataset")
+                    print(f"Files in repository: {files}")
+                    
+                    # Look for data files
+                    data_files = [f for f in files if f.endswith(('.json', '.csv', '.parquet', '.jsonl'))]
+                    
+                    if not data_files:
+                        raise ValueError(f"No data files found in repository: {dataset_path}")
                         
-                        # Second try: with use_auth_token
-                        try:
-                            ds = load_dataset(dataset_path, use_auth_token=True)
-                        except Exception as e2:
-                            print(f"Loading with auth token failed: {e2}")
-                            
-                            # Third try: with streaming mode
-                            try:
-                                ds = load_dataset(dataset_path, streaming=True)
-                                # Convert streaming dataset to regular dataset
-                                ds = ds.take(10000)  # Take a large number to ensure we get all data
-                                ds = list(ds)
-                                return ds
-                            except Exception as e3:
-                                print(f"Streaming mode failed: {e3}")
-                                
-                                # Last resort: try to list files in the repo and download directly
-                                try:
-                                    files = list_repo_files(dataset_path, repo_type="dataset")
-                                    print(f"Files in repository: {files}")
-                                    
-                                    # Look for data files
-                                    data_files = [f for f in files if f.endswith(('.json', '.csv', '.parquet', '.jsonl'))]
-                                    
-                                    if data_files:
-                                        # Download the first data file
-                                        file_path = hf_hub_download(
-                                            repo_id=dataset_path,
-                                            filename=data_files[0],
-                                            repo_type="dataset"
-                                        )
-                                        
-                                        # Load based on file extension
-                                        if file_path.endswith('.json') or file_path.endswith('.jsonl'):
-                                            with open(file_path, 'r') as f:
-                                                data = json.load(f)
-                                            return data
-                                        elif file_path.endswith('.csv'):
-                                            df = pd.read_csv(file_path)
-                                            return df.to_dict('records')
-                                        elif file_path.endswith('.parquet'):
-                                            df = pd.read_parquet(file_path)
-                                            return df.to_dict('records')
-                                    else:
-                                        raise ValueError(f"No data files found in repository: {dataset_path}")
-                                except Exception as e4:
-                                    print(f"Direct file download failed: {e4}")
-                                    raise ValueError(f"All attempts to load dataset failed: {dataset_path}")
-                
-                # If we got here, one of the first two methods worked
-                if isinstance(ds, dict) and 'train' in ds:
-                    return ds['train']
-                else:
-                    return ds
-                
-            except Exception as e:
-                print(f"Error loading dataset {dataset_path}: {e}")
-                raise
-        
-        # Load original dataset
-        original_data = safe_load_dataset(self.original_dataset)
-        
-        # Convert to list if it's a Dataset object
-        if hasattr(original_data, 'to_pandas'):
-            self.original_data = original_data.to_pandas().to_dict('records')
-        else:
-            self.original_data = original_data
-        
-        # Load detoxified dataset
-        detoxified_data = safe_load_dataset(self.detoxified_dataset)
-        
-        # Convert to list if it's a Dataset object
-        if hasattr(detoxified_data, 'to_pandas'):
-            self.detoxified_data = detoxified_data.to_pandas().to_dict('records')
-        else:
-            self.detoxified_data = detoxified_data
-        
-        # Verify data lengths match
-        if len(self.original_data) != len(self.detoxified_data):
-            print("Warning: Dataset lengths don't match!")
-            # Use the smaller length
-            min_len = min(len(self.original_data), len(self.detoxified_data))
-            self.original_data = self.original_data[:min_len]
-            self.detoxified_data = self.detoxified_data[:min_len]
-        
-        print(f"Loaded {len(self.original_data)} paired samples")
-        
-        # Create a combined dataset with labels
-        self.all_texts = []
-        self.all_labels = []  # 1 for toxic (original), 0 for non-toxic (detoxified)
-        
-        # Add original (toxic) examples
-        for item in self.original_data:
-            self.all_texts.append(item['output'])
-            self.all_labels.append(1)  # Toxic
-        
-        # Add detoxified examples
-        for item in self.detoxified_data:
-            self.all_texts.append(item['output'])
-            self.all_labels.append(0)  # Non-toxic
+                    # Download the first data file
+                    file_path = hf_hub_download(
+                        repo_id=dataset_path,
+                        filename=data_files[0],
+                        repo_type="dataset"
+                    )
+                    
+                    # Load based on file extension
+                    if file_path.endswith('.json') or file_path.endswith('.jsonl'):
+                        with open(file_path, 'r') as f:
+                            return json.load(f)
+                    elif file_path.endswith('.csv'):
+                        return pd.read_csv(file_path).to_dict('records')
+                    elif file_path.endswith('.parquet'):
+                        return pd.read_parquet(file_path).to_dict('records')
+                    else:
+                        raise ValueError(f"Unsupported file format: {file_path}")
+                        
+                except Exception as e:
+                    print(f"All loading methods failed: {e}")
+                    raise ValueError(f"Could not load dataset: {dataset_path}")
             
-    except Exception as e:
-        print(f"Error loading datasets: {e}")
-        raise
+            # Load original dataset
+            original_data = safe_load_dataset(self.original_dataset)
+            
+            # Convert to list if it's a Dataset object
+            if hasattr(original_data, 'to_pandas'):
+                self.original_data = original_data.to_pandas().to_dict('records')
+            else:
+                self.original_data = original_data
+            
+            # Load detoxified dataset
+            detoxified_data = safe_load_dataset(self.detoxified_dataset)
+            
+            # Convert to list if it's a Dataset object
+            if hasattr(detoxified_data, 'to_pandas'):
+                self.detoxified_data = detoxified_data.to_pandas().to_dict('records')
+            else:
+                self.detoxified_data = detoxified_data
+            
+            # Verify data lengths match
+            if len(self.original_data) != len(self.detoxified_data):
+                print("Warning: Dataset lengths don't match!")
+                # Use the smaller length
+                min_len = min(len(self.original_data), len(self.detoxified_data))
+                self.original_data = self.original_data[:min_len]
+                self.detoxified_data = self.detoxified_data[:min_len]
+            
+            print(f"Loaded {len(self.original_data)} paired samples")
+            
+            # Create a combined dataset with labels
+            self.all_texts = []
+            self.all_labels = []  # 1 for toxic (original), 0 for non-toxic (detoxified)
+            
+            # Add original (toxic) examples
+            for item in self.original_data:
+                self.all_texts.append(item['output'])
+                self.all_labels.append(1)  # Toxic
+            
+            # Add detoxified examples
+            for item in self.detoxified_data:
+                self.all_texts.append(item['output'])
+                self.all_labels.append(0)  # Non-toxic
+                
+        except Exception as e:
+            print(f"Error loading datasets: {e}")
+            raise
         
     def get_model_predictions(self, texts: List[str], model, tokenizer) -> np.ndarray:
         """
