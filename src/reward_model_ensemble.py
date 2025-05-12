@@ -82,8 +82,11 @@ class RewardModelEnsembleAnalyzer:
         self._load_data()
         
     def _load_reward_models(self):
-        """Load all reward models for the specified seeds."""
+        """Load all reward models for the specified seeds using the same architecture as in IRL training."""
         print(f"Loading reward models for pythia-{self.model_size}...")
+        
+        # Import the RewardModel class from irl_utilities
+        from irl_utilities import RewardModel
         
         self.reward_models = {}
         self.reward_tokenizers = {}
@@ -93,15 +96,50 @@ class RewardModelEnsembleAnalyzer:
             
             try:
                 # Load tokenizer
-                tokenizer = AutoTokenizer.from_pretrained(model_id)
+                tokenizer = AutoTokenizer.from_pretrained(f"EleutherAI/pythia-{self.model_size}")
                 
                 # Ensure consistent padding configuration
                 if tokenizer.pad_token is None:
                     tokenizer.pad_token = tokenizer.eos_token
                 tokenizer.padding_side = 'left'
                 
-                # Load model
-                model = AutoModelForSequenceClassification.from_pretrained(model_id)
+                # Create base model name
+                base_model_name = f"EleutherAI/pythia-{self.model_size}"
+                
+                # Create reward model using the same architecture as in IRL training
+                model = RewardModel(base_model_name, device=device)
+                
+                # Load the trained value head weights
+                checkpoint_path = hf_hub_download(
+                    repo_id=model_id,
+                    filename="pytorch_model.bin"
+                )
+                
+                # Load state dict
+                state_dict = torch.load(checkpoint_path, map_location=device)
+                
+                # If the state dict has a 'v_head' key, use it directly
+                if 'v_head' in state_dict:
+                    model.v_head.load_state_dict(state_dict['v_head'])
+                # Otherwise, try to extract the value head weights from the full state dict
+                else:
+                    # Look for the value head weights in the state dict
+                    v_head_weights = {k: v for k, v in state_dict.items() if 'v_head' in k or 'score' in k}
+                    if v_head_weights:
+                        # Rename keys if needed
+                        renamed_weights = {}
+                        for k, v in v_head_weights.items():
+                            if 'score.weight' in k:
+                                renamed_weights['weight'] = v
+                            elif 'score.bias' in k:
+                                renamed_weights['bias'] = v
+                            else:
+                                renamed_weights[k.split('.')[-1]] = v
+                        
+                        model.v_head.load_state_dict(renamed_weights)
+                    else:
+                        print(f"Warning: Could not find value head weights for seed {seed}")
+                
                 model.to(device)
                 model.eval()
                 
@@ -111,6 +149,8 @@ class RewardModelEnsembleAnalyzer:
                 print(f"Successfully loaded model for seed {seed}")
             except Exception as e:
                 print(f"Error loading model for seed {seed}: {e}")
+                import traceback
+                traceback.print_exc()
                 continue
                 
         print(f"Loaded {len(self.reward_models)} reward models")
@@ -312,16 +352,23 @@ class RewardModelEnsembleAnalyzer:
                 
                 # Get predictions
                 with torch.no_grad():
-                    outputs = model(**inputs)
-                    
-                # Extract scores based on model type
-                if hasattr(outputs, "rewards"):
-                    scores = outputs.rewards.squeeze().cpu().numpy()
-                elif hasattr(outputs, "logits"):
-                    scores = outputs.logits[:, 0].cpu().numpy()
-                else:
-                    raise ValueError(f"Unexpected model output format: {type(outputs)}")
-                    
+                    # Check if it's our custom RewardModel or a standard model
+                    if hasattr(model, 'v_head'):
+                        # Custom RewardModel from irl_utilities
+                        outputs = model(inputs.input_ids, inputs.attention_mask)
+                        scores = outputs.squeeze().cpu().numpy()
+                    else:
+                        # Standard model
+                        outputs = model(**inputs)
+                        
+                        # Extract scores based on model type
+                        if hasattr(outputs, "rewards"):
+                            scores = outputs.rewards.squeeze().cpu().numpy()
+                        elif hasattr(outputs, "logits"):
+                            scores = outputs.logits[:, 0].cpu().numpy()
+                        else:
+                            raise ValueError(f"Unexpected model output format: {type(outputs)}")
+                
                 # Handle single item case
                 if not isinstance(scores, np.ndarray):
                     scores = np.array([scores])
@@ -341,16 +388,23 @@ class RewardModelEnsembleAnalyzer:
                     
                     # Get predictions
                     with torch.no_grad():
-                        outputs = model(**inputs)
-                        
-                    # Extract scores based on model type
-                    if hasattr(outputs, "rewards"):
-                        score = outputs.rewards.squeeze().cpu().numpy()
-                    elif hasattr(outputs, "logits"):
-                        score = outputs.logits[:, 0].cpu().numpy()
-                    else:
-                        raise ValueError(f"Unexpected model output format: {type(outputs)}")
-                        
+                        # Check if it's our custom RewardModel or a standard model
+                        if hasattr(model, 'v_head'):
+                            # Custom RewardModel from irl_utilities
+                            outputs = model(inputs.input_ids, inputs.attention_mask)
+                            score = outputs.squeeze().cpu().numpy()
+                        else:
+                            # Standard model
+                            outputs = model(**inputs)
+                            
+                            # Extract scores based on model type
+                            if hasattr(outputs, "rewards"):
+                                score = outputs.rewards.squeeze().cpu().numpy()
+                            elif hasattr(outputs, "logits"):
+                                score = outputs.logits[:, 0].cpu().numpy()
+                            else:
+                                raise ValueError(f"Unexpected model output format: {type(outputs)}")
+                    
                     # Add to batch scores
                     batch_scores.append(score.item() if hasattr(score, 'item') else score)
                     
