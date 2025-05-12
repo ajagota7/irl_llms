@@ -268,34 +268,61 @@ class RewardModelEnsembleAnalyzer:
         for i in range(0, len(texts), self.batch_size):
             batch_texts = texts[i:i+self.batch_size]
             
-            # Tokenize
-            inputs = tokenizer(
-                batch_texts,
-                return_tensors="pt",
-                padding=True,
-                truncation=True,
-                max_length=self.max_length
-            ).to(device)
-            
-            # Get predictions
-            with torch.no_grad():
-                outputs = model(**inputs)
+            # For single item batches, no need for padding
+            if len(batch_texts) == 1:
+                # Tokenize without padding
+                inputs = tokenizer(
+                    batch_texts[0],
+                    return_tensors="pt",
+                    truncation=True,
+                    max_length=self.max_length
+                ).to(device)
                 
-            # For reward models, we expect a single score
-            if hasattr(outputs, "rewards"):
-                scores = outputs.rewards.squeeze().cpu().numpy()
-            # For classification models like the ground truth model
-            elif hasattr(outputs, "logits"):
-                # Use the first logit (non-toxic) as the score
-                scores = outputs.logits[:, 0].cpu().numpy()
+                # Get predictions
+                with torch.no_grad():
+                    outputs = model(**inputs)
+                    
+                # Extract scores based on model type
+                if hasattr(outputs, "rewards"):
+                    scores = outputs.rewards.squeeze().cpu().numpy()
+                elif hasattr(outputs, "logits"):
+                    scores = outputs.logits[:, 0].cpu().numpy()
+                else:
+                    raise ValueError(f"Unexpected model output format: {type(outputs)}")
+                    
+                # Handle single item case
+                if not isinstance(scores, np.ndarray):
+                    scores = np.array([scores])
+                    
+                all_predictions.extend(scores)
             else:
-                raise ValueError(f"Unexpected model output format: {type(outputs)}")
-                
-            # Handle single item case
-            if not isinstance(scores, np.ndarray):
-                scores = np.array([scores])
-                
-            all_predictions.extend(scores)
+                # Process each text individually to avoid padding issues
+                batch_scores = []
+                for text in batch_texts:
+                    # Tokenize without padding
+                    inputs = tokenizer(
+                        text,
+                        return_tensors="pt",
+                        truncation=True,
+                        max_length=self.max_length
+                    ).to(device)
+                    
+                    # Get predictions
+                    with torch.no_grad():
+                        outputs = model(**inputs)
+                        
+                    # Extract scores based on model type
+                    if hasattr(outputs, "rewards"):
+                        score = outputs.rewards.squeeze().cpu().numpy()
+                    elif hasattr(outputs, "logits"):
+                        score = outputs.logits[:, 0].cpu().numpy()
+                    else:
+                        raise ValueError(f"Unexpected model output format: {type(outputs)}")
+                        
+                    # Add to batch scores
+                    batch_scores.append(score.item() if hasattr(score, 'item') else score)
+                    
+                all_predictions.extend(batch_scores)
             
         return np.array(all_predictions)
         
