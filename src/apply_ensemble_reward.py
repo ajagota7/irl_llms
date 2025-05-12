@@ -116,78 +116,117 @@ def apply_ensemble_to_dataset(
     try:
         print(f"Loading dataset: {dataset_path}")
         
-        # Use the Hugging Face Hub API to download the dataset files directly
-        import pandas as pd
-        import json
-        
+        # Try different approaches to load the dataset
         try:
-            # Try to download the dataset file (assuming it's a JSON file)
-            file_path = hf_hub_download(
-                repo_id=dataset_path,
-                filename="data/train.json",  # Common filename pattern
-                repo_type="dataset"
-            )
-            
-            # Load the JSON file
-            with open(file_path, 'r') as f:
-                data = json.load(f)
-            
-            # Extract texts
-            if isinstance(data, list) and len(data) > 0:
-                if text_column in data[0]:
-                    texts = [item[text_column] for item in data]
-                elif 'output' in data[0]:  # Fallback to 'output' if text_column not found
-                    texts = [item['output'] for item in data]
-                else:
-                    raise ValueError(f"Column '{text_column}' not found in dataset")
-            else:
-                raise ValueError("Invalid dataset format")
-                
+            # First try: standard load_dataset with force_redownload
+            ds = load_dataset(dataset_path, download_mode="force_redownload")
         except Exception as e1:
-            print(f"Error downloading JSON file: {e1}")
+            print(f"Standard loading failed: {e1}")
+            
+            # Second try: with use_auth_token
             try:
-                # Try to download as a CSV file
-                file_path = hf_hub_download(
-                    repo_id=dataset_path,
-                    filename="data/train.csv",  # Common filename pattern
-                    repo_type="dataset"
-                )
+                ds = load_dataset(dataset_path, use_auth_token=True)
+            except Exception as e2:
+                print(f"Loading with auth token failed: {e2}")
                 
-                # Load the CSV file
-                df = pd.read_csv(file_path)
+                # Third try: with streaming mode
+                try:
+                    ds = load_dataset(dataset_path, streaming=True)
+                    # Convert streaming dataset to regular dataset
+                    ds = ds.take(10000)  # Take a large number to ensure we get all data
+                    ds = list(ds)
+                except Exception as e3:
+                    print(f"Streaming mode failed: {e3}")
+                    
+                    # Last resort: try to list files in the repo and download directly
+                    from huggingface_hub import list_repo_files
+                    try:
+                        files = list_repo_files(dataset_path, repo_type="dataset")
+                        print(f"Files in repository: {files}")
+                        
+                        # Look for data files
+                        data_files = [f for f in files if f.endswith(('.json', '.csv', '.parquet', '.jsonl'))]
+                        
+                        if data_files:
+                            # Download the first data file
+                            import pandas as pd
+                            import json
+                            
+                            file_path = hf_hub_download(
+                                repo_id=dataset_path,
+                                filename=data_files[0],
+                                repo_type="dataset"
+                            )
+                            
+                            # Load based on file extension
+                            if file_path.endswith('.json') or file_path.endswith('.jsonl'):
+                                with open(file_path, 'r') as f:
+                                    data = json.load(f)
+                                
+                                # Extract texts
+                                if isinstance(data, list) and len(data) > 0:
+                                    if text_column in data[0]:
+                                        texts = [item[text_column] for item in data]
+                                    elif 'output' in data[0]:  # Fallback to 'output' if text_column not found
+                                        texts = [item['output'] for item in data]
+                                    else:
+                                        raise ValueError(f"Column '{text_column}' not found in dataset")
+                                else:
+                                    raise ValueError("Invalid dataset format")
+                                    
+                            elif file_path.endswith('.csv'):
+                                df = pd.read_csv(file_path)
+                                
+                                # Extract texts
+                                if text_column in df.columns:
+                                    texts = df[text_column].tolist()
+                                elif 'output' in df.columns:  # Fallback to 'output' if text_column not found
+                                    texts = df['output'].tolist()
+                                else:
+                                    raise ValueError(f"Column '{text_column}' not found in dataset")
+                                    
+                            elif file_path.endswith('.parquet'):
+                                df = pd.read_parquet(file_path)
+                                
+                                # Extract texts
+                                if text_column in df.columns:
+                                    texts = df[text_column].tolist()
+                                elif 'output' in df.columns:  # Fallback to 'output' if text_column not found
+                                    texts = df['output'].tolist()
+                                else:
+                                    raise ValueError(f"Column '{text_column}' not found in dataset")
+                        else:
+                            raise ValueError(f"No data files found in repository: {dataset_path}")
+                    except Exception as e4:
+                        print(f"Direct file download failed: {e4}")
+                        raise ValueError(f"All attempts to load dataset failed: {dataset_path}")
+        
+        # Process the dataset if we haven't already extracted texts
+        if 'texts' not in locals():
+            if isinstance(ds, list):
+                # Dataset is already a list of dictionaries
+                data = ds
                 
                 # Extract texts
-                if text_column in df.columns:
-                    texts = df[text_column].tolist()
-                elif 'output' in df.columns:  # Fallback to 'output' if text_column not found
-                    texts = df['output'].tolist()
-                else:
-                    raise ValueError(f"Column '{text_column}' not found in dataset")
-                    
-            except Exception as e2:
-                print(f"Error downloading CSV file: {e2}")
-                try:
-                    # Try to download as a Parquet file
-                    file_path = hf_hub_download(
-                        repo_id=dataset_path,
-                        filename="data/train.parquet",  # Common filename pattern
-                        repo_type="dataset"
-                    )
-                    
-                    # Load the Parquet file
-                    df = pd.read_parquet(file_path)
-                    
-                    # Extract texts
-                    if text_column in df.columns:
-                        texts = df[text_column].tolist()
-                    elif 'output' in df.columns:  # Fallback to 'output' if text_column not found
-                        texts = df['output'].tolist()
+                if len(data) > 0:
+                    if text_column in data[0]:
+                        texts = [item[text_column] for item in data]
+                    elif 'output' in data[0]:  # Fallback to 'output' if text_column not found
+                        texts = [item['output'] for item in data]
                     else:
                         raise ValueError(f"Column '{text_column}' not found in dataset")
-                        
-                except Exception as e3:
-                    print(f"Error downloading Parquet file: {e3}")
-                    raise ValueError(f"Could not download dataset: {dataset_path}")
+            else:
+                # Dataset is a Dataset object
+                if isinstance(ds, dict) and 'train' in ds:
+                    ds = ds['train']
+                
+                # Extract texts
+                if text_column in ds.column_names:
+                    texts = ds[text_column]
+                elif 'output' in ds.column_names:  # Fallback to 'output' if text_column not found
+                    texts = ds['output']
+                else:
+                    raise ValueError(f"Column '{text_column}' not found in dataset. Available columns: {ds.column_names}")
         
         print(f"Loaded {len(texts)} texts from dataset")
     except Exception as e:
