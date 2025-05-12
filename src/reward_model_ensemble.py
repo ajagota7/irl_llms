@@ -109,14 +109,47 @@ class RewardModelEnsembleAnalyzer:
                 # Create reward model using the same architecture as in IRL training
                 model = RewardModel(base_model_name, device=device)
                 
-                # Load the trained value head weights
-                checkpoint_path = hf_hub_download(
-                    repo_id=model_id,
-                    filename="pytorch_model.bin"
-                )
+                # Try different file paths for the checkpoint
+                try:
+                    # First try the standard path
+                    checkpoint_path = hf_hub_download(
+                        repo_id=model_id,
+                        filename="pytorch_model.bin"
+                    )
+                except Exception as e1:
+                    try:
+                        # Try the model.safetensors path
+                        checkpoint_path = hf_hub_download(
+                            repo_id=model_id,
+                            filename="model.safetensors"
+                        )
+                    except Exception as e2:
+                        # Try to list files in the repo to find the right path
+                        try:
+                            files = list_repo_files(model_id)
+                            print(f"Files in repository {model_id}: {files}")
+                            
+                            # Look for files that might contain model weights
+                            model_files = [f for f in files if f.endswith('.bin') or f.endswith('.pt') or f.endswith('.safetensors')]
+                            
+                            if model_files:
+                                checkpoint_path = hf_hub_download(
+                                    repo_id=model_id,
+                                    filename=model_files[0]
+                                )
+                            else:
+                                raise ValueError(f"No model files found in repository {model_id}")
+                        except Exception as e3:
+                            print(f"Could not find model files: {e3}")
+                            raise ValueError(f"Failed to load model for seed {seed}: {e1}, {e2}, {e3}")
                 
                 # Load state dict
-                state_dict = torch.load(checkpoint_path, map_location=device)
+                if checkpoint_path.endswith('.safetensors'):
+                    from safetensors import safe_open
+                    with safe_open(checkpoint_path, framework="pt") as f:
+                        state_dict = {key: f.get_tensor(key) for key in f.keys()}
+                else:
+                    state_dict = torch.load(checkpoint_path, map_location=device)
                 
                 # If the state dict has a 'v_head' key, use it directly
                 if 'v_head' in state_dict:
@@ -139,6 +172,7 @@ class RewardModelEnsembleAnalyzer:
                         model.v_head.load_state_dict(renamed_weights)
                     else:
                         print(f"Warning: Could not find value head weights for seed {seed}")
+                        print(f"Available keys: {list(state_dict.keys())[:10]}...")
                 
                 model.to(device)
                 model.eval()
@@ -678,6 +712,11 @@ class RewardModelEnsembleAnalyzer:
         dataset_type = "TRAIN" if use_train else "TEST"
         print(f"Evaluating ensemble methods on {dataset_type} set...")
         
+        # If no models were loaded, return empty results
+        if not self.reward_models:
+            print("No models available for ensemble evaluation")
+            return {}, {"best_individual": {}, "best_ensemble": {}}
+        
         # Select the appropriate dataset
         texts = self.train_texts if use_train else self.test_texts
         labels = self.train_labels if use_train else self.test_labels
@@ -686,12 +725,17 @@ class RewardModelEnsembleAnalyzer:
         all_predictions = {}
         for seed, model in self.reward_models.items():
             predictions = self.get_model_predictions(
-                texts, 
+                texts,
                 model, 
                 self.reward_tokenizers[seed]
             )
             all_predictions[seed] = predictions
-            
+        
+        # If no predictions were generated, return empty results
+        if not all_predictions:
+            print("No predictions available for ensemble evaluation")
+            return {}, {"best_individual": {}, "best_ensemble": {}}
+        
         # Convert to numpy array for easier manipulation
         # Shape: (num_models, num_samples)
         predictions_array = np.array([all_predictions[seed] for seed in self.seeds])
