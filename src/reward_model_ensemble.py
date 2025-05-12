@@ -816,6 +816,131 @@ class RewardModelEnsembleAnalyzer:
             "some_right_count": some_right
         }
         
+    def analyze_raw_scores(self, use_train=False):
+        """
+        Analyze raw prediction scores from each model for original and detoxified texts.
+        
+        Args:
+            use_train: If True, analyze training set, otherwise test set
+        """
+        dataset_type = "TRAIN" if use_train else "TEST"
+        print(f"\nAnalyzing raw scores on {dataset_type} set...")
+        
+        # Select the appropriate dataset
+        if use_train:
+            original_texts = [item['output'] for item in self.train_data['original']]
+            detoxified_texts = [item['output'] for item in self.train_data['detoxified']]
+        else:
+            original_texts = [item['output'] for item in self.test_data['original']]
+            detoxified_texts = [item['output'] for item in self.test_data['detoxified']]
+        
+        # Store scores for each model
+        all_scores = {}
+        
+        # Get predictions for each model
+        for seed, model in self.reward_models.items():
+            # Get scores for original (toxic) texts
+            original_scores = self.get_model_predictions(
+                original_texts,
+                model, 
+                self.reward_tokenizers[seed]
+            )
+            
+            # Get scores for detoxified texts
+            detoxified_scores = self.get_model_predictions(
+                detoxified_texts,
+                model, 
+                self.reward_tokenizers[seed]
+            )
+            
+            # Calculate statistics
+            original_mean = np.mean(original_scores)
+            detoxified_mean = np.mean(detoxified_scores)
+            score_diff = detoxified_mean - original_mean
+            
+            all_scores[seed] = {
+                "original_mean": float(original_mean),
+                "detoxified_mean": float(detoxified_mean),
+                "score_difference": float(score_diff),
+                "original_std": float(np.std(original_scores)),
+                "detoxified_std": float(np.std(detoxified_scores))
+            }
+            
+            print(f"Seed {seed} - Original mean: {original_mean:.4f}, Detoxified mean: {detoxified_mean:.4f}, Diff: {score_diff:.4f}")
+        
+        # Calculate ensemble scores (mean across models)
+        ensemble_original_scores = []
+        ensemble_detoxified_scores = []
+        
+        for seed in self.reward_models.keys():
+            # Get scores for original (toxic) texts
+            original_scores = self.get_model_predictions(
+                original_texts,
+                self.reward_models[seed], 
+                self.reward_tokenizers[seed]
+            )
+            
+            # Get scores for detoxified texts
+            detoxified_scores = self.get_model_predictions(
+                detoxified_texts,
+                self.reward_models[seed], 
+                self.reward_tokenizers[seed]
+            )
+            
+            ensemble_original_scores.append(original_scores)
+            ensemble_detoxified_scores.append(detoxified_scores)
+        
+        # Calculate mean across models
+        ensemble_original = np.mean(ensemble_original_scores, axis=0)
+        ensemble_detoxified = np.mean(ensemble_detoxified_scores, axis=0)
+        
+        # Calculate statistics for ensemble
+        ensemble_original_mean = np.mean(ensemble_original)
+        ensemble_detoxified_mean = np.mean(ensemble_detoxified)
+        ensemble_score_diff = ensemble_detoxified_mean - ensemble_original_mean
+        
+        all_scores["ensemble"] = {
+            "original_mean": float(ensemble_original_mean),
+            "detoxified_mean": float(ensemble_detoxified_mean),
+            "score_difference": float(ensemble_score_diff),
+            "original_std": float(np.std(ensemble_original)),
+            "detoxified_std": float(np.std(ensemble_detoxified))
+        }
+        
+        print(f"Ensemble - Original mean: {ensemble_original_mean:.4f}, Detoxified mean: {ensemble_detoxified_mean:.4f}, Diff: {ensemble_score_diff:.4f}")
+        
+        # Save results
+        file_prefix = "train_" if use_train else "test_"
+        with open(os.path.join(self.output_dir, f'{file_prefix}raw_scores.json'), 'w') as f:
+            json.dump(all_scores, f, indent=2)
+        
+        # Create a visualization
+        plt.figure(figsize=(12, 6))
+        
+        # Set up data for plotting
+        seeds = list(self.reward_models.keys()) + ["ensemble"]
+        original_means = [all_scores[seed]["original_mean"] for seed in seeds]
+        detoxified_means = [all_scores[seed]["detoxified_mean"] for seed in seeds]
+        
+        x = np.arange(len(seeds))
+        width = 0.35
+        
+        # Create grouped bar chart
+        plt.bar(x - width/2, original_means, width, label='Original (Toxic)')
+        plt.bar(x + width/2, detoxified_means, width, label='Detoxified')
+        
+        plt.xlabel('Model Seed')
+        plt.ylabel('Mean Score')
+        plt.title(f'Raw Score Comparison ({dataset_type} Set, Pythia-{self.model_size})')
+        plt.xticks(x, seeds)
+        plt.legend()
+        plt.grid(axis='y', linestyle='--', alpha=0.7)
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.output_dir, f'{file_prefix}raw_scores.png'))
+        plt.close()
+        
+        return all_scores
+        
     def run_full_analysis(self):
         """Run all analysis methods and compile results."""
         print(f"Running full analysis for pythia-{self.model_size}...")
@@ -825,6 +950,11 @@ class RewardModelEnsembleAnalyzer:
         # Run all analyses
         results["correlations"] = self.analyze_model_correlations()
         self.analyze_feature_representations()
+        
+        # Analyze raw scores on both train and test sets
+        print("\n=== Analyzing Raw Scores ===")
+        results["test_raw_scores"] = self.analyze_raw_scores(use_train=False)
+        results["train_raw_scores"] = self.analyze_raw_scores(use_train=True)
         
         # Evaluate on test set (default)
         print("\n=== Evaluating on TEST set ===")
