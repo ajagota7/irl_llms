@@ -227,20 +227,52 @@ class RewardModelEnsembleAnalyzer:
             
             print(f"Loaded {len(self.original_data)} paired samples")
             
-            # Create a combined dataset with labels
-            self.all_texts = []
-            self.all_labels = []  # 1 for toxic (original), 0 for non-toxic (detoxified)
+            # Apply train-test split similar to irl_train.py
+            train_test_split = 0.8  # 80% train, 20% test
+            train_size = int(train_test_split * len(self.original_data))
             
-            # Add original (toxic) examples
-            for item in self.original_data:
-                self.all_texts.append(item['output'])
-                self.all_labels.append(1)  # Toxic
+            self.train_data = {
+                'original': self.original_data[:train_size],
+                'detoxified': self.detoxified_data[:train_size]
+            }
             
-            # Add detoxified examples
-            for item in self.detoxified_data:
-                self.all_texts.append(item['output'])
-                self.all_labels.append(0)  # Non-toxic
-                
+            self.test_data = {
+                'original': self.original_data[train_size:],
+                'detoxified': self.detoxified_data[train_size:]
+            }
+            
+            print(f"Split into {len(self.train_data['original'])} train and {len(self.test_data['original'])} test samples")
+            
+            # Create combined datasets with labels for train and test
+            self.train_texts = []
+            self.train_labels = []
+            self.test_texts = []
+            self.test_labels = []
+            
+            # Add original (toxic) examples to train set
+            for item in self.train_data['original']:
+                self.train_texts.append(item['output'])
+                self.train_labels.append(1)  # Toxic
+            
+            # Add detoxified examples to train set
+            for item in self.train_data['detoxified']:
+                self.train_texts.append(item['output'])
+                self.train_labels.append(0)  # Non-toxic
+            
+            # Add original (toxic) examples to test set
+            for item in self.test_data['original']:
+                self.test_texts.append(item['output'])
+                self.test_labels.append(1)  # Toxic
+            
+            # Add detoxified examples to test set
+            for item in self.test_data['detoxified']:
+                self.test_texts.append(item['output'])
+                self.test_labels.append(0)  # Non-toxic
+            
+            # For backward compatibility, keep all_texts and all_labels
+            self.all_texts = self.test_texts
+            self.all_labels = self.test_labels
+            
         except Exception as e:
             print(f"Error loading datasets: {e}")
             raise
@@ -498,7 +530,7 @@ class RewardModelEnsembleAnalyzer:
         
     def evaluate_individual_models(self):
         """
-        Evaluate each individual model's performance on the dataset.
+        Evaluate each individual model's performance on the test dataset.
         """
         print("Evaluating individual models...")
         
@@ -508,9 +540,9 @@ class RewardModelEnsembleAnalyzer:
         for seed, model in self.reward_models.items():
             print(f"Evaluating model with seed {seed}...")
             
-            # Get predictions
+            # Get predictions on test set
             predictions = self.get_model_predictions(
-                self.all_texts, 
+                self.test_texts,  # Use test set
                 model, 
                 self.reward_tokenizers[seed]
             )
@@ -522,9 +554,9 @@ class RewardModelEnsembleAnalyzer:
             binary_preds = 1 - binary_preds  # Invert to match ground truth (1=toxic)
             
             # Calculate metrics
-            accuracy = accuracy_score(self.all_labels, binary_preds)
-            f1 = f1_score(self.all_labels, binary_preds)
-            auc_roc = roc_auc_score(self.all_labels, [-x for x in predictions])  # Invert for ROC
+            accuracy = accuracy_score(self.test_labels, binary_preds)
+            f1 = f1_score(self.test_labels, binary_preds)
+            auc_roc = roc_auc_score(self.test_labels, [-x for x in predictions])  # Invert for ROC
             
             # Store results
             results[seed] = {
@@ -695,106 +727,67 @@ class RewardModelEnsembleAnalyzer:
         
     def analyze_error_patterns(self):
         """
-        Analyze error patterns across different models to see if they make different types of errors.
+        Analyze patterns in model errors to understand where models disagree.
         """
         print("Analyzing error patterns...")
         
         # Get predictions from all models
-        all_predictions = {}
-        all_binary_preds = {}
-        
+        all_model_preds = {}
         for seed, model in self.reward_models.items():
             predictions = self.get_model_predictions(
-                self.all_texts, 
+                self.test_texts,  # Use test set for evaluation
                 model, 
                 self.reward_tokenizers[seed]
             )
-            all_predictions[seed] = predictions
             
-            # Convert to binary predictions
+            # Convert to binary predictions using mean threshold
             threshold = np.mean(predictions)
             binary_preds = (predictions > threshold).astype(int)
             binary_preds = 1 - binary_preds  # Invert to match ground truth (1=toxic)
-            all_binary_preds[seed] = binary_preds
             
-        # Find examples where models disagree
-        num_models = len(self.seeds)
-        disagreement_counts = np.zeros(len(self.all_texts))
+            all_model_preds[seed] = binary_preds
         
-        for i in range(len(self.all_texts)):
-            # Count unique predictions for this example
-            unique_preds = set(all_binary_preds[seed][i] for seed in self.seeds)
-            if len(unique_preds) > 1:  # Models disagree
-                disagreement_counts[i] = 1
-                
-        # Calculate disagreement rate
-        disagreement_rate = disagreement_counts.mean()
-        print(f"Model disagreement rate: {disagreement_rate:.4f}")
+        # Create a DataFrame with all predictions
+        df = pd.DataFrame(all_model_preds)
+        df['true_label'] = self.test_labels
         
-        # Find examples where all models are wrong
-        all_wrong_indices = []
-        for i in range(len(self.all_texts)):
-            if all(all_binary_preds[seed][i] != self.all_labels[i] for seed in self.seeds):
-                all_wrong_indices.append(i)
-                
-        print(f"Number of examples where all models are wrong: {len(all_wrong_indices)}")
+        # Calculate disagreement rate between models
+        model_cols = [col for col in df.columns if col != 'true_label']
+        if len(model_cols) > 1:
+            disagreement = 0
+            total = len(df)
+            for i in range(total):
+                row = df.iloc[i][model_cols].values
+                if np.max(row) != np.min(row):
+                    disagreement += 1
         
-        # Find examples where only some models are right
-        some_right_indices = []
-        for i in range(len(self.all_texts)):
-            correct_preds = sum(all_binary_preds[seed][i] == self.all_labels[i] for seed in self.seeds)
-            if 0 < correct_preds < num_models:
-                some_right_indices.append(i)
-                
-        print(f"Number of examples where only some models are right: {len(some_right_indices)}")
+            disagreement_rate = disagreement / total
+            print(f"Model disagreement rate: {disagreement_rate:.4f}")
         
-        # Calculate confusion matrices for each model
-        confusion_matrices = {}
-        for seed in self.seeds:
-            cm = confusion_matrix(self.all_labels, all_binary_preds[seed])
-            confusion_matrices[seed] = cm
+        # Count examples where all models are wrong
+        all_wrong = 0
+        some_right = 0
+        
+        for i in range(len(df)):
+            row = df.iloc[i]
+            true_label = row['true_label']
+            model_predictions = row[model_cols].values
             
-        # Plot confusion matrices
-        fig, axes = plt.subplots(1, len(self.seeds), figsize=(5*len(self.seeds), 5))
-        if len(self.seeds) == 1:
-            axes = [axes]
-            
-        for i, seed in enumerate(self.seeds):
-            cm = confusion_matrices[seed]
-            sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', ax=axes[i])
-            axes[i].set_title(f'Seed {seed}')
-            axes[i].set_xlabel('Predicted')
-            axes[i].set_ylabel('True')
-            axes[i].set_xticklabels(['Non-toxic', 'Toxic'])
-            axes[i].set_yticklabels(['Non-toxic', 'Toxic'])
-            
-        plt.tight_layout()
-        plt.savefig(os.path.join(self.output_dir, 'confusion_matrices.png'))
-        plt.close()
+            # Check if all models are wrong
+            if np.all(model_predictions != true_label):
+                all_wrong += 1
+            # Check if some models are right and some are wrong
+            elif np.any(model_predictions == true_label) and np.any(model_predictions != true_label):
+                some_right += 1
         
-        # Save some example texts where models disagree
-        if len(some_right_indices) > 0:
-            num_examples = min(10, len(some_right_indices))
-            example_indices = np.random.choice(some_right_indices, num_examples, replace=False)
-            
-            examples = []
-            for idx in example_indices:
-                example = {
-                    "text": self.all_texts[idx],
-                    "true_label": self.all_labels[idx],
-                    "predictions": {seed: int(all_binary_preds[seed][idx]) for seed in self.seeds},
-                    "scores": {seed: float(all_predictions[seed][idx]) for seed in self.seeds}
-                }
-                examples.append(example)
-                
-            with open(os.path.join(self.output_dir, 'disagreement_examples.json'), 'w') as f:
-                json.dump(examples, f, indent=2)
-                
+        print(f"Number of examples where all models are wrong: {all_wrong}")
+        print(f"Number of examples where only some models are right: {some_right}")
+        
+        # Return statistics
         return {
-            "disagreement_rate": disagreement_rate,
-            "all_wrong_count": len(all_wrong_indices),
-            "some_right_count": len(some_right_indices),
-            "confusion_matrices": {seed: cm.tolist() for seed, cm in confusion_matrices.items()}
+            "disagreement_rate": disagreement_rate if len(model_cols) > 1 else 0,
+            "all_wrong_count": all_wrong,
+            "some_right_count": some_right
         }
         
     def run_full_analysis(self):
