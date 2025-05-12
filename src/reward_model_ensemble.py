@@ -163,7 +163,6 @@ class RewardModelEnsembleAnalyzer:
                                 print(f"Streaming mode failed: {e3}")
                                 
                                 # Last resort: try to list files in the repo and download directly
-                                from huggingface_hub import list_repo_files
                                 try:
                                     files = list_repo_files(dataset_path, repo_type="dataset")
                                     print(f"Files in repository: {files}")
@@ -173,10 +172,6 @@ class RewardModelEnsembleAnalyzer:
                                     
                                     if data_files:
                                         # Download the first data file
-                                        from huggingface_hub import hf_hub_download
-                                        import pandas as pd
-                                        import json
-                                        
                                         file_path = hf_hub_download(
                                             repo_id=dataset_path,
                                             filename=data_files[0],
@@ -251,6 +246,10 @@ class RewardModelEnsembleAnalyzer:
         for item in self.detoxified_data:
             self.all_texts.append(item['output'])
             self.all_labels.append(0)  # Non-toxic
+            
+    except Exception as e:
+        print(f"Error loading datasets: {e}")
+        raise
         
     def get_model_predictions(self, texts: List[str], model, tokenizer) -> np.ndarray:
         """
