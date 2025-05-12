@@ -365,20 +365,16 @@ class RewardModelEnsembleAnalyzer:
         """
         all_predictions = []
         
-        # Ensure tokenizer has proper padding configuration
-        if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
-        tokenizer.padding_side = 'left'  # Consistent with IRL training
-        
         # Process in batches
         for i in range(0, len(texts), self.batch_size):
             batch_texts = texts[i:i+self.batch_size]
             
-            # For single item batches, no need for padding
-            if len(batch_texts) == 1:
+            # Process each text individually to avoid padding issues
+            batch_scores = []
+            for text in batch_texts:
                 # Tokenize without padding
                 inputs = tokenizer(
-                    batch_texts[0],
+                    text,
                     return_tensors="pt",
                     truncation=True,
                     max_length=self.max_length
@@ -386,64 +382,28 @@ class RewardModelEnsembleAnalyzer:
                 
                 # Get predictions
                 with torch.no_grad():
-                    # Check if it's our custom RewardModel or a standard model
+                    # Check if it's our custom RewardModel
                     if hasattr(model, 'v_head'):
                         # Custom RewardModel from irl_utilities
                         outputs = model(inputs.input_ids, inputs.attention_mask)
-                        scores = outputs.squeeze().cpu().numpy()
+                        score = outputs.squeeze().cpu().numpy()
                     else:
                         # Standard model
                         outputs = model(**inputs)
                         
                         # Extract scores based on model type
                         if hasattr(outputs, "rewards"):
-                            scores = outputs.rewards.squeeze().cpu().numpy()
+                            score = outputs.rewards.squeeze().cpu().numpy()
                         elif hasattr(outputs, "logits"):
-                            scores = outputs.logits[:, 0].cpu().numpy()
+                            score = outputs.logits[:, 0].cpu().numpy()
                         else:
                             raise ValueError(f"Unexpected model output format: {type(outputs)}")
                 
-                # Handle single item case
-                if not isinstance(scores, np.ndarray):
-                    scores = np.array([scores])
-                    
-                all_predictions.extend(scores)
-            else:
-                # Process each text individually to avoid padding issues
-                batch_scores = []
-                for text in batch_texts:
-                    # Tokenize without padding
-                    inputs = tokenizer(
-                        text,
-                        return_tensors="pt",
-                        truncation=True,
-                        max_length=self.max_length
-                    ).to(device)
-                    
-                    # Get predictions
-                    with torch.no_grad():
-                        # Check if it's our custom RewardModel or a standard model
-                        if hasattr(model, 'v_head'):
-                            # Custom RewardModel from irl_utilities
-                            outputs = model(inputs.input_ids, inputs.attention_mask)
-                            score = outputs.squeeze().cpu().numpy()
-                        else:
-                            # Standard model
-                            outputs = model(**inputs)
-                            
-                            # Extract scores based on model type
-                            if hasattr(outputs, "rewards"):
-                                score = outputs.rewards.squeeze().cpu().numpy()
-                            elif hasattr(outputs, "logits"):
-                                score = outputs.logits[:, 0].cpu().numpy()
-                            else:
-                                raise ValueError(f"Unexpected model output format: {type(outputs)}")
-                    
-                    # Add to batch scores
-                    batch_scores.append(score.item() if hasattr(score, 'item') else score)
-                    
-                all_predictions.extend(batch_scores)
+                # Add to batch scores
+                batch_scores.append(score.item() if hasattr(score, 'item') else score)
             
+            all_predictions.extend(batch_scores)
+        
         return np.array(all_predictions)
         
     def analyze_model_correlations(self):
@@ -545,10 +505,18 @@ class RewardModelEnsembleAnalyzer:
                 
                 # Get hidden states
                 with torch.no_grad():
-                    outputs = model(**inputs, output_hidden_states=True)
-                    
-                # Get the last hidden state
-                hidden_states = outputs.hidden_states[-1]
+                    # Check if it's our custom RewardModel
+                    if hasattr(model, 'v_head'):
+                        # For custom RewardModel, we need to access the base model's hidden states
+                        # First, get the outputs from the base model
+                        outputs = model.model(inputs.input_ids, attention_mask=inputs.attention_mask, output_hidden_states=True)
+                        # Get the last hidden state
+                        hidden_states = outputs.hidden_states[-1]
+                    else:
+                        # Standard model
+                        outputs = model(**inputs, output_hidden_states=True)
+                        # Get the last hidden state
+                        hidden_states = outputs.hidden_states[-1]
                 
                 # Mean pooling over sequence length
                 embedding = hidden_states.mean(dim=1).cpu().numpy()
@@ -564,6 +532,11 @@ class RewardModelEnsembleAnalyzer:
                 model = self.reward_models[seed]
                 embeddings = get_embeddings(model, self.reward_tokenizers[seed], sample_texts)
                 all_embeddings[seed] = embeddings
+        
+        # Skip the rest if no embeddings were extracted
+        if not all_embeddings:
+            print("No embeddings could be extracted. Skipping feature representation analysis.")
+            return
         
         # Perform PCA on embeddings from each model
         for seed, embeddings in all_embeddings.items():
@@ -851,6 +824,11 @@ class RewardModelEnsembleAnalyzer:
         dataset_type = "TRAIN" if use_train else "TEST"
         print(f"Analyzing error patterns on {dataset_type} set...")
         
+        # If no models were loaded, return empty results
+        if not self.reward_models:
+            print("No models available for error pattern analysis")
+            return {"disagreement_rate": 0, "all_wrong_count": 0, "some_right_count": 0}
+        
         # Select the appropriate dataset
         texts = self.train_texts if use_train else self.test_texts
         labels = self.train_labels if use_train else self.test_labels
@@ -859,7 +837,7 @@ class RewardModelEnsembleAnalyzer:
         all_model_preds = {}
         for seed, model in self.reward_models.items():
             predictions = self.get_model_predictions(
-                texts, 
+                texts,
                 model, 
                 self.reward_tokenizers[seed]
             )
@@ -870,6 +848,11 @@ class RewardModelEnsembleAnalyzer:
             binary_preds = 1 - binary_preds  # Invert to match ground truth (1=toxic)
             
             all_model_preds[seed] = binary_preds
+        
+        # If no predictions were generated, return empty results
+        if not all_model_preds:
+            print("No predictions available for error pattern analysis")
+            return {"disagreement_rate": 0, "all_wrong_count": 0, "some_right_count": 0}
         
         # Create a DataFrame with all predictions
         df = pd.DataFrame(all_model_preds)
