@@ -195,7 +195,7 @@ class RewardModelEnsembleAnalyzer:
                                     print(f"Direct file download failed: {e4}")
                                     raise ValueError(f"All attempts to load dataset failed: {dataset_path}")
                 
-                # Process the dataset
+                # If we got here, one of the first two methods worked
                 if isinstance(ds, dict) and 'train' in ds:
                     return ds['train']
                 else:
