@@ -1,5 +1,713 @@
+"""
+Script to analyze and ensemble reward models trained with different seeds.
+This script investigates how different reward models trained with IRL
+might capture different aspects of toxicity detection.
+"""
+
+import os
+import torch
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from tqdm import tqdm
+from datasets import load_dataset
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+from sklearn.metrics import accuracy_score, f1_score, roc_auc_score, confusion_matrix
+from sklearn.decomposition import PCA
+from scipy import stats
+import argparse
+import json
+from typing import List, Dict, Tuple, Optional, Union
+
+# Set up device
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+class RewardModelEnsembleAnalyzer:
+    """Class to analyze and ensemble reward models trained with different seeds."""
+
+    def __init__(
+        self,
+        model_size: str,
+        seeds: List[int],
+        checkpoint: int,
+        ground_truth_model: str = "facebook/roberta-hate-speech-dynabench-r4-target",
+        original_dataset: str = None,
+        detoxified_dataset: str = None,
+        batch_size: int = 16,
+        max_length: int = 512,
+        output_dir: str = "reward_model_analysis",
+    ):
+        """
+        Initialize the analyzer.
+        
+        Args:
+            model_size: Size of the model (70m, 160m, 410m, 1b)
+            seeds: List of seeds to analyze
+            checkpoint: Checkpoint number to use
+            ground_truth_model: HF model ID for ground truth toxicity classifier
+            original_dataset: HF dataset ID for original (toxic) outputs
+            detoxified_dataset: HF dataset ID for detoxified outputs
+            batch_size: Batch size for inference
+            max_length: Max sequence length for tokenization
+            output_dir: Directory to save analysis results
+        """
+        self.model_size = model_size
+        self.seeds = seeds
+        self.checkpoint = checkpoint
+        self.ground_truth_model_name = ground_truth_model
+        
+        if original_dataset is None:
+            self.original_dataset = f"ajagota71/EleutherAI_pythia-{model_size}_2000_samples_original"
+        else:
+            self.original_dataset = original_dataset
+            
+        if detoxified_dataset is None:
+            self.detoxified_dataset = f"ajagota71/ajagota71_pythia-{model_size}-detox-epoch-100_2000_samples_detoxified"
+        else:
+            self.detoxified_dataset = detoxified_dataset
+            
+        self.batch_size = batch_size
+        self.max_length = max_length
+        self.output_dir = os.path.join(output_dir, f"pythia-{model_size}")
+        
+        # Create output directory
+        os.makedirs(self.output_dir, exist_ok=True)
+        
+        # Load models and data
+        self._load_reward_models()
+        self._load_ground_truth_model()
+        self._load_data()
+        
+    def _load_reward_models(self):
+        """Load all reward models for the specified seeds."""
+        print(f"Loading reward models for pythia-{self.model_size}...")
+        
+        self.reward_models = {}
+        self.reward_tokenizers = {}
+        
+        for seed in tqdm(self.seeds, desc="Loading models"):
+            model_id = f"ajagota71/toxicity-reward-model-max-margin-seed-{seed}-pythia-{self.model_size}-checkpoint-{self.checkpoint}"
+            
+            try:
+                # Load tokenizer
+                tokenizer = AutoTokenizer.from_pretrained(model_id)
+                if tokenizer.pad_token is None:
+                    tokenizer.pad_token = tokenizer.eos_token
+                tokenizer.padding_side = 'left'
+                
+                # Load model
+                model = AutoModelForSequenceClassification.from_pretrained(model_id)
+                model.to(device)
+                model.eval()
+                
+                self.reward_models[seed] = model
+                self.reward_tokenizers[seed] = tokenizer
+                
+                print(f"Successfully loaded model for seed {seed}")
+            except Exception as e:
+                print(f"Error loading model for seed {seed}: {e}")
+                continue
+                
+        print(f"Loaded {len(self.reward_models)} reward models")
+        
+    def _load_ground_truth_model(self):
+        """Load the ground truth toxicity model."""
+        print(f"Loading ground truth model: {self.ground_truth_model_name}")
+        
+        try:
+            self.ground_truth_tokenizer = AutoTokenizer.from_pretrained(self.ground_truth_model_name)
+            self.ground_truth_model = AutoModelForSequenceClassification.from_pretrained(
+                self.ground_truth_model_name
+            ).to(device)
+            self.ground_truth_model.eval()
+            print("Successfully loaded ground truth model")
+        except Exception as e:
+            print(f"Error loading ground truth model: {e}")
+            self.ground_truth_model = None
+            self.ground_truth_tokenizer = None
+            
+    def _load_data(self):
+        """Load the original and detoxified datasets."""
+        print("Loading datasets...")
+        
+        try:
+            # Load original dataset
+            original_ds = load_dataset(self.original_dataset)
+            if isinstance(original_ds, dict) and 'train' in original_ds:
+                self.original_data = original_ds['train']
+            else:
+                self.original_data = original_ds
+                
+            # Load detoxified dataset
+            detoxified_ds = load_dataset(self.detoxified_dataset)
+            if isinstance(detoxified_ds, dict) and 'train' in detoxified_ds:
+                self.detoxified_data = detoxified_ds['train']
+            else:
+                self.detoxified_data = detoxified_ds
+                
+            # Verify data lengths match
+            if len(self.original_data) != len(self.detoxified_data):
+                print("Warning: Dataset lengths don't match!")
+                # Use the smaller length
+                min_len = min(len(self.original_data), len(self.detoxified_data))
+                self.original_data = self.original_data.select(range(min_len))
+                self.detoxified_data = self.detoxified_data.select(range(min_len))
+                
+            print(f"Loaded {len(self.original_data)} paired samples")
+            
+            # Create a combined dataset with labels
+            self.all_texts = []
+            self.all_labels = []  # 1 for toxic (original), 0 for non-toxic (detoxified)
+            
+            # Add original (toxic) examples
+            for item in self.original_data:
+                self.all_texts.append(item['output'])
+                self.all_labels.append(1)  # Toxic
+                
+            # Add detoxified examples
+            for item in self.detoxified_data:
+                self.all_texts.append(item['output'])
+                self.all_labels.append(0)  # Non-toxic
+                
+        except Exception as e:
+            print(f"Error loading datasets: {e}")
+            raise
+            
+    def get_model_predictions(self, texts: List[str], model, tokenizer) -> np.ndarray:
+        """
+        Get predictions from a model for a list of texts.
+        
+        Args:
+            texts: List of text strings
+            model: The model to use for predictions
+            tokenizer: The tokenizer for the model
+            
+        Returns:
+            Array of prediction scores
+        """
+        all_predictions = []
+        
+        # Process in batches
+        for i in range(0, len(texts), self.batch_size):
+            batch_texts = texts[i:i+self.batch_size]
+            
+            # Tokenize
+            inputs = tokenizer(
+                batch_texts,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=self.max_length
+            ).to(device)
+            
+            # Get predictions
+            with torch.no_grad():
+                outputs = model(**inputs)
+                
+            # For reward models, we expect a single score
+            if hasattr(outputs, "rewards"):
+                scores = outputs.rewards.squeeze().cpu().numpy()
+            # For classification models like the ground truth model
+            elif hasattr(outputs, "logits"):
+                # Use the first logit (non-toxic) as the score
+                scores = outputs.logits[:, 0].cpu().numpy()
+            else:
+                raise ValueError(f"Unexpected model output format: {type(outputs)}")
+                
+            # Handle single item case
+            if not isinstance(scores, np.ndarray):
+                scores = np.array([scores])
+                
+            all_predictions.extend(scores)
+            
+        return np.array(all_predictions)
+        
+    def analyze_model_correlations(self):
+        """
+        Analyze correlations between different reward models and the ground truth.
+        """
+        print("Analyzing model correlations...")
+        
+        # Get a subset of texts for correlation analysis (for efficiency)
+        sample_size = min(1000, len(self.all_texts))
+        sample_indices = np.random.choice(len(self.all_texts), sample_size, replace=False)
+        sample_texts = [self.all_texts[i] for i in sample_indices]
+        sample_labels = [self.all_labels[i] for i in sample_indices]
+        
+        # Get predictions from all models
+        predictions = {}
+        
+        # Get ground truth predictions if available
+        if self.ground_truth_model is not None:
+            ground_truth_preds = self.get_model_predictions(
+                sample_texts, 
+                self.ground_truth_model, 
+                self.ground_truth_tokenizer
+            )
+            predictions["ground_truth"] = ground_truth_preds
+            
+        # Get predictions from each reward model
+        for seed, model in self.reward_models.items():
+            model_preds = self.get_model_predictions(
+                sample_texts, 
+                model, 
+                self.reward_tokenizers[seed]
+            )
+            predictions[f"seed_{seed}"] = model_preds
+            
+        # Create a DataFrame for correlation analysis
+        df = pd.DataFrame(predictions)
+        
+        # Add true labels
+        df["true_label"] = sample_labels
+        
+        # Calculate correlation matrix
+        correlation_matrix = df.corr(method='pearson')
+        
+        # Plot correlation heatmap
+        plt.figure(figsize=(12, 10))
+        sns.heatmap(correlation_matrix, annot=True, cmap='coolwarm', vmin=-1, vmax=1)
+        plt.title(f'Correlation Between Reward Models (Pythia-{self.model_size})')
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.output_dir, 'model_correlations.png'))
+        plt.close()
+        
+        # Save correlation matrix
+        correlation_matrix.to_csv(os.path.join(self.output_dir, 'model_correlations.csv'))
+        
+        # Calculate average correlation between models
+        model_columns = [col for col in df.columns if col.startswith('seed_')]
+        model_corr = correlation_matrix.loc[model_columns, model_columns]
+        avg_model_corr = (model_corr.sum().sum() - len(model_columns)) / (len(model_columns) * (len(model_columns) - 1))
+        
+        print(f"Average correlation between models: {avg_model_corr:.4f}")
+        
+        # Calculate correlation with ground truth if available
+        if "ground_truth" in df.columns:
+            gt_corr = correlation_matrix.loc["ground_truth", model_columns].mean()
+            print(f"Average correlation with ground truth: {gt_corr:.4f}")
+            
+        # Calculate correlation with true labels
+        label_corr = correlation_matrix.loc["true_label", model_columns].mean()
+        print(f"Average correlation with true labels: {label_corr:.4f}")
+        
+        return correlation_matrix
+        
+    def analyze_feature_representations(self):
+        """
+        Analyze the feature representations learned by different models.
+        Uses PCA to visualize the embeddings from different models.
+        """
+        print("Analyzing feature representations...")
+        
+        # Sample a smaller subset for feature analysis
+        sample_size = min(500, len(self.all_texts))
+        sample_indices = np.random.choice(len(self.all_texts), sample_size, replace=False)
+        sample_texts = [self.all_texts[i] for i in sample_indices]
+        sample_labels = [self.all_labels[i] for i in sample_indices]
+        
+        # Function to extract embeddings from a model
+        def get_embeddings(model, tokenizer, texts):
+            embeddings = []
+            
+            for i in range(0, len(texts), self.batch_size):
+                batch_texts = texts[i:i+self.batch_size]
+                
+                # Tokenize
+                inputs = tokenizer(
+                    batch_texts,
+                    return_tensors="pt",
+                    padding=True,
+                    truncation=True,
+                    max_length=self.max_length
+                ).to(device)
+                
+                # Get embeddings from the model
+                with torch.no_grad():
+                    # Forward pass but extract the last hidden state
+                    outputs = model(**inputs, output_hidden_states=True)
+                    
+                    # Get the last hidden state (CLS token embedding)
+                    if hasattr(outputs, "hidden_states"):
+                        # Get the last layer's [CLS] token embedding
+                        last_hidden_state = outputs.hidden_states[-1]
+                        cls_embeddings = last_hidden_state[:, 0, :].cpu().numpy()
+                        embeddings.extend(cls_embeddings)
+                    else:
+                        print(f"Model doesn't output hidden states: {type(outputs)}")
+                        return None
+                        
+            return np.array(embeddings)
+        
+        # Get embeddings from each model
+        all_embeddings = {}
+        for seed, model in self.reward_models.items():
+            print(f"Extracting embeddings for seed {seed}...")
+            embeddings = get_embeddings(model, self.reward_tokenizers[seed], sample_texts)
+            if embeddings is not None:
+                all_embeddings[f"seed_{seed}"] = embeddings
+        
+        # Apply PCA to each model's embeddings
+        pca_results = {}
+        for model_name, embeddings in all_embeddings.items():
+            print(f"Applying PCA to {model_name} embeddings...")
+            pca = PCA(n_components=2)
+            pca_result = pca.fit_transform(embeddings)
+            pca_results[model_name] = pca_result
+            print(f"Explained variance ratio: {pca.explained_variance_ratio_}")
+        
+        # Plot PCA results
+        plt.figure(figsize=(15, 10))
+        
+        for i, (model_name, pca_result) in enumerate(pca_results.items()):
+            plt.subplot(2, (len(pca_results) + 1) // 2, i + 1)
+            
+            # Plot points colored by true label
+            scatter = plt.scatter(
+                pca_result[:, 0], 
+                pca_result[:, 1], 
+                c=sample_labels, 
+                cmap='coolwarm', 
+                alpha=0.6
+            )
+            
+            plt.colorbar(scatter, label='True Label (1=Toxic)')
+            plt.title(f'PCA of {model_name} Embeddings')
+            plt.xlabel('PC1')
+            plt.ylabel('PC2')
+            
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.output_dir, 'feature_representations_pca.png'))
+        plt.close()
+        
+        return pca_results
+        
+    def evaluate_individual_models(self):
+        """
+        Evaluate each individual model's performance on the dataset.
+        """
+        print("Evaluating individual models...")
+        
+        results = {}
+        
+        # Evaluate each reward model
+        for seed, model in self.reward_models.items():
+            print(f"Evaluating model with seed {seed}...")
+            
+            # Get predictions
+            predictions = self.get_model_predictions(
+                self.all_texts, 
+                model, 
+                self.reward_tokenizers[seed]
+            )
+            
+            # Normalize predictions (higher = less toxic)
+            # Convert to binary predictions using mean threshold
+            threshold = np.mean(predictions)
+            binary_preds = (predictions > threshold).astype(int)
+            binary_preds = 1 - binary_preds  # Invert to match ground truth (1=toxic)
+            
+            # Calculate metrics
+            accuracy = accuracy_score(self.all_labels, binary_preds)
+            f1 = f1_score(self.all_labels, binary_preds)
+            auc_roc = roc_auc_score(self.all_labels, [-x for x in predictions])  # Invert for ROC
+            
+            # Store results
+            results[seed] = {
+                "accuracy": accuracy,
+                "f1": f1,
+                "auc_roc": auc_roc,
+                "predictions": predictions.tolist(),
+                "binary_predictions": binary_preds.tolist()
+            }
+            
+            print(f"Seed {seed} - Accuracy: {accuracy:.4f}, F1: {f1:.4f}, AUC-ROC: {auc_roc:.4f}")
+            
+        # Save results
+        with open(os.path.join(self.output_dir, 'individual_model_results.json'), 'w') as f:
+            # Convert numpy arrays to lists for JSON serialization
+            serializable_results = {}
+            for seed, result in results.items():
+                serializable_results[str(seed)] = {
+                    k: v for k, v in result.items() 
+                    if k not in ["predictions", "binary_predictions"]
+                }
+            json.dump(serializable_results, f, indent=2)
+            
+        # Plot performance comparison
+        seeds = list(results.keys())
+        accuracies = [results[seed]["accuracy"] for seed in seeds]
+        f1_scores = [results[seed]["f1"] for seed in seeds]
+        auc_scores = [results[seed]["auc_roc"] for seed in seeds]
+        
+        plt.figure(figsize=(12, 6))
+        x = np.arange(len(seeds))
+        width = 0.25
+        
+        plt.bar(x - width, accuracies, width, label='Accuracy')
+        plt.bar(x, f1_scores, width, label='F1 Score')
+        plt.bar(x + width, auc_scores, width, label='AUC-ROC')
+        
+        plt.xlabel('Seed')
+        plt.ylabel('Score')
+        plt.title(f'Performance Metrics by Seed (Pythia-{self.model_size})')
+        plt.xticks(x, seeds)
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.output_dir, 'individual_model_performance.png'))
+        plt.close()
+        
+        return results
+        
+    def evaluate_ensemble_methods(self):
+        """
+        Evaluate different ensemble methods for combining model predictions.
+        """
+        print("Evaluating ensemble methods...")
+        
+        # Get predictions from all models
+        all_predictions = {}
+        for seed, model in self.reward_models.items():
+            predictions = self.get_model_predictions(
+                self.all_texts, 
+                model, 
+                self.reward_tokenizers[seed]
+            )
+            all_predictions[seed] = predictions
+            
+        # Convert to numpy array for easier manipulation
+        # Shape: (num_models, num_samples)
+        predictions_array = np.array([all_predictions[seed] for seed in self.seeds])
+        
+        # Define ensemble methods
+        ensemble_methods = {
+            "mean": np.mean(predictions_array, axis=0),
+            "median": np.median(predictions_array, axis=0),
+            "max": np.max(predictions_array, axis=0),
+            "min": np.min(predictions_array, axis=0)
+        }
+        
+        # Evaluate each ensemble method
+        ensemble_results = {}
+        
+        for method_name, ensemble_preds in ensemble_methods.items():
+            # Normalize predictions (higher = less toxic)
+            # Convert to binary predictions using mean threshold
+            threshold = np.mean(ensemble_preds)
+            binary_preds = (ensemble_preds > threshold).astype(int)
+            binary_preds = 1 - binary_preds  # Invert to match ground truth (1=toxic)
+            
+            # Calculate metrics
+            accuracy = accuracy_score(self.all_labels, binary_preds)
+            f1 = f1_score(self.all_labels, binary_preds)
+            auc_roc = roc_auc_score(self.all_labels, [-x for x in ensemble_preds])  # Invert for ROC
+            
+            # Store results
+            ensemble_results[method_name] = {
+                "accuracy": accuracy,
+                "f1": f1,
+                "auc_roc": auc_roc
+            }
+            
+            print(f"Ensemble ({method_name}) - Accuracy: {accuracy:.4f}, F1: {f1:.4f}, AUC-ROC: {auc_roc:.4f}")
+            
+        # Save results
+        with open(os.path.join(self.output_dir, 'ensemble_results.json'), 'w') as f:
+            json.dump(ensemble_results, f, indent=2)
+            
+        # Plot performance comparison
+        methods = list(ensemble_results.keys())
+        accuracies = [ensemble_results[method]["accuracy"] for method in methods]
+        f1_scores = [ensemble_results[method]["f1"] for method in methods]
+        auc_scores = [ensemble_results[method]["auc_roc"] for method in methods]
+        
+        plt.figure(figsize=(12, 6))
+        x = np.arange(len(methods))
+        width = 0.25
+        
+        plt.bar(x - width, accuracies, width, label='Accuracy')
+        plt.bar(x, f1_scores, width, label='F1 Score')
+        plt.bar(x + width, auc_scores, width, label='AUC-ROC')
+        
+        plt.xlabel('Ensemble Method')
+        plt.ylabel('Score')
+        plt.title(f'Ensemble Performance Metrics (Pythia-{self.model_size})')
+        plt.xticks(x, methods)
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.output_dir, 'ensemble_performance.png'))
+        plt.close()
+        
+        # Compare best ensemble with best individual model
+        individual_results = self.evaluate_individual_models()
+        best_individual_seed = max(individual_results.keys(), key=lambda s: individual_results[s]["auc_roc"])
+        best_individual = individual_results[best_individual_seed]
+        
+        best_ensemble_method = max(ensemble_results.keys(), key=lambda m: ensemble_results[m]["auc_roc"])
+        best_ensemble = ensemble_results[best_ensemble_method]
+        
+        comparison = {
+            "best_individual": {
+                "seed": best_individual_seed,
+                **best_individual
+            },
+            "best_ensemble": {
+                "method": best_ensemble_method,
+                **best_ensemble
+            }
+        }
+        
+        # Save comparison
+        with open(os.path.join(self.output_dir, 'best_model_comparison.json'), 'w') as f:
+            # Remove predictions from the output
+            if "predictions" in comparison["best_individual"]:
+                del comparison["best_individual"]["predictions"]
+            if "binary_predictions" in comparison["best_individual"]:
+                del comparison["best_individual"]["binary_predictions"]
+            json.dump(comparison, f, indent=2)
+            
+        print("\nBest Model Comparison:")
+        print(f"Best Individual Model (Seed {best_individual_seed}):")
+        print(f"  Accuracy: {best_individual['accuracy']:.4f}")
+        print(f"  F1 Score: {best_individual['f1']:.4f}")
+        print(f"  AUC-ROC: {best_individual['auc_roc']:.4f}")
+        
+        print(f"\nBest Ensemble Method ({best_ensemble_method}):")
+        print(f"  Accuracy: {best_ensemble['accuracy']:.4f}")
+        print(f"  F1 Score: {best_ensemble['f1']:.4f}")
+        print(f"  AUC-ROC: {best_ensemble['auc_roc']:.4f}")
+        
+        return ensemble_results, comparison
+        
+    def analyze_error_patterns(self):
+        """
+        Analyze error patterns across different models to see if they make different types of errors.
+        """
+        print("Analyzing error patterns...")
+        
+        # Get predictions from all models
+        all_predictions = {}
+        all_binary_preds = {}
+        
+        for seed, model in self.reward_models.items():
+            predictions = self.get_model_predictions(
+                self.all_texts, 
+                model, 
+                self.reward_tokenizers[seed]
+            )
+            all_predictions[seed] = predictions
+            
+            # Convert to binary predictions
+            threshold = np.mean(predictions)
+            binary_preds = (predictions > threshold).astype(int)
+            binary_preds = 1 - binary_preds  # Invert to match ground truth (1=toxic)
+            all_binary_preds[seed] = binary_preds
+            
+        # Find examples where models disagree
+        num_models = len(self.seeds)
+        disagreement_counts = np.zeros(len(self.all_texts))
+        
+        for i in range(len(self.all_texts)):
+            # Count unique predictions for this example
+            unique_preds = set(all_binary_preds[seed][i] for seed in self.seeds)
+            if len(unique_preds) > 1:  # Models disagree
+                disagreement_counts[i] = 1
+                
+        # Calculate disagreement rate
+        disagreement_rate = disagreement_counts.mean()
+        print(f"Model disagreement rate: {disagreement_rate:.4f}")
+        
+        # Find examples where all models are wrong
+        all_wrong_indices = []
+        for i in range(len(self.all_texts)):
+            if all(all_binary_preds[seed][i] != self.all_labels[i] for seed in self.seeds):
+                all_wrong_indices.append(i)
+                
+        print(f"Number of examples where all models are wrong: {len(all_wrong_indices)}")
+        
+        # Find examples where only some models are right
+        some_right_indices = []
+        for i in range(len(self.all_texts)):
+            correct_preds = sum(all_binary_preds[seed][i] == self.all_labels[i] for seed in self.seeds)
+            if 0 < correct_preds < num_models:
+                some_right_indices.append(i)
+                
+        print(f"Number of examples where only some models are right: {len(some_right_indices)}")
+        
+        # Calculate confusion matrices for each model
+        confusion_matrices = {}
+        for seed in self.seeds:
+            cm = confusion_matrix(self.all_labels, all_binary_preds[seed])
+            confusion_matrices[seed] = cm
+            
+        # Plot confusion matrices
+        fig, axes = plt.subplots(1, len(self.seeds), figsize=(5*len(self.seeds), 5))
+        if len(self.seeds) == 1:
+            axes = [axes]
+            
+        for i, seed in enumerate(self.seeds):
+            cm = confusion_matrices[seed]
+            sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', ax=axes[i])
+            axes[i].set_title(f'Seed {seed}')
+            axes[i].set_xlabel('Predicted')
+            axes[i].set_ylabel('True')
+            axes[i].set_xticklabels(['Non-toxic', 'Toxic'])
+            axes[i].set_yticklabels(['Non-toxic', 'Toxic'])
+            
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.output_dir, 'confusion_matrices.png'))
+        plt.close()
+        
+        # Save some example texts where models disagree
+        if len(some_right_indices) > 0:
+            num_examples = min(10, len(some_right_indices))
+            example_indices = np.random.choice(some_right_indices, num_examples, replace=False)
+            
+            examples = []
+            for idx in example_indices:
+                example = {
+                    "text": self.all_texts[idx],
+                    "true_label": self.all_labels[idx],
+                    "predictions": {seed: int(all_binary_preds[seed][idx]) for seed in self.seeds},
+                    "scores": {seed: float(all_predictions[seed][idx]) for seed in self.seeds}
+                }
+                examples.append(example)
+                
+            with open(os.path.join(self.output_dir, 'disagreement_examples.json'), 'w') as f:
+                json.dump(examples, f, indent=2)
+                
+        return {
+            "disagreement_rate": disagreement_rate,
+            "all_wrong_count": len(all_wrong_indices),
+            "some_right_count": len(some_right_indices),
+            "confusion_matrices": {seed: cm.tolist() for seed, cm in confusion_matrices.items()}
+        }
+        
+    def run_full_analysis(self):
+        """Run all analysis methods and compile results."""
+        print(f"Running full analysis for pythia-{self.model_size}...")
+        
+        results = {}
+        
+        # Run all analyses
+        results["correlations"] = self.analyze_model_correlations()
+        self.analyze_feature_representations()
+        results["individual_performance"] = self.evaluate_individual_models()
+        results["ensemble_performance"], results["best_comparison"] = self.evaluate_ensemble_methods()
+        results["error_patterns"] = self.analyze_error_patterns()
+        
+        # Save summary results
+        summary = {
+            "model_size": self.model_size,
+            "seeds": self.seeds,
+            "num_models": len(self.reward_models),
+            "dataset_size": len(self.all_texts) // 2,  # Divide by 2 because we have original + detoxified
+        }
+        
+        if isinstance(results["correlations"], pd.DataFrame):
             # Extract key correlation metrics
-            model_cols = [col for col in results["correlations"].columns if col.startswith('seed_')]
             if len(model_cols) > 1:
                 model_corr = results["correlations"].loc[model_cols, model_cols]
                 avg_model_corr = (model_corr.sum().sum() - len(model_cols)) / (len(model_cols) * (len(model_cols) - 1))
