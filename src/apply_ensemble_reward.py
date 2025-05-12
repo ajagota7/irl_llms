@@ -112,9 +112,18 @@ def apply_ensemble_to_dataset(
     
     # Load dataset
     try:
-        ds = load_dataset(dataset_path)
-        if isinstance(ds, dict) and 'train' in ds:
-            ds = ds['train']
+        print(f"Loading dataset: {dataset_path}")
+        try:
+            ds = load_dataset(dataset_path)
+            if isinstance(ds, dict) and 'train' in ds:
+                ds = ds['train']
+        except NotImplementedError as e:
+            # Handle LocalFileSystem error by downloading the dataset first
+            print(f"Encountered error: {e}")
+            print("Attempting to download dataset from HuggingFace first...")
+            ds = load_dataset(dataset_path, download_mode="force_redownload")
+            if isinstance(ds, dict) and 'train' in ds:
+                ds = ds['train']
         
         # Get texts from dataset
         if text_column in ds.column_names:

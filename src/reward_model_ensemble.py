@@ -134,19 +134,41 @@ class RewardModelEnsembleAnalyzer:
         
         try:
             # Load original dataset
-            original_ds = load_dataset(self.original_dataset)
-            if isinstance(original_ds, dict) and 'train' in original_ds:
-                self.original_data = original_ds['train']
-            else:
-                self.original_data = original_ds
-                
+            print(f"Loading original dataset: {self.original_dataset}")
+            try:
+                original_ds = load_dataset(self.original_dataset, use_auth_token=True)
+                if isinstance(original_ds, dict) and 'train' in original_ds:
+                    self.original_data = original_ds['train']
+                else:
+                    self.original_data = original_ds
+            except NotImplementedError as e:
+                # Handle LocalFileSystem error by downloading the dataset first
+                print(f"Encountered error: {e}")
+                print("Attempting to download dataset from HuggingFace first...")
+                original_ds = load_dataset(self.original_dataset, download_mode="force_redownload")
+                if isinstance(original_ds, dict) and 'train' in original_ds:
+                    self.original_data = original_ds['train']
+                else:
+                    self.original_data = original_ds
+            
             # Load detoxified dataset
-            detoxified_ds = load_dataset(self.detoxified_dataset)
-            if isinstance(detoxified_ds, dict) and 'train' in detoxified_ds:
-                self.detoxified_data = detoxified_ds['train']
-            else:
-                self.detoxified_data = detoxified_ds
-                
+            print(f"Loading detoxified dataset: {self.detoxified_dataset}")
+            try:
+                detoxified_ds = load_dataset(self.detoxified_dataset, use_auth_token=True)
+                if isinstance(detoxified_ds, dict) and 'train' in detoxified_ds:
+                    self.detoxified_data = detoxified_ds['train']
+                else:
+                    self.detoxified_data = detoxified_ds
+            except NotImplementedError as e:
+                # Handle LocalFileSystem error by downloading the dataset first
+                print(f"Encountered error: {e}")
+                print("Attempting to download dataset from HuggingFace first...")
+                detoxified_ds = load_dataset(self.detoxified_dataset, download_mode="force_redownload")
+                if isinstance(detoxified_ds, dict) and 'train' in detoxified_ds:
+                    self.detoxified_data = detoxified_ds['train']
+                else:
+                    self.detoxified_data = detoxified_ds
+            
             # Verify data lengths match
             if len(self.original_data) != len(self.detoxified_data):
                 print("Warning: Dataset lengths don't match!")
@@ -154,7 +176,7 @@ class RewardModelEnsembleAnalyzer:
                 min_len = min(len(self.original_data), len(self.detoxified_data))
                 self.original_data = self.original_data.select(range(min_len))
                 self.detoxified_data = self.detoxified_data.select(range(min_len))
-                
+            
             print(f"Loaded {len(self.original_data)} paired samples")
             
             # Create a combined dataset with labels
@@ -165,12 +187,12 @@ class RewardModelEnsembleAnalyzer:
             for item in self.original_data:
                 self.all_texts.append(item['output'])
                 self.all_labels.append(1)  # Toxic
-                
+            
             # Add detoxified examples
             for item in self.detoxified_data:
                 self.all_texts.append(item['output'])
                 self.all_labels.append(0)  # Non-toxic
-                
+            
         except Exception as e:
             print(f"Error loading datasets: {e}")
             raise
