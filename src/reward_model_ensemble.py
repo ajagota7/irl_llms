@@ -399,92 +399,102 @@ class RewardModelEnsembleAnalyzer:
         
     def analyze_feature_representations(self):
         """
-        Analyze the feature representations learned by different models.
-        Uses PCA to visualize the embeddings from different models.
+        Analyze the feature representations learned by different reward models.
         """
         print("Analyzing feature representations...")
         
-        # Sample a smaller subset for feature analysis
+        # Get a subset of texts for embedding analysis (for efficiency)
         sample_size = min(500, len(self.all_texts))
         sample_indices = np.random.choice(len(self.all_texts), sample_size, replace=False)
         sample_texts = [self.all_texts[i] for i in sample_indices]
         sample_labels = [self.all_labels[i] for i in sample_indices]
         
-        # Function to extract embeddings from a model
+        # Function to get embeddings from a model
         def get_embeddings(model, tokenizer, texts):
-            embeddings = []
+            all_embeddings = []
             
-            for i in range(0, len(texts), self.batch_size):
-                batch_texts = texts[i:i+self.batch_size]
-                
-                # Tokenize
+            # Process each text individually to avoid padding issues
+            for text in texts:
+                # Tokenize without padding
                 inputs = tokenizer(
-                    batch_texts,
+                    text,
                     return_tensors="pt",
-                    padding=True,
                     truncation=True,
                     max_length=self.max_length
                 ).to(device)
                 
-                # Get embeddings from the model
+                # Get hidden states
                 with torch.no_grad():
-                    # Forward pass but extract the last hidden state
                     outputs = model(**inputs, output_hidden_states=True)
                     
-                    # Get the last hidden state (CLS token embedding)
-                    if hasattr(outputs, "hidden_states"):
-                        # Get the last layer's [CLS] token embedding
-                        last_hidden_state = outputs.hidden_states[-1]
-                        cls_embeddings = last_hidden_state[:, 0, :].cpu().numpy()
-                        embeddings.extend(cls_embeddings)
-                    else:
-                        print(f"Model doesn't output hidden states: {type(outputs)}")
-                        return None
-                        
-            return np.array(embeddings)
+                # Get the last hidden state
+                hidden_states = outputs.hidden_states[-1]
+                
+                # Mean pooling over sequence length
+                embedding = hidden_states.mean(dim=1).cpu().numpy()
+                all_embeddings.append(embedding[0])  # Take the first (only) item
+                
+            return np.array(all_embeddings)
         
         # Get embeddings from each model
         all_embeddings = {}
-        for seed, model in self.reward_models.items():
-            print(f"Extracting embeddings for seed {seed}...")
-            embeddings = get_embeddings(model, self.reward_tokenizers[seed], sample_texts)
-            if embeddings is not None:
-                all_embeddings[f"seed_{seed}"] = embeddings
+        for seed in self.seeds:
+            if seed in self.reward_models:
+                print(f"Extracting embeddings for seed {seed}...")
+                model = self.reward_models[seed]
+                embeddings = get_embeddings(model, self.reward_tokenizers[seed], sample_texts)
+                all_embeddings[seed] = embeddings
         
-        # Apply PCA to each model's embeddings
-        pca_results = {}
-        for model_name, embeddings in all_embeddings.items():
-            print(f"Applying PCA to {model_name} embeddings...")
+        # Perform PCA on embeddings from each model
+        for seed, embeddings in all_embeddings.items():
+            # Apply PCA
             pca = PCA(n_components=2)
-            pca_result = pca.fit_transform(embeddings)
-            pca_results[model_name] = pca_result
-            print(f"Explained variance ratio: {pca.explained_variance_ratio_}")
-        
-        # Plot PCA results
-        plt.figure(figsize=(15, 10))
-        
-        for i, (model_name, pca_result) in enumerate(pca_results.items()):
-            plt.subplot(2, (len(pca_results) + 1) // 2, i + 1)
+            reduced_embeddings = pca.fit_transform(embeddings)
             
-            # Plot points colored by true label
-            scatter = plt.scatter(
-                pca_result[:, 0], 
-                pca_result[:, 1], 
-                c=sample_labels, 
-                cmap='coolwarm', 
-                alpha=0.6
-            )
+            # Create DataFrame for plotting
+            df = pd.DataFrame({
+                'PC1': reduced_embeddings[:, 0],
+                'PC2': reduced_embeddings[:, 1],
+                'Label': ['Toxic' if label == 1 else 'Non-toxic' for label in sample_labels]
+            })
             
-            plt.colorbar(scatter, label='True Label (1=Toxic)')
-            plt.title(f'PCA of {model_name} Embeddings')
-            plt.xlabel('PC1')
-            plt.ylabel('PC2')
-            
-        plt.tight_layout()
-        plt.savefig(os.path.join(self.output_dir, 'feature_representations_pca.png'))
-        plt.close()
+            # Plot PCA
+            plt.figure(figsize=(10, 8))
+            sns.scatterplot(data=df, x='PC1', y='PC2', hue='Label', palette={'Toxic': 'red', 'Non-toxic': 'blue'})
+            plt.title(f'PCA of Embeddings from Seed {seed} (Pythia-{self.model_size})')
+            plt.tight_layout()
+            plt.savefig(os.path.join(self.output_dir, f'pca_embeddings_seed_{seed}.png'))
+            plt.close()
         
-        return pca_results
+        # Combine all embeddings for comparison
+        if len(all_embeddings) > 1:
+            # Flatten and concatenate all embeddings
+            all_flattened = []
+            model_labels = []
+            for seed, embeddings in all_embeddings.items():
+                all_flattened.append(embeddings)
+                model_labels.extend([f"Seed {seed}"] * len(embeddings))
+                
+            all_flattened = np.vstack(all_flattened)
+            
+            # Apply PCA to all embeddings
+            pca = PCA(n_components=2)
+            all_reduced = pca.fit_transform(all_flattened)
+            
+            # Create DataFrame for plotting
+            df = pd.DataFrame({
+                'PC1': all_reduced[:, 0],
+                'PC2': all_reduced[:, 1],
+                'Model': model_labels
+            })
+            
+            # Plot PCA of all embeddings
+            plt.figure(figsize=(12, 10))
+            sns.scatterplot(data=df, x='PC1', y='PC2', hue='Model')
+            plt.title(f'PCA of Embeddings from All Models (Pythia-{self.model_size})')
+            plt.tight_layout()
+            plt.savefig(os.path.join(self.output_dir, 'pca_all_embeddings.png'))
+            plt.close()
         
     def evaluate_individual_models(self):
         """
