@@ -19,6 +19,7 @@ from scipy import stats
 import argparse
 import json
 from typing import List, Dict, Tuple, Optional, Union
+from huggingface_hub import hf_hub_download
 
 # Set up device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -133,49 +134,74 @@ class RewardModelEnsembleAnalyzer:
         print("Loading datasets...")
         
         try:
-            # Load original dataset
-            print(f"Loading original dataset: {self.original_dataset}")
-            try:
-                original_ds = load_dataset(self.original_dataset, use_auth_token=True)
-                if isinstance(original_ds, dict) and 'train' in original_ds:
-                    self.original_data = original_ds['train']
-                else:
-                    self.original_data = original_ds
-            except NotImplementedError as e:
-                # Handle LocalFileSystem error by downloading the dataset first
-                print(f"Encountered error: {e}")
-                print("Attempting to download dataset from HuggingFace first...")
-                original_ds = load_dataset(self.original_dataset, download_mode="force_redownload")
-                if isinstance(original_ds, dict) and 'train' in original_ds:
-                    self.original_data = original_ds['train']
-                else:
-                    self.original_data = original_ds
+            # Function to download and process a dataset
+            def download_and_process_dataset(dataset_path):
+                print(f"Loading dataset: {dataset_path}")
+                
+                # Use the Hugging Face Hub API to download the dataset files directly
+                import pandas as pd
+                import json
+                
+                try:
+                    # Try to download the dataset file (assuming it's a JSON file)
+                    file_path = hf_hub_download(
+                        repo_id=dataset_path,
+                        filename="data/train.json",  # Common filename pattern
+                        repo_type="dataset"
+                    )
+                    
+                    # Load the JSON file
+                    with open(file_path, 'r') as f:
+                        data = json.load(f)
+                    
+                    # Convert to a list of dictionaries if needed
+                    if isinstance(data, dict):
+                        data = [data]
+                    
+                    return data
+                except Exception as e1:
+                    print(f"Error downloading JSON file: {e1}")
+                    try:
+                        # Try to download as a CSV file
+                        file_path = hf_hub_download(
+                            repo_id=dataset_path,
+                            filename="data/train.csv",  # Common filename pattern
+                            repo_type="dataset"
+                        )
+                        
+                        # Load the CSV file
+                        df = pd.read_csv(file_path)
+                        return df.to_dict('records')
+                    except Exception as e2:
+                        print(f"Error downloading CSV file: {e2}")
+                        try:
+                            # Try to download as a Parquet file
+                            file_path = hf_hub_download(
+                                repo_id=dataset_path,
+                                filename="data/train.parquet",  # Common filename pattern
+                                repo_type="dataset"
+                            )
+                            
+                            # Load the Parquet file
+                            df = pd.read_parquet(file_path)
+                            return df.to_dict('records')
+                        except Exception as e3:
+                            print(f"Error downloading Parquet file: {e3}")
+                            raise ValueError(f"Could not download dataset: {dataset_path}")
             
-            # Load detoxified dataset
-            print(f"Loading detoxified dataset: {self.detoxified_dataset}")
-            try:
-                detoxified_ds = load_dataset(self.detoxified_dataset, use_auth_token=True)
-                if isinstance(detoxified_ds, dict) and 'train' in detoxified_ds:
-                    self.detoxified_data = detoxified_ds['train']
-                else:
-                    self.detoxified_data = detoxified_ds
-            except NotImplementedError as e:
-                # Handle LocalFileSystem error by downloading the dataset first
-                print(f"Encountered error: {e}")
-                print("Attempting to download dataset from HuggingFace first...")
-                detoxified_ds = load_dataset(self.detoxified_dataset, download_mode="force_redownload")
-                if isinstance(detoxified_ds, dict) and 'train' in detoxified_ds:
-                    self.detoxified_data = detoxified_ds['train']
-                else:
-                    self.detoxified_data = detoxified_ds
+            # Download and process the original dataset
+            self.original_data = download_and_process_dataset(self.original_dataset)
+            
+            # Download and process the detoxified dataset
+            self.detoxified_data = download_and_process_dataset(self.detoxified_dataset)
             
             # Verify data lengths match
             if len(self.original_data) != len(self.detoxified_data):
                 print("Warning: Dataset lengths don't match!")
                 # Use the smaller length
                 min_len = min(len(self.original_data), len(self.detoxified_data))
-                self.original_data = self.original_data.select(range(min_len))
-                self.detoxified_data = self.detoxified_data.select(range(min_len))
+                self.original_data = self.original_data[:min_len]
+                self.detoxified_data = self.detoxified_data[:min_len]
             
             print(f"Loaded {len(self.original_data)} paired samples")
             

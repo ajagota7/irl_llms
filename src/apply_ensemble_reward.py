@@ -12,6 +12,8 @@ from tqdm import tqdm
 from datasets import load_dataset
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 from typing import List, Dict, Optional, Union
+from huggingface_hub import hf_hub_download
+import pandas as pd
 
 from reward_model_ensemble import RewardModelEnsembleAnalyzer, weighted_ensemble_predictions
 
@@ -113,24 +115,80 @@ def apply_ensemble_to_dataset(
     # Load dataset
     try:
         print(f"Loading dataset: {dataset_path}")
-        try:
-            ds = load_dataset(dataset_path)
-            if isinstance(ds, dict) and 'train' in ds:
-                ds = ds['train']
-        except NotImplementedError as e:
-            # Handle LocalFileSystem error by downloading the dataset first
-            print(f"Encountered error: {e}")
-            print("Attempting to download dataset from HuggingFace first...")
-            ds = load_dataset(dataset_path, download_mode="force_redownload")
-            if isinstance(ds, dict) and 'train' in ds:
-                ds = ds['train']
         
-        # Get texts from dataset
-        if text_column in ds.column_names:
-            texts = ds[text_column]
-        else:
-            raise ValueError(f"Column '{text_column}' not found in dataset. Available columns: {ds.column_names}")
+        # Use the Hugging Face Hub API to download the dataset files directly
+        import pandas as pd
+        import json
+        
+        try:
+            # Try to download the dataset file (assuming it's a JSON file)
+            file_path = hf_hub_download(
+                repo_id=dataset_path,
+                filename="data/train.json",  # Common filename pattern
+                repo_type="dataset"
+            )
             
+            # Load the JSON file
+            with open(file_path, 'r') as f:
+                data = json.load(f)
+            
+            # Extract texts
+            if isinstance(data, list) and len(data) > 0:
+                if text_column in data[0]:
+                    texts = [item[text_column] for item in data]
+                elif 'output' in data[0]:  # Fallback to 'output' if text_column not found
+                    texts = [item['output'] for item in data]
+                else:
+                    raise ValueError(f"Column '{text_column}' not found in dataset")
+            else:
+                raise ValueError("Invalid dataset format")
+                
+        except Exception as e1:
+            print(f"Error downloading JSON file: {e1}")
+            try:
+                # Try to download as a CSV file
+                file_path = hf_hub_download(
+                    repo_id=dataset_path,
+                    filename="data/train.csv",  # Common filename pattern
+                    repo_type="dataset"
+                )
+                
+                # Load the CSV file
+                df = pd.read_csv(file_path)
+                
+                # Extract texts
+                if text_column in df.columns:
+                    texts = df[text_column].tolist()
+                elif 'output' in df.columns:  # Fallback to 'output' if text_column not found
+                    texts = df['output'].tolist()
+                else:
+                    raise ValueError(f"Column '{text_column}' not found in dataset")
+                    
+            except Exception as e2:
+                print(f"Error downloading CSV file: {e2}")
+                try:
+                    # Try to download as a Parquet file
+                    file_path = hf_hub_download(
+                        repo_id=dataset_path,
+                        filename="data/train.parquet",  # Common filename pattern
+                        repo_type="dataset"
+                    )
+                    
+                    # Load the Parquet file
+                    df = pd.read_parquet(file_path)
+                    
+                    # Extract texts
+                    if text_column in df.columns:
+                        texts = df[text_column].tolist()
+                    elif 'output' in df.columns:  # Fallback to 'output' if text_column not found
+                        texts = df['output'].tolist()
+                    else:
+                        raise ValueError(f"Column '{text_column}' not found in dataset")
+                        
+                except Exception as e3:
+                    print(f"Error downloading Parquet file: {e3}")
+                    raise ValueError(f"Could not download dataset: {dataset_path}")
+        
         print(f"Loaded {len(texts)} texts from dataset")
     except Exception as e:
         print(f"Error loading dataset: {e}")
