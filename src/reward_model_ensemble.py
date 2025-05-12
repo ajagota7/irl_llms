@@ -94,6 +94,8 @@ class RewardModelEnsembleAnalyzer:
             try:
                 # Load tokenizer
                 tokenizer = AutoTokenizer.from_pretrained(model_id)
+                
+                # Ensure consistent padding configuration
                 if tokenizer.pad_token is None:
                     tokenizer.pad_token = tokenizer.eos_token
                 tokenizer.padding_side = 'left'
@@ -256,6 +258,11 @@ class RewardModelEnsembleAnalyzer:
             Array of prediction scores
         """
         all_predictions = []
+        
+        # Ensure tokenizer has proper padding configuration
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.padding_side = 'left'  # Consistent with IRL training
         
         # Process in batches
         for i in range(0, len(texts), self.batch_size):
