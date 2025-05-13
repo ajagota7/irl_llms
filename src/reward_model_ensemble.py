@@ -1,7 +1,6 @@
 """
-Script to analyze and ensemble reward models trained with different seeds.
-This script investigates how different reward models trained with IRL
-might capture different aspects of toxicity detection.
+Script to analyze and compare reward models trained with different seeds and model sizes.
+Evaluates individual models and ensembles on toxicity datasets.
 """
 
 import os
@@ -11,1385 +10,1132 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from tqdm import tqdm
-from datasets import load_dataset
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
-from sklearn.metrics import accuracy_score, f1_score, roc_auc_score, confusion_matrix
-from sklearn.decomposition import PCA
-from scipy import stats
-import argparse
 import json
-from typing import List, Dict, Tuple, Optional, Union
-from huggingface_hub import hf_hub_download, list_repo_files
+import argparse
+from typing import Dict, List, Tuple, Any, Optional, Union
+from transformers import AutoTokenizer
+from datasets import load_dataset
+from sklearn.metrics import accuracy_score, f1_score, roc_auc_score, precision_recall_curve, auc
+from scipy import stats
+from scipy.spatial.distance import cosine
+import umap
+import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
-# Set up device
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+from src.irl_utilities import RewardModel
 
 
-class RewardModelEnsembleAnalyzer:
-    """Class to analyze and ensemble reward models trained with different seeds."""
+class RewardModelAnalyzer:
+    """Class to analyze and compare reward models trained with different seeds."""
 
-    def __init__(
-        self,
-        model_size: str,
-        seeds: List[int],
-        checkpoint: int,
-        ground_truth_model: str = "facebook/roberta-hate-speech-dynabench-r4-target",
-        original_dataset: str = None,
-        detoxified_dataset: str = None,
-        batch_size: int = 16,
-        max_length: int = 512,
-        output_dir: str = "reward_model_analysis",
-    ):
+    def __init__(self, 
+                 model_specs: List[Dict[str, Any]], 
+                 device: str = "cuda" if torch.cuda.is_available() else "cpu",
+                 output_dir: str = "analysis_results"):
         """
-        Initialize the analyzer.
+        Initialize the analyzer with model specifications.
         
         Args:
-            model_size: Size of the model (70m, 160m, 410m, 1b)
-            seeds: List of seeds to analyze
-            checkpoint: Checkpoint number to use
-            ground_truth_model: HF model ID for ground truth toxicity classifier
-            original_dataset: HF dataset ID for original (toxic) outputs
-            detoxified_dataset: HF dataset ID for detoxified outputs
-            batch_size: Batch size for inference
-            max_length: Max sequence length for tokenization
+            model_specs: List of dictionaries with model specifications:
+                         [{"size": "70m", "seed": 42, "checkpoint": 30, "hub_id": "..."}]
+            device: Device to run models on
             output_dir: Directory to save analysis results
         """
-        self.model_size = model_size
-        self.seeds = seeds
-        self.checkpoint = checkpoint
-        self.ground_truth_model_name = ground_truth_model
+        self.model_specs = model_specs
+        self.device = device
+        self.output_dir = output_dir
+        os.makedirs(output_dir, exist_ok=True)
         
-        if original_dataset is None:
-            self.original_dataset = f"ajagota71/EleutherAI_pythia-{model_size}_2000_samples_original"
-        else:
-            self.original_dataset = original_dataset
+        # Load models
+        self.models = {}
+        self.tokenizers = {}
+        self.load_models()
+        
+        # Store value head weights for analysis
+        self.value_head_weights = {}
+        self.extract_value_head_weights()
+        
+    def load_models(self):
+        """Load all reward models based on specifications."""
+        print("Loading reward models...")
+        for spec in tqdm(self.model_specs):
+            model_id = f"pythia-{spec['size']}-seed-{spec['seed']}"
+            hub_id = spec.get('hub_id', f"ajagota71/toxicity-reward-model-v-head-max-margin-seed-{spec['seed']}-pythia-{spec['size']}-checkpoint-{spec['checkpoint']}")
             
-        if detoxified_dataset is None:
-            self.detoxified_dataset = f"ajagota71/ajagota71_pythia-{model_size}-detox-epoch-100_2000_samples_detoxified"
-        else:
-            self.detoxified_dataset = detoxified_dataset
-            
-        self.batch_size = batch_size
-        self.max_length = max_length
-        self.output_dir = os.path.join(output_dir, f"pythia-{model_size}")
-        
-        # Create output directory
-        os.makedirs(self.output_dir, exist_ok=True)
-        
-        # Load models and data
-        self._load_reward_models()
-        self._load_ground_truth_model()
-        self._load_data()
-        
-    def _load_reward_models(self):
-        """Load all reward models for the specified seeds using the same architecture as in IRL training."""
-        print(f"Loading reward models for pythia-{self.model_size}...")
-        
-        # Import the RewardModel class from irl_utilities
-        from irl_utilities import RewardModel
-        
-        self.reward_models = {}
-        self.reward_tokenizers = {}
-        
-        for seed in tqdm(self.seeds, desc="Loading models"):
             try:
                 # Load tokenizer
-                tokenizer = AutoTokenizer.from_pretrained(f"EleutherAI/pythia-{self.model_size}")
+                self.tokenizers[model_id] = AutoTokenizer.from_pretrained(hub_id)
+                if self.tokenizers[model_id].pad_token is None:
+                    self.tokenizers[model_id].pad_token = self.tokenizers[model_id].eos_token
                 
-                # Ensure consistent padding configuration
-                if tokenizer.pad_token is None:
-                    tokenizer.pad_token = tokenizer.eos_token
-                tokenizer.padding_side = 'left'
-                
-                # Set up device
-                device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-                
-                # Create base model name
-                base_model_name = f"EleutherAI/pythia-{self.model_size}"
-                
-                # Create reward model using the same architecture as in IRL training
-                model = RewardModel(base_model_name, device=device, num_unfrozen_layers=0)
-                
-                # Initialize the value head with specific values from your original runs
-                # These are the values you observed in your original runs
-                if seed == 42:
-                    # Initialize with values that would produce means around 0.3375 for original and 1.0496 for detoxified
-                    model.v_head.weight.data.fill_(0.01)  # Adjust as needed
-                elif seed == 100:
-                    # Initialize with values that would produce means around 1.246 for original and 1.92 for detoxified
-                    model.v_head.weight.data.fill_(0.02)  # Adjust as needed
-                elif seed == 200:
-                    # Initialize with values that would produce means around -0.72 for original and -0.4 for detoxified
-                    model.v_head.weight.data.fill_(-0.01)  # Adjust as needed
-                elif seed == 300:
-                    # Initialize with values that would produce means around -2.5 for original and -1.8 for detoxified
-                    model.v_head.weight.data.fill_(-0.03)  # Adjust as needed
-                elif seed == 400:
-                    # Initialize with values that would produce means around -2.16 for original and -1.41 for detoxified
-                    model.v_head.weight.data.fill_(-0.025)  # Adjust as needed
-                
-                model.to(device)
-                model.eval()
-                
-                self.reward_models[seed] = model
-                self.reward_tokenizers[seed] = tokenizer
-                
-                print(f"Successfully loaded model for seed {seed} with custom initialization")
+                # Load model
+                print(f"Loading model from {hub_id}")
+                self.models[model_id] = RewardModel.load(
+                    os.path.join(hub_id, "v_head.pt"),
+                    device=self.device
+                )
+                print(f"Successfully loaded {model_id}")
             except Exception as e:
-                print(f"Error loading model for seed {seed}: {e}")
-                import traceback
-                traceback.print_exc()
+                print(f"Error loading model {model_id}: {e}")
                 continue
-                
-        print(f"Loaded {len(self.reward_models)} reward models")
+    
+    def extract_value_head_weights(self):
+        """Extract value head weights from all models for analysis."""
+        print("Extracting value head weights...")
+        for model_id, model in self.models.items():
+            # Get the value head weights
+            weights = model.v_head.weight.data.cpu().numpy()
+            self.value_head_weights[model_id] = weights
+    
+    def analyze_value_heads(self):
+        """Analyze the value head weights across models."""
+        print("Analyzing value head weights...")
         
-    def _load_ground_truth_model(self):
-        """Load the ground truth toxicity model."""
-        print(f"Loading ground truth model: {self.ground_truth_model_name}")
+        # Create a directory for value head analysis
+        value_head_dir = os.path.join(self.output_dir, "value_head_analysis")
+        os.makedirs(value_head_dir, exist_ok=True)
         
-        try:
-            self.ground_truth_tokenizer = AutoTokenizer.from_pretrained(self.ground_truth_model_name)
-            self.ground_truth_model = AutoModelForSequenceClassification.from_pretrained(
-                self.ground_truth_model_name
-            ).to(device)
-            self.ground_truth_model.eval()
-            print("Successfully loaded ground truth model")
-        except Exception as e:
-            print(f"Error loading ground truth model: {e}")
-            self.ground_truth_model = None
-            self.ground_truth_tokenizer = None
-            
-    def _load_data(self):
-        """Load the original and detoxified datasets."""
-        print("Loading datasets...")
+        # Calculate pairwise cosine similarities between value heads
+        model_ids = list(self.value_head_weights.keys())
+        n_models = len(model_ids)
+        similarity_matrix = np.zeros((n_models, n_models))
         
-        try:
-            # Define a helper function to load datasets
-            def safe_load_dataset(dataset_path):
-                print(f"Loading dataset: {dataset_path}")
-                
-                # Try multiple methods to load the dataset
-                try:
-                    # Method 1: Standard loading
-                    try:
-                        ds = load_dataset(dataset_path, download_mode="force_redownload")
-                        if isinstance(ds, dict) and 'train' in ds:
-                            return ds['train']
-                        return ds
-                    except Exception as e1:
-                        print(f"Standard loading failed: {e1}")
-                
-                    # Method 2: With auth token
-                    try:
-                        ds = load_dataset(dataset_path, use_auth_token=True)
-                        if isinstance(ds, dict) and 'train' in ds:
-                            return ds['train']
-                        return ds
-                    except Exception as e2:
-                        print(f"Loading with auth token failed: {e2}")
-                
-                    # Method 3: Streaming mode
-                    try:
-                        ds = load_dataset(dataset_path, streaming=True)
-                        return list(ds.take(10000))  # Take a large number to ensure we get all data
-                    except Exception as e3:
-                        print(f"Streaming mode failed: {e3}")
-                
-                    # Method 4: Direct file download
-                    files = list_repo_files(dataset_path, repo_type="dataset")
-                    print(f"Files in repository: {files}")
-                    
-                    # Look for data files
-                    data_files = [f for f in files if f.endswith(('.json', '.csv', '.parquet', '.jsonl'))]
-                    
-                    if not data_files:
-                        raise ValueError(f"No data files found in repository: {dataset_path}")
-                        
-                    # Download the first data file
-                    file_path = hf_hub_download(
-                        repo_id=dataset_path,
-                        filename=data_files[0],
-                        repo_type="dataset"
-                    )
-                    
-                    # Load based on file extension
-                    if file_path.endswith('.json') or file_path.endswith('.jsonl'):
-                        with open(file_path, 'r') as f:
-                            return json.load(f)
-                    elif file_path.endswith('.csv'):
-                        return pd.read_csv(file_path).to_dict('records')
-                    elif file_path.endswith('.parquet'):
-                        return pd.read_parquet(file_path).to_dict('records')
-                    else:
-                        raise ValueError(f"Unsupported file format: {file_path}")
-                        
-                except Exception as e:
-                    print(f"All loading methods failed: {e}")
-                    raise ValueError(f"Could not load dataset: {dataset_path}")
-            
-            # Load original dataset
-            original_data = safe_load_dataset(self.original_dataset)
-            
-            # Convert to list if it's a Dataset object
-            if hasattr(original_data, 'to_pandas'):
-                self.original_data = original_data.to_pandas().to_dict('records')
-            else:
-                self.original_data = original_data
-            
-            # Load detoxified dataset
-            detoxified_data = safe_load_dataset(self.detoxified_dataset)
-            
-            # Convert to list if it's a Dataset object
-            if hasattr(detoxified_data, 'to_pandas'):
-                self.detoxified_data = detoxified_data.to_pandas().to_dict('records')
-            else:
-                self.detoxified_data = detoxified_data
-            
-            # Verify data lengths match
-            if len(self.original_data) != len(self.detoxified_data):
-                print("Warning: Dataset lengths don't match!")
-                # Use the smaller length
-                min_len = min(len(self.original_data), len(self.detoxified_data))
-                self.original_data = self.original_data[:min_len]
-                self.detoxified_data = self.detoxified_data[:min_len]
-            
-            print(f"Loaded {len(self.original_data)} paired samples")
-            
-            # Apply train-test split similar to irl_train.py
-            train_test_split = 0.8  # 80% train, 20% test
-            train_size = int(train_test_split * len(self.original_data))
-            
-            self.train_data = {
-                'original': self.original_data[:train_size],
-                'detoxified': self.detoxified_data[:train_size]
-            }
-            
-            self.test_data = {
-                'original': self.original_data[train_size:],
-                'detoxified': self.detoxified_data[train_size:]
-            }
-            
-            print(f"Split into {len(self.train_data['original'])} train and {len(self.test_data['original'])} test samples")
-            
-            # Create combined datasets with labels for train and test
-            self.train_texts = []
-            self.train_labels = []
-            self.test_texts = []
-            self.test_labels = []
-            
-            # Add original (toxic) examples to train set
-            for item in self.train_data['original']:
-                self.train_texts.append(item['output'])
-                self.train_labels.append(1)  # Toxic
-            
-            # Add detoxified examples to train set
-            for item in self.train_data['detoxified']:
-                self.train_texts.append(item['output'])
-                self.train_labels.append(0)  # Non-toxic
-            
-            # Add original (toxic) examples to test set
-            for item in self.test_data['original']:
-                self.test_texts.append(item['output'])
-                self.test_labels.append(1)  # Toxic
-            
-            # Add detoxified examples to test set
-            for item in self.test_data['detoxified']:
-                self.test_texts.append(item['output'])
-                self.test_labels.append(0)  # Non-toxic
-            
-            # For backward compatibility, keep all_texts and all_labels
-            self.all_texts = self.test_texts
-            self.all_labels = self.test_labels
-            
-        except Exception as e:
-            print(f"Error loading datasets: {e}")
-            raise
+        for i, model_id1 in enumerate(model_ids):
+            for j, model_id2 in enumerate(model_ids):
+                w1 = self.value_head_weights[model_id1].flatten()
+                w2 = self.value_head_weights[model_id2].flatten()
+                similarity = 1 - cosine(w1, w2)  # Convert distance to similarity
+                similarity_matrix[i, j] = similarity
         
-    def get_model_predictions(self, texts: List[str], model, tokenizer) -> np.ndarray:
+        # Plot similarity heatmap
+        plt.figure(figsize=(12, 10))
+        sns.heatmap(similarity_matrix, annot=True, fmt=".3f", 
+                    xticklabels=model_ids, yticklabels=model_ids, cmap="viridis")
+        plt.title("Cosine Similarity Between Value Head Weights")
+        plt.tight_layout()
+        plt.savefig(os.path.join(value_head_dir, "value_head_similarity.png"), dpi=300)
+        
+        # Save similarity matrix
+        similarity_df = pd.DataFrame(similarity_matrix, index=model_ids, columns=model_ids)
+        similarity_df.to_csv(os.path.join(value_head_dir, "value_head_similarity.csv"))
+        
+        # Dimensionality reduction for visualization if we have enough models
+        if n_models >= 5:
+            try:
+                # Prepare data for UMAP
+                value_head_array = np.array([self.value_head_weights[mid].flatten() for mid in model_ids])
+                
+                # Apply UMAP
+                reducer = umap.UMAP(n_components=2, random_state=42)
+                embedding = reducer.fit_transform(value_head_array)
+                
+                # Create DataFrame for plotting
+                embedding_df = pd.DataFrame({
+                    'UMAP1': embedding[:, 0],
+                    'UMAP2': embedding[:, 1],
+                    'model_id': model_ids,
+                    'size': [mid.split('-')[1] for mid in model_ids],
+                    'seed': [mid.split('-')[-1] for mid in model_ids]
+                })
+                
+                # Plot with plotly
+                fig = px.scatter(
+                    embedding_df, x='UMAP1', y='UMAP2', 
+                    color='size', symbol='seed', text='model_id',
+                    title='UMAP Projection of Value Head Weights',
+                    labels={'UMAP1': 'UMAP Dimension 1', 'UMAP2': 'UMAP Dimension 2'},
+                    height=600, width=800
+                )
+                fig.update_traces(marker=dict(size=12), textposition='top center')
+                fig.write_html(os.path.join(value_head_dir, "value_head_umap.html"))
+                fig.write_image(os.path.join(value_head_dir, "value_head_umap.png"), scale=2)
+                
+            except Exception as e:
+                print(f"Error in UMAP visualization: {e}")
+        
+        return similarity_matrix
+    
+    def evaluate_on_dataset(self, dataset_path: str, dataset_name: str, batch_size: int = 16, 
+                           max_samples: Optional[int] = None, text_key: str = "output"):
         """
-        Get predictions from a model for a list of texts.
+        Evaluate all models on a dataset.
         
         Args:
-            texts: List of text strings
-            model: The model to use for predictions
-            tokenizer: The tokenizer for the model
+            dataset_path: Path or HuggingFace ID of the dataset
+            dataset_name: Name for the dataset in results
+            batch_size: Batch size for processing
+            max_samples: Maximum number of samples to process (None for all)
+            text_key: Key in the dataset that contains the text to evaluate
             
         Returns:
-            Array of prediction scores
+            Dictionary with evaluation results
         """
-        all_predictions = []
+        print(f"Evaluating models on {dataset_name} dataset...")
+        
+        # Load dataset
+        try:
+            if '/' in dataset_path and not os.path.exists(dataset_path):
+                # HuggingFace dataset
+                dataset = load_dataset(dataset_path)
+                if isinstance(dataset, dict) and 'train' in dataset:
+                    dataset = dataset['train']
+                data = dataset.to_pandas().to_dict('records')
+            else:
+                # Local file
+                with open(dataset_path, 'r') as f:
+                    data = json.load(f)
+        except Exception as e:
+            print(f"Error loading dataset {dataset_path}: {e}")
+            return None
+        
+        # Limit samples if specified
+        if max_samples is not None and max_samples < len(data):
+            data = data[:max_samples]
+        
+        print(f"Processing {len(data)} samples from {dataset_name} dataset")
+        
+        # Store results for each model
+        results = {model_id: [] for model_id in self.models}
         
         # Process in batches
-        for i in range(0, len(texts), self.batch_size):
-            batch_texts = texts[i:i+self.batch_size]
+        for i in tqdm(range(0, len(data), batch_size), desc=f"Evaluating {dataset_name}"):
+            batch = data[i:i+batch_size]
+            texts = [item[text_key] if text_key in item else item['text'] for item in batch]
             
-            # Process each text individually to avoid padding issues
-            batch_scores = []
-            for text in batch_texts:
-                # Tokenize without padding
+            # Process with each model
+            for model_id, model in self.models.items():
+                tokenizer = self.tokenizers[model_id]
+                
+                # Tokenize
                 inputs = tokenizer(
-                    text,
+                    texts,
                     return_tensors="pt",
+                    padding=True,
                     truncation=True,
-                    max_length=self.max_length
-                ).to(device)
+                    max_length=512
+                )
                 
-                # Get predictions
+                # Move to device
+                inputs = {k: v.to(self.device) for k, v in inputs.items()}
+                
+                # Get rewards
                 with torch.no_grad():
-                    # Check if it's our custom RewardModel
-                    if hasattr(model, 'v_head'):
-                        # Custom RewardModel from irl_utilities
-                        outputs = model(inputs.input_ids, inputs.attention_mask)
-                        score = outputs.squeeze().cpu().numpy()
-                    else:
-                        # Standard model
-                        outputs = model(**inputs)
-                        
-                        # Extract scores based on model type
-                        if hasattr(outputs, "rewards"):
-                            score = outputs.rewards.squeeze().cpu().numpy()
-                        elif hasattr(outputs, "logits"):
-                            score = outputs.logits[:, 0].cpu().numpy()
-                        else:
-                            raise ValueError(f"Unexpected model output format: {type(outputs)}")
+                    rewards = model(**inputs)
                 
-                # Add to batch scores
-                batch_scores.append(score.item() if hasattr(score, 'item') else score)
-            
-            all_predictions.extend(batch_scores)
-        
-        return np.array(all_predictions)
-        
-    def analyze_model_correlations(self):
-        """
-        Analyze correlations between different reward models and the ground truth.
-        """
-        print("Analyzing model correlations...")
-        
-        # Get a subset of texts for correlation analysis (for efficiency)
-        sample_size = min(1000, len(self.all_texts))
-        sample_indices = np.random.choice(len(self.all_texts), sample_size, replace=False)
-        sample_texts = [self.all_texts[i] for i in sample_indices]
-        sample_labels = [self.all_labels[i] for i in sample_indices]
-        
-        # Get predictions from all models
-        predictions = {}
-        
-        # Get ground truth predictions if available
-        if self.ground_truth_model is not None:
-            ground_truth_preds = self.get_model_predictions(
-                sample_texts, 
-                self.ground_truth_model, 
-                self.ground_truth_tokenizer
-            )
-            predictions["ground_truth"] = ground_truth_preds
-            
-        # Get predictions from each reward model
-        for seed, model in self.reward_models.items():
-            model_preds = self.get_model_predictions(
-                sample_texts, 
-                model, 
-                self.reward_tokenizers[seed]
-            )
-            predictions[f"seed_{seed}"] = model_preds
-            
-        # Create a DataFrame for correlation analysis
-        df = pd.DataFrame(predictions)
-        
-        # Add true labels
-        df["true_label"] = sample_labels
-        
-        # Calculate correlation matrix
-        correlation_matrix = df.corr(method='pearson')
-        
-        # Plot correlation heatmap
-        plt.figure(figsize=(12, 10))
-        sns.heatmap(correlation_matrix, annot=True, cmap='coolwarm', vmin=-1, vmax=1)
-        plt.title(f'Correlation Between Reward Models (Pythia-{self.model_size})')
-        plt.tight_layout()
-        plt.savefig(os.path.join(self.output_dir, 'model_correlations.png'))
-        plt.close()
-        
-        # Save correlation matrix
-        correlation_matrix.to_csv(os.path.join(self.output_dir, 'model_correlations.csv'))
-        
-        # Calculate average correlation between models
-        model_columns = [col for col in df.columns if col.startswith('seed_')]
-        model_corr = correlation_matrix.loc[model_columns, model_columns]
-        avg_model_corr = (model_corr.sum().sum() - len(model_columns)) / (len(model_columns) * (len(model_columns) - 1))
-        
-        print(f"Average correlation between models: {avg_model_corr:.4f}")
-        
-        # Calculate correlation with ground truth if available
-        if "ground_truth" in df.columns:
-            gt_corr = correlation_matrix.loc["ground_truth", model_columns].mean()
-            print(f"Average correlation with ground truth: {gt_corr:.4f}")
-            
-        # Calculate correlation with true labels
-        label_corr = correlation_matrix.loc["true_label", model_columns].mean()
-        print(f"Average correlation with true labels: {label_corr:.4f}")
-        
-        return correlation_matrix
-        
-    def analyze_feature_representations(self):
-        """
-        Analyze the feature representations learned by different reward models.
-        """
-        print("Analyzing feature representations...")
-        
-        # Get a subset of texts for embedding analysis (for efficiency)
-        sample_size = min(500, len(self.all_texts))
-        sample_indices = np.random.choice(len(self.all_texts), sample_size, replace=False)
-        sample_texts = [self.all_texts[i] for i in sample_indices]
-        sample_labels = [self.all_labels[i] for i in sample_indices]
-        
-        # Function to get embeddings from a model
-        def get_embeddings(model, tokenizer, texts):
-            all_embeddings = []
-            
-            # Process each text individually to avoid padding issues
-            for text in texts:
-                # Tokenize without padding
-                inputs = tokenizer(
-                    text,
-                    return_tensors="pt",
-                    truncation=True,
-                    max_length=self.max_length
-                ).to(device)
+                # Convert to list of floats
+                rewards_list = rewards.squeeze().cpu().tolist()
                 
-                # Get hidden states
-                with torch.no_grad():
-                    # Check if it's our custom RewardModel
-                    if hasattr(model, 'v_head'):
-                        # For custom RewardModel, we need to access the base model's hidden states
-                        # First, get the outputs from the base model
-                        outputs = model.model(inputs.input_ids, attention_mask=inputs.attention_mask, output_hidden_states=True)
-                        # Get the last hidden state
-                        hidden_states = outputs.hidden_states[-1]
-                    else:
-                        # Standard model
-                        outputs = model(**inputs, output_hidden_states=True)
-                        # Get the last hidden state
-                        hidden_states = outputs.hidden_states[-1]
+                # Handle single item case
+                if not isinstance(rewards_list, list):
+                    rewards_list = [rewards_list]
                 
-                # Mean pooling over sequence length
-                embedding = hidden_states.mean(dim=1).cpu().numpy()
-                all_embeddings.append(embedding[0])  # Take the first (only) item
-                
-            return np.array(all_embeddings)
+                # Store results
+                results[model_id].extend(rewards_list)
         
-        # Get embeddings from each model
-        all_embeddings = {}
-        for seed in self.seeds:
-            if seed in self.reward_models:
-                print(f"Extracting embeddings for seed {seed}...")
-                model = self.reward_models[seed]
-                embeddings = get_embeddings(model, self.reward_tokenizers[seed], sample_texts)
-                all_embeddings[seed] = embeddings
+        # Create a directory for dataset evaluation
+        dataset_dir = os.path.join(self.output_dir, f"{dataset_name}_evaluation")
+        os.makedirs(dataset_dir, exist_ok=True)
         
-        # Skip the rest if no embeddings were extracted
-        if not all_embeddings:
-            print("No embeddings could be extracted. Skipping feature representation analysis.")
-            return
+        # Save raw scores
+        scores_df = pd.DataFrame(results)
+        scores_df.to_csv(os.path.join(dataset_dir, "model_scores.csv"), index=False)
         
-        # Perform PCA on embeddings from each model
-        for seed, embeddings in all_embeddings.items():
-            # Apply PCA
-            pca = PCA(n_components=2)
-            reduced_embeddings = pca.fit_transform(embeddings)
-            
-            # Create DataFrame for plotting
-            df = pd.DataFrame({
-                'PC1': reduced_embeddings[:, 0],
-                'PC2': reduced_embeddings[:, 1],
-                'Label': ['Toxic' if label == 1 else 'Non-toxic' for label in sample_labels]
-            })
-            
-            # Plot PCA
-            plt.figure(figsize=(10, 8))
-            sns.scatterplot(data=df, x='PC1', y='PC2', hue='Label', palette={'Toxic': 'red', 'Non-toxic': 'blue'})
-            plt.title(f'PCA of Embeddings from Seed {seed} (Pythia-{self.model_size})')
-            plt.tight_layout()
-            plt.savefig(os.path.join(self.output_dir, f'pca_embeddings_seed_{seed}.png'))
-            plt.close()
-        
-        # Combine all embeddings for comparison
-        if len(all_embeddings) > 1:
-            # Flatten and concatenate all embeddings
-            all_flattened = []
-            model_labels = []
-            for seed, embeddings in all_embeddings.items():
-                all_flattened.append(embeddings)
-                model_labels.extend([f"Seed {seed}"] * len(embeddings))
-                
-            all_flattened = np.vstack(all_flattened)
-            
-            # Apply PCA to all embeddings
-            pca = PCA(n_components=2)
-            all_reduced = pca.fit_transform(all_flattened)
-            
-            # Create DataFrame for plotting
-            df = pd.DataFrame({
-                'PC1': all_reduced[:, 0],
-                'PC2': all_reduced[:, 1],
-                'Model': model_labels
-            })
-            
-            # Plot PCA of all embeddings
-            plt.figure(figsize=(12, 10))
-            sns.scatterplot(data=df, x='PC1', y='PC2', hue='Model')
-            plt.title(f'PCA of Embeddings from All Models (Pythia-{self.model_size})')
-            plt.tight_layout()
-            plt.savefig(os.path.join(self.output_dir, 'pca_all_embeddings.png'))
-            plt.close()
-        
-    def evaluate_individual_models(self, use_train=False):
-        """
-        Evaluate each individual model's performance on the dataset.
-        
-        Args:
-            use_train: If True, evaluate on training set, otherwise on test set
-        """
-        dataset_type = "TRAIN" if use_train else "TEST"
-        print(f"Evaluating individual models on {dataset_type} set...")
-        
-        # Select the appropriate dataset
-        texts = self.train_texts if use_train else self.test_texts
-        labels = self.train_labels if use_train else self.test_labels
-        
-        results = {}
-        
-        # Evaluate each reward model
-        for seed, model in self.reward_models.items():
-            print(f"Evaluating model with seed {seed}...")
-            
-            # Get predictions
-            predictions = self.get_model_predictions(
-                texts,
-                model, 
-                self.reward_tokenizers[seed]
-            )
-            
-            # Normalize predictions (higher = less toxic)
-            # Convert to binary predictions using mean threshold
-            threshold = np.mean(predictions)
-            binary_preds = (predictions > threshold).astype(int)
-            binary_preds = 1 - binary_preds  # Invert to match ground truth (1=toxic)
-            
-            # Calculate metrics
-            accuracy = accuracy_score(labels, binary_preds)
-            f1 = f1_score(labels, binary_preds)
-            auc_roc = roc_auc_score(labels, [-x for x in predictions])  # Invert for ROC
-            
-            # Store results
-            results[seed] = {
-                "accuracy": accuracy,
-                "f1": f1,
-                "auc_roc": auc_roc,
-                "predictions": predictions.tolist(),
-                "binary_predictions": binary_preds.tolist()
+        # Calculate statistics
+        stats_dict = {}
+        for model_id, scores in results.items():
+            stats_dict[model_id] = {
+                "mean": np.mean(scores),
+                "std": np.std(scores),
+                "min": np.min(scores),
+                "max": np.max(scores),
+                "median": np.median(scores),
+                "q1": np.percentile(scores, 25),
+                "q3": np.percentile(scores, 75)
             }
-            
-            print(f"Seed {seed} - Accuracy: {accuracy:.4f}, F1: {f1:.4f}, AUC-ROC: {auc_roc:.4f}")
         
-        # Save results
-        file_prefix = "train_" if use_train else "test_"
-        with open(os.path.join(self.output_dir, f'{file_prefix}individual_model_results.json'), 'w') as f:
-            # Convert numpy arrays to lists for JSON serialization
-            serializable_results = {}
-            for seed, result in results.items():
-                serializable_results[str(seed)] = {
-                    k: v for k, v in result.items() 
-                    if k not in ["predictions", "binary_predictions"]
-                }
-            json.dump(serializable_results, f, indent=2)
+        # Save statistics
+        stats_df = pd.DataFrame(stats_dict).T
+        stats_df.to_csv(os.path.join(dataset_dir, "score_statistics.csv"))
         
-        # Plot performance comparison
-        seeds = list(results.keys())
-        accuracies = [results[seed]["accuracy"] for seed in seeds]
-        f1_scores = [results[seed]["f1"] for seed in seeds]
-        auc_scores = [results[seed]["auc_roc"] for seed in seeds]
-        
-        plt.figure(figsize=(12, 6))
-        x = np.arange(len(seeds))
-        width = 0.25
-        
-        plt.bar(x - width, accuracies, width, label='Accuracy')
-        plt.bar(x, f1_scores, width, label='F1 Score')
-        plt.bar(x + width, auc_scores, width, label='AUC-ROC')
-        
-        plt.xlabel('Model Seed')
-        plt.ylabel('Score')
-        plt.title(f'Individual Model Performance ({dataset_type} Set, Pythia-{self.model_size})')
-        plt.xticks(x, seeds)
+        # Plot score distributions
+        plt.figure(figsize=(15, 10))
+        for model_id, scores in results.items():
+            sns.kdeplot(scores, label=model_id)
+        plt.title(f"Score Distribution on {dataset_name} Dataset")
+        plt.xlabel("Reward Score")
+        plt.ylabel("Density")
         plt.legend()
+        plt.grid(True, alpha=0.3)
+        plt.savefig(os.path.join(dataset_dir, "score_distributions.png"), dpi=300)
+        
+        # Create boxplot
+        plt.figure(figsize=(15, 10))
+        plt.boxplot([results[model_id] for model_id in results], labels=list(results.keys()))
+        plt.title(f"Score Distribution on {dataset_name} Dataset")
+        plt.xlabel("Model")
+        plt.ylabel("Reward Score")
+        plt.xticks(rotation=45)
+        plt.grid(True, alpha=0.3)
         plt.tight_layout()
-        plt.savefig(os.path.join(self.output_dir, f'{file_prefix}individual_performance.png'))
-        plt.close()
+        plt.savefig(os.path.join(dataset_dir, "score_boxplots.png"), dpi=300)
         
         return results
-        
-    def evaluate_ensemble_methods(self, use_train=False):
+    
+    def compare_paired_datasets(self, dataset1_path: str, dataset2_path: str, 
+                               dataset1_name: str, dataset2_name: str,
+                               batch_size: int = 16, max_samples: Optional[int] = None,
+                               text_key: str = "output"):
         """
-        Evaluate different ensemble methods for combining model predictions.
+        Compare model performance on paired datasets (e.g., original vs detoxified).
         
         Args:
-            use_train: If True, evaluate on training set, otherwise on test set
+            dataset1_path: Path or HuggingFace ID of the first dataset
+            dataset2_path: Path or HuggingFace ID of the second dataset
+            dataset1_name: Name for the first dataset
+            dataset2_name: Name for the second dataset
+            batch_size: Batch size for processing
+            max_samples: Maximum number of samples to process (None for all)
+            text_key: Key in the dataset that contains the text to evaluate
+            
+        Returns:
+            Dictionary with comparison results
         """
-        dataset_type = "TRAIN" if use_train else "TEST"
-        print(f"Evaluating ensemble methods on {dataset_type} set...")
+        print(f"Comparing models on {dataset1_name} vs {dataset2_name} datasets...")
         
-        # If no models were loaded, return empty results
-        if not self.reward_models:
-            print("No models available for ensemble evaluation")
-            return {}, {"best_individual": {}, "best_ensemble": {}}
+        # Evaluate on both datasets
+        results1 = self.evaluate_on_dataset(dataset1_path, dataset1_name, batch_size, max_samples, text_key)
+        results2 = self.evaluate_on_dataset(dataset2_path, dataset2_name, batch_size, max_samples, text_key)
         
-        # Select the appropriate dataset
-        texts = self.train_texts if use_train else self.test_texts
-        labels = self.train_labels if use_train else self.test_labels
+        if results1 is None or results2 is None:
+            print("Error evaluating datasets")
+            return None
         
-        # Get predictions from all models
-        all_predictions = {}
-        for seed, model in self.reward_models.items():
-            predictions = self.get_model_predictions(
-                texts,
-                model, 
-                self.reward_tokenizers[seed]
-            )
-            all_predictions[seed] = predictions
+        # Create a directory for comparison
+        comparison_dir = os.path.join(self.output_dir, f"{dataset1_name}_vs_{dataset2_name}")
+        os.makedirs(comparison_dir, exist_ok=True)
         
-        # If no predictions were generated, return empty results
-        if not all_predictions:
-            print("No predictions available for ensemble evaluation")
-            return {}, {"best_individual": {}, "best_ensemble": {}}
+        # Calculate score differences
+        diff_results = {}
+        for model_id in self.models:
+            if model_id in results1 and model_id in results2:
+                # Ensure same length
+                min_len = min(len(results1[model_id]), len(results2[model_id]))
+                diff_results[model_id] = [results2[model_id][i] - results1[model_id][i] for i in range(min_len)]
         
-        # Convert to numpy array for easier manipulation
-        # Shape: (num_models, num_samples)
-        predictions_array = np.array([all_predictions[seed] for seed in self.seeds])
+        # Save differences
+        diff_df = pd.DataFrame(diff_results)
+        diff_df.to_csv(os.path.join(comparison_dir, "score_differences.csv"), index=False)
+        
+        # Calculate statistics on differences
+        diff_stats = {}
+        for model_id, diffs in diff_results.items():
+            diff_stats[model_id] = {
+                "mean_diff": np.mean(diffs),
+                "std_diff": np.std(diffs),
+                "median_diff": np.median(diffs),
+                "positive_diff_pct": np.mean([d > 0 for d in diffs]) * 100,  # % where dataset2 > dataset1
+                "effect_size": np.mean(diffs) / np.std(diffs) if np.std(diffs) > 0 else 0  # Cohen's d
+            }
+        
+        # Save difference statistics
+        diff_stats_df = pd.DataFrame(diff_stats).T
+        diff_stats_df.to_csv(os.path.join(comparison_dir, "difference_statistics.csv"))
+        
+        # Plot mean differences
+        plt.figure(figsize=(12, 8))
+        model_ids = list(diff_stats.keys())
+        mean_diffs = [diff_stats[mid]["mean_diff"] for mid in model_ids]
+        
+        # Sort by mean difference
+        sorted_indices = np.argsort(mean_diffs)
+        sorted_model_ids = [model_ids[i] for i in sorted_indices]
+        sorted_mean_diffs = [mean_diffs[i] for i in sorted_indices]
+        
+        plt.barh(sorted_model_ids, sorted_mean_diffs)
+        plt.axvline(x=0, color='r', linestyle='-', alpha=0.3)
+        plt.title(f"Mean Score Difference ({dataset2_name} - {dataset1_name})")
+        plt.xlabel("Mean Difference")
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(os.path.join(comparison_dir, "mean_differences.png"), dpi=300)
+        
+        # Plot paired distributions for each model
+        for model_id in self.models:
+            if model_id in results1 and model_id in results2:
+                plt.figure(figsize=(10, 6))
+                plt.hist(results1[model_id], alpha=0.5, bins=30, label=dataset1_name)
+                plt.hist(results2[model_id], alpha=0.5, bins=30, label=dataset2_name)
+                plt.title(f"Score Distribution for {model_id}")
+                plt.xlabel("Reward Score")
+                plt.ylabel("Frequency")
+                plt.legend()
+                plt.grid(True, alpha=0.3)
+                plt.savefig(os.path.join(comparison_dir, f"{model_id}_distributions.png"), dpi=300)
+        
+        return {
+            "dataset1_results": results1,
+            "dataset2_results": results2,
+            "diff_results": diff_results,
+            "diff_stats": diff_stats
+        }
+    
+    def analyze_ensemble_methods(self, dataset1_path: str, dataset2_path: str,
+                                dataset1_name: str, dataset2_name: str,
+                                batch_size: int = 16, max_samples: Optional[int] = None,
+                                text_key: str = "output"):
+        """
+        Analyze different ensemble methods for combining model predictions.
+        
+        Args:
+            dataset1_path: Path or HuggingFace ID of the first dataset (e.g., toxic)
+            dataset2_path: Path or HuggingFace ID of the second dataset (e.g., detoxified)
+            dataset1_name: Name for the first dataset
+            dataset2_name: Name for the second dataset
+            batch_size: Batch size for processing
+            max_samples: Maximum number of samples to process (None for all)
+            text_key: Key in the dataset that contains the text to evaluate
+            
+        Returns:
+            Dictionary with ensemble analysis results
+        """
+        print("Analyzing ensemble methods...")
+        
+        # Get results from paired datasets
+        comparison_results = self.compare_paired_datasets(
+            dataset1_path, dataset2_path, 
+            dataset1_name, dataset2_name,
+            batch_size, max_samples, text_key
+        )
+        
+        if comparison_results is None:
+            print("Error comparing datasets")
+            return None
+        
+        results1 = comparison_results["dataset1_results"]  # e.g., toxic
+        results2 = comparison_results["dataset2_results"]  # e.g., detoxified
+        
+        # Create a directory for ensemble analysis
+        ensemble_dir = os.path.join(self.output_dir, "ensemble_analysis")
+        os.makedirs(ensemble_dir, exist_ok=True)
+        
+        # Prepare data for ensemble analysis
+        model_ids = list(self.models.keys())
+        
+        # Create ground truth labels: 1 for dataset1 (toxic), 0 for dataset2 (detoxified)
+        min_len = min(len(results1[model_ids[0]]), len(results2[model_ids[0]]))
+        ground_truth = [1] * min_len + [0] * min_len
+        
+        # Combine scores from both datasets
+        all_scores = {}
+        for model_id in model_ids:
+            all_scores[model_id] = results1[model_id][:min_len] + results2[model_id][:min_len]
         
         # Define ensemble methods
         ensemble_methods = {
-            "mean": np.mean(predictions_array, axis=0),
-            "median": np.median(predictions_array, axis=0),
-            "max": np.max(predictions_array, axis=0),
-            "min": np.min(predictions_array, axis=0)
+            "mean": lambda scores: np.mean(scores, axis=0),
+            "median": lambda scores: np.median(scores, axis=0),
+            "max": lambda scores: np.max(scores, axis=0),
+            "min": lambda scores: np.min(scores, axis=0),
+            "weighted_mean": lambda scores: np.average(scores, axis=0, weights=weights)
         }
         
-        # Evaluate each ensemble method
-        ensemble_results = {}
+        # Calculate weights based on individual model performance
+        # Higher AUC-ROC gets higher weight
+        weights = []
+        for model_id in model_ids:
+            # Invert scores for ROC calculation since higher score should mean less toxic
+            auc_score = roc_auc_score(ground_truth, [-s for s in all_scores[model_id]])
+            weights.append(auc_score)
         
-        for method_name, ensemble_preds in ensemble_methods.items():
-            # Normalize predictions (higher = less toxic)
-            # Convert to binary predictions using mean threshold
-            threshold = np.mean(ensemble_preds)
-            binary_preds = (ensemble_preds > threshold).astype(int)
-            binary_preds = 1 - binary_preds  # Invert to match ground truth (1=toxic)
+        # Normalize weights
+        weights = np.array(weights) / sum(weights)
+        
+        # Apply ensemble methods
+        ensemble_scores = {}
+        for method_name, method_fn in ensemble_methods.items():
+            scores_array = np.array([all_scores[mid] for mid in model_ids])
+            ensemble_scores[method_name] = method_fn(scores_array).tolist()
+        
+        # Evaluate ensemble methods
+        ensemble_metrics = {}
+        for method_name, scores in ensemble_scores.items():
+            # Calculate threshold (mean of scores)
+            threshold = np.mean(scores)
+            
+            # Convert to binary predictions (higher score = less toxic = 0)
+            predictions = (np.array(scores) > threshold).astype(int)
+            predictions = 1 - predictions  # Invert to match ground truth (1=toxic)
             
             # Calculate metrics
-            accuracy = accuracy_score(labels, binary_preds)
-            f1 = f1_score(labels, binary_preds)
-            auc_roc = roc_auc_score(labels, [-x for x in ensemble_preds])  # Invert for ROC
+            accuracy = accuracy_score(ground_truth, predictions)
+            f1 = f1_score(ground_truth, predictions)
+            auc_roc = roc_auc_score(ground_truth, [-s for s in scores])  # Invert for ROC
             
-            # Store results
-            ensemble_results[method_name] = {
+            # Calculate precision-recall curve and AUC
+            precision, recall, _ = precision_recall_curve(ground_truth, [-s for s in scores])
+            pr_auc = auc(recall, precision)
+            
+            ensemble_metrics[method_name] = {
                 "accuracy": accuracy,
                 "f1": f1,
-                "auc_roc": auc_roc
+                "auc_roc": auc_roc,
+                "pr_auc": pr_auc
             }
-            
-            print(f"Ensemble ({method_name}) - Accuracy: {accuracy:.4f}, F1: {f1:.4f}, AUC-ROC: {auc_roc:.4f}")
-            
-        # Save results
-        file_prefix = "train_" if use_train else "test_"
-        with open(os.path.join(self.output_dir, f'{file_prefix}ensemble_results.json'), 'w') as f:
-            json.dump(ensemble_results, f, indent=2)
-            
-        # Plot performance comparison
-        methods = list(ensemble_results.keys())
-        accuracies = [ensemble_results[method]["accuracy"] for method in methods]
-        f1_scores = [ensemble_results[method]["f1"] for method in methods]
-        auc_scores = [ensemble_results[method]["auc_roc"] for method in methods]
         
-        plt.figure(figsize=(12, 6))
-        x = np.arange(len(methods))
-        width = 0.25
+        # Add individual model metrics for comparison
+        for model_id in model_ids:
+            scores = all_scores[model_id]
+            threshold = np.mean(scores)
+            
+            predictions = (np.array(scores) > threshold).astype(int)
+            predictions = 1 - predictions
+            
+            accuracy = accuracy_score(ground_truth, predictions)
+            f1 = f1_score(ground_truth, predictions)
+            auc_roc = roc_auc_score(ground_truth, [-s for s in scores])
+            
+            precision, recall, _ = precision_recall_curve(ground_truth, [-s for s in scores])
+            pr_auc = auc(recall, precision)
+            
+            ensemble_metrics[model_id] = {
+                "accuracy": accuracy,
+                "f1": f1,
+                "auc_roc": auc_roc,
+                "pr_auc": pr_auc
+            }
         
-        plt.bar(x - width, accuracies, width, label='Accuracy')
-        plt.bar(x, f1_scores, width, label='F1 Score')
-        plt.bar(x + width, auc_scores, width, label='AUC-ROC')
+        # Save ensemble metrics
+        ensemble_df = pd.DataFrame(ensemble_metrics).T
+        ensemble_df.to_csv(os.path.join(ensemble_dir, "ensemble_metrics.csv"))
         
-        plt.xlabel('Ensemble Method')
-        plt.ylabel('Score')
-        plt.title(f'Ensemble Performance Metrics (Pythia-{self.model_size})')
-        plt.xticks(x, methods)
-        plt.legend()
+        # Plot metrics comparison
+        metrics_to_plot = ["accuracy", "f1", "auc_roc", "pr_auc"]
+        
+        fig, axes = plt.subplots(len(metrics_to_plot), 1, figsize=(12, 4*len(metrics_to_plot)))
+        
+        for i, metric in enumerate(metrics_to_plot):
+            # Sort by metric value
+            sorted_items = sorted(ensemble_metrics.items(), key=lambda x: x[1][metric], reverse=True)
+            methods = [item[0] for item in sorted_items]
+            values = [item[1][metric] for item in sorted_items]
+            
+            # Color ensemble methods differently
+            colors = ['blue' if method in ensemble_methods else 'green' for method in methods]
+            
+            axes[i].barh(methods, values, color=colors)
+            axes[i].set_title(f"{metric.upper()}")
+            axes[i].set_xlim(0, 1)
+            axes[i].grid(True, alpha=0.3)
+        
         plt.tight_layout()
-        plt.savefig(os.path.join(self.output_dir, f'{file_prefix}ensemble_performance.png'))
-        plt.close()
+        plt.savefig(os.path.join(ensemble_dir, "ensemble_comparison.png"), dpi=300)
         
-        # Compare best ensemble with best individual model
-        individual_results = self.evaluate_individual_models(use_train=use_train)
-        best_individual_seed = max(individual_results.keys(), key=lambda s: individual_results[s]["auc_roc"])
-        best_individual = individual_results[best_individual_seed]
+        # Create interactive plotly visualization
+        fig = make_subplots(rows=len(metrics_to_plot), cols=1, 
+                           subplot_titles=[m.upper() for m in metrics_to_plot],
+                           vertical_spacing=0.1)
         
-        best_ensemble_method = max(ensemble_results.keys(), key=lambda m: ensemble_results[m]["auc_roc"])
-        best_ensemble = ensemble_results[best_ensemble_method]
-        
-        comparison = {
-            "best_individual": {
-                "seed": best_individual_seed,
-                **best_individual
-            },
-            "best_ensemble": {
-                "method": best_ensemble_method,
-                **best_ensemble
-            }
-        }
-        
-        # Save comparison
-        with open(os.path.join(self.output_dir, f'{file_prefix}best_model_comparison.json'), 'w') as f:
-            # Remove predictions from the output
-            if "predictions" in comparison["best_individual"]:
-                del comparison["best_individual"]["predictions"]
-            if "binary_predictions" in comparison["best_individual"]:
-                del comparison["best_individual"]["binary_predictions"]
-            json.dump(comparison, f, indent=2)
+        for i, metric in enumerate(metrics_to_plot):
+            sorted_items = sorted(ensemble_metrics.items(), key=lambda x: x[1][metric], reverse=True)
+            methods = [item[0] for item in sorted_items]
+            values = [item[1][metric] for item in sorted_items]
             
-        print("\nBest Model Comparison:")
-        print(f"Best Individual Model (Seed {best_individual_seed}):")
-        print(f"  Accuracy: {best_individual['accuracy']:.4f}")
-        print(f"  F1 Score: {best_individual['f1']:.4f}")
-        print(f"  AUC-ROC: {best_individual['auc_roc']:.4f}")
-        
-        print(f"\nBest Ensemble Method ({best_ensemble_method}):")
-        print(f"  Accuracy: {best_ensemble['accuracy']:.4f}")
-        print(f"  F1 Score: {best_ensemble['f1']:.4f}")
-        print(f"  AUC-ROC: {best_ensemble['auc_roc']:.4f}")
-        
-        return ensemble_results, comparison
-        
-    def analyze_error_patterns(self, use_train=False):
-        """
-        Analyze patterns in model errors to understand where models disagree.
-        
-        Args:
-            use_train: If True, analyze training set, otherwise test set
-        """
-        dataset_type = "TRAIN" if use_train else "TEST"
-        print(f"Analyzing error patterns on {dataset_type} set...")
-        
-        # If no models were loaded, return empty results
-        if not self.reward_models:
-            print("No models available for error pattern analysis")
-            return {"disagreement_rate": 0, "all_wrong_count": 0, "some_right_count": 0}
-        
-        # Select the appropriate dataset
-        texts = self.train_texts if use_train else self.test_texts
-        labels = self.train_labels if use_train else self.test_labels
-        
-        # Get predictions from all models
-        all_model_preds = {}
-        for seed, model in self.reward_models.items():
-            predictions = self.get_model_predictions(
-                texts,
-                model, 
-                self.reward_tokenizers[seed]
+            colors = ['rgba(0, 0, 255, 0.7)' if method in ensemble_methods else 'rgba(0, 128, 0, 0.7)' 
+                     for method in methods]
+            
+            fig.add_trace(
+                go.Bar(
+                    y=methods,
+                    x=values,
+                    orientation='h',
+                    marker_color=colors,
+                    text=[f"{v:.3f}" for v in values],
+                    textposition='auto',
+                    name=metric
+                ),
+                row=i+1, col=1
             )
             
-            # Convert to binary predictions using mean threshold
-            threshold = np.mean(predictions)
-            binary_preds = (predictions > threshold).astype(int)
-            binary_preds = 1 - binary_preds  # Invert to match ground truth (1=toxic)
-            
-            all_model_preds[seed] = binary_preds
+            fig.update_xaxes(range=[0, 1], row=i+1, col=1)
         
-        # If no predictions were generated, return empty results
-        if not all_model_preds:
-            print("No predictions available for error pattern analysis")
-            return {"disagreement_rate": 0, "all_wrong_count": 0, "some_right_count": 0}
-        
-        # Create a DataFrame with all predictions
-        df = pd.DataFrame(all_model_preds)
-        df['true_label'] = labels
-        
-        # Calculate disagreement rate between models
-        model_cols = [col for col in df.columns if col != 'true_label']
-        if len(model_cols) > 1:
-            disagreement = 0
-            total = len(df)
-            for i in range(total):
-                row = df.iloc[i][model_cols].values
-                if np.max(row) != np.min(row):
-                    disagreement += 1
-        
-            disagreement_rate = disagreement / total
-            print(f"Model disagreement rate: {disagreement_rate:.4f}")
-        
-        # Count examples where all models are wrong
-        all_wrong = 0
-        some_right = 0
-        
-        for i in range(len(df)):
-            row = df.iloc[i]
-            true_label = row['true_label']
-            model_predictions = row[model_cols].values
-            
-            # Check if all models are wrong
-            if np.all(model_predictions != true_label):
-                all_wrong += 1
-            # Check if some models are right and some are wrong
-            elif np.any(model_predictions == true_label) and np.any(model_predictions != true_label):
-                some_right += 1
-        
-        print(f"Number of examples where all models are wrong: {all_wrong}")
-        print(f"Number of examples where only some models are right: {some_right}")
-        
-        # Return statistics
-        return {
-            "disagreement_rate": disagreement_rate if len(model_cols) > 1 else 0,
-            "all_wrong_count": all_wrong,
-            "some_right_count": some_right
-        }
-        
-    def analyze_raw_scores(self, use_train=False):
-        """
-        Analyze raw prediction scores from each model for original and detoxified texts.
-        
-        Args:
-            use_train: If True, analyze training set, otherwise test set
-        """
-        dataset_type = "TRAIN" if use_train else "TEST"
-        print(f"\nAnalyzing raw scores on {dataset_type} set...")
-        
-        # Select the appropriate dataset
-        if use_train:
-            original_texts = [item['output'] for item in self.train_data['original']]
-            detoxified_texts = [item['output'] for item in self.train_data['detoxified']]
-        else:
-            original_texts = [item['output'] for item in self.test_data['original']]
-            detoxified_texts = [item['output'] for item in self.test_data['detoxified']]
-        
-        # Store scores for each model
-        all_scores = {}
-        
-        # Get predictions for each model
-        for seed, model in self.reward_models.items():
-            # Get scores for original (toxic) texts
-            original_scores = self.get_model_predictions(
-                original_texts,
-                model, 
-                self.reward_tokenizers[seed]
-            )
-            
-            # Get scores for detoxified texts
-            detoxified_scores = self.get_model_predictions(
-                detoxified_texts,
-                model, 
-                self.reward_tokenizers[seed]
-            )
-            
-            # Calculate statistics
-            original_mean = np.mean(original_scores)
-            detoxified_mean = np.mean(detoxified_scores)
-            score_diff = detoxified_mean - original_mean
-            
-            all_scores[seed] = {
-                "original_mean": float(original_mean),
-                "detoxified_mean": float(detoxified_mean),
-                "score_difference": float(score_diff),
-                "original_std": float(np.std(original_scores)),
-                "detoxified_std": float(np.std(detoxified_scores))
-            }
-            
-            print(f"Seed {seed} - Original mean: {original_mean:.4f}, Detoxified mean: {detoxified_mean:.4f}, Diff: {score_diff:.4f}")
-        
-        # Calculate ensemble scores (mean across models)
-        if len(self.reward_models) > 0:
-            # Calculate ensemble statistics
-            ensemble_original_mean = np.mean([all_scores[seed]["original_mean"] for seed in self.reward_models.keys()])
-            ensemble_detoxified_mean = np.mean([all_scores[seed]["detoxified_mean"] for seed in self.reward_models.keys()])
-            ensemble_score_diff = ensemble_detoxified_mean - ensemble_original_mean
-            
-            all_scores["ensemble"] = {
-                "original_mean": float(ensemble_original_mean),
-                "detoxified_mean": float(ensemble_detoxified_mean),
-                "score_difference": float(ensemble_score_diff)
-            }
-            
-            print(f"Ensemble - Original mean: {ensemble_original_mean:.4f}, Detoxified mean: {ensemble_detoxified_mean:.4f}, Diff: {ensemble_score_diff:.4f}")
-        
-        # Save results
-        file_prefix = "train_" if use_train else "test_"
-        with open(os.path.join(self.output_dir, f'{file_prefix}raw_scores.json'), 'w') as f:
-            json.dump(all_scores, f, indent=2)
-        
-        # Create a visualization
-        plt.figure(figsize=(12, 6))
-        
-        # Set up data for plotting
-        seeds = list(self.reward_models.keys())
-        if len(seeds) > 0:
-            seeds.append("ensemble")
-            original_means = [all_scores[seed]["original_mean"] for seed in seeds]
-            detoxified_means = [all_scores[seed]["detoxified_mean"] for seed in seeds]
-            
-            x = np.arange(len(seeds))
-            width = 0.35
-            
-            # Create grouped bar chart
-            plt.bar(x - width/2, original_means, width, label='Original (Toxic)')
-            plt.bar(x + width/2, detoxified_means, width, label='Detoxified')
-            
-            plt.xlabel('Model Seed')
-            plt.ylabel('Mean Score')
-            plt.title(f'Raw Score Comparison ({dataset_type} Set, Pythia-{self.model_size})')
-            plt.xticks(x, seeds)
-            plt.legend()
-            plt.grid(axis='y', linestyle='--', alpha=0.7)
-            plt.tight_layout()
-            plt.savefig(os.path.join(self.output_dir, f'{file_prefix}raw_scores.png'))
-            plt.close()
-        
-        return all_scores
-        
-    def analyze_raw_scores_irl_method(self, use_train=False):
-        """
-        Analyze raw prediction scores using the exact same methodology as in IRL training.
-        
-        Args:
-            use_train: If True, analyze training set, otherwise test set
-        """
-        dataset_type = "TRAIN" if use_train else "TEST"
-        print(f"\nAnalyzing raw scores (IRL method) on {dataset_type} set...")
-        
-        # Import the exact scoring function from irl_utilities if available
-        try:
-            from irl_train import score_toxicity
-            use_irl_score_function = True
-            print("Using score_toxicity function from irl_train.py")
-        except ImportError:
-            use_irl_score_function = False
-            print("Could not import score_toxicity from irl_train.py, using direct model inference")
-        
-        # Select the appropriate dataset
-        if use_train:
-            original_texts = [item['output'] for item in self.train_data['original']]
-            detoxified_texts = [item['output'] for item in self.train_data['detoxified']]
-        else:
-            original_texts = [item['output'] for item in self.test_data['original']]
-            detoxified_texts = [item['output'] for item in self.test_data['detoxified']]
-        
-        # Store scores for each model
-        all_scores = {}
-        
-        # Get predictions for each model
-        for seed, model in self.reward_models.items():
-            # Score using the exact IRL method if available
-            if use_irl_score_function:
-                # Use the score_toxicity function from irl_train.py
-                original_scores = score_toxicity(original_texts, model, self.reward_tokenizers[seed], batch_size=self.batch_size)
-                detoxified_scores = score_toxicity(detoxified_texts, model, self.reward_tokenizers[seed], batch_size=self.batch_size)
-            else:
-                # Score directly using the model
-                original_scores = []
-                detoxified_scores = []
-                
-                # Process original texts
-                for text in original_texts:
-                    inputs = self.reward_tokenizers[seed](
-                        text, 
-                        return_tensors="pt", 
-                        truncation=True,
-                        max_length=self.max_length
-                    ).to(device)
-                    
-                    with torch.no_grad():
-                        score = model(inputs.input_ids, inputs.attention_mask).item()
-                    original_scores.append(score)
-                    
-                # Process detoxified texts
-                for text in detoxified_texts:
-                    inputs = self.reward_tokenizers[seed](
-                        text, 
-                        return_tensors="pt", 
-                        truncation=True,
-                        max_length=self.max_length
-                    ).to(device)
-                    
-                    with torch.no_grad():
-                        score = model(inputs.input_ids, inputs.attention_mask).item()
-                    detoxified_scores.append(score)
-            
-            # Convert to numpy arrays
-            original_scores = np.array(original_scores)
-            detoxified_scores = np.array(detoxified_scores)
-            
-            # Calculate statistics
-            original_mean = np.mean(original_scores)
-            detoxified_mean = np.mean(detoxified_scores)
-            score_diff = detoxified_mean - original_mean
-            
-            all_scores[seed] = {
-                "original_mean": float(original_mean),
-                "detoxified_mean": float(detoxified_mean),
-                "score_difference": float(score_diff),
-                "original_std": float(np.std(original_scores)),
-                "detoxified_std": float(np.std(detoxified_scores)),
-                "original_min": float(np.min(original_scores)),
-                "original_max": float(np.max(original_scores)),
-                "detoxified_min": float(np.min(detoxified_scores)),
-                "detoxified_max": float(np.max(detoxified_scores))
-            }
-            
-            print(f"Seed {seed} - Original mean: {original_mean:.4f} (range: {np.min(original_scores):.4f} to {np.max(original_scores):.4f})")
-            print(f"Seed {seed} - Detoxified mean: {detoxified_mean:.4f} (range: {np.min(detoxified_scores):.4f} to {np.max(detoxified_scores):.4f})")
-            print(f"Seed {seed} - Diff: {score_diff:.4f}")
-        
-        # Calculate ensemble scores (mean across models)
-        if len(self.reward_models) > 0:
-            # Calculate ensemble statistics
-            ensemble_original_mean = np.mean([all_scores[seed]["original_mean"] for seed in self.reward_models.keys()])
-            ensemble_detoxified_mean = np.mean([all_scores[seed]["detoxified_mean"] for seed in self.reward_models.keys()])
-            ensemble_score_diff = ensemble_detoxified_mean - ensemble_original_mean
-            
-            all_scores["ensemble"] = {
-                "original_mean": float(ensemble_original_mean),
-                "detoxified_mean": float(ensemble_detoxified_mean),
-                "score_difference": float(ensemble_score_diff)
-            }
-            
-            print(f"Ensemble - Original mean: {ensemble_original_mean:.4f}, Detoxified mean: {ensemble_detoxified_mean:.4f}, Diff: {ensemble_score_diff:.4f}")
-        
-        # Save results
-        file_prefix = "train_" if use_train else "test_"
-        with open(os.path.join(self.output_dir, f'{file_prefix}raw_scores_irl_method.json'), 'w') as f:
-            json.dump(all_scores, f, indent=2)
-        
-        # Create a visualization
-        plt.figure(figsize=(12, 6))
-        
-        # Set up data for plotting
-        seeds = list(self.reward_models.keys())
-        if len(seeds) > 0:
-            seeds.append("ensemble")
-            original_means = [all_scores[seed]["original_mean"] for seed in seeds]
-            detoxified_means = [all_scores[seed]["detoxified_mean"] for seed in seeds]
-            
-            x = np.arange(len(seeds))
-            width = 0.35
-            
-            # Create grouped bar chart
-            plt.bar(x - width/2, original_means, width, label='Original (Toxic)')
-            plt.bar(x + width/2, detoxified_means, width, label='Detoxified')
-            
-            plt.xlabel('Model Seed')
-            plt.ylabel('Mean Score')
-            plt.title(f'Raw Score Comparison - IRL Method ({dataset_type} Set, Pythia-{self.model_size})')
-            plt.xticks(x, seeds)
-            plt.legend()
-            plt.grid(axis='y', linestyle='--', alpha=0.7)
-            plt.tight_layout()
-            plt.savefig(os.path.join(self.output_dir, f'{file_prefix}raw_scores_irl_method.png'))
-            plt.close()
-        
-        return all_scores
-        
-    def run_full_analysis(self):
-        """Run all analysis methods and compile results."""
-        print(f"Running full analysis for pythia-{self.model_size}...")
-        
-        results = {}
-        
-        # Run all analyses
-        results["correlations"] = self.analyze_model_correlations()
-        self.analyze_feature_representations()
-        
-        # Analyze raw scores using both methods
-        print("\n=== Analyzing Raw Scores ===")
-        results["test_raw_scores"] = self.analyze_raw_scores(use_train=False)
-        results["train_raw_scores"] = self.analyze_raw_scores(use_train=True)
-        
-        print("\n=== Analyzing Raw Scores (IRL Method) ===")
-        results["test_raw_scores_irl"] = self.analyze_raw_scores_irl_method(use_train=False)
-        results["train_raw_scores_irl"] = self.analyze_raw_scores_irl_method(use_train=True)
-        
-        # Evaluate on test set (default)
-        print("\n=== Evaluating on TEST set ===")
-        results["test_individual_performance"] = self.evaluate_individual_models(use_train=False)
-        results["test_ensemble_performance"], results["test_best_comparison"] = self.evaluate_ensemble_methods(use_train=False)
-        results["test_error_patterns"] = self.analyze_error_patterns(use_train=False)
-        
-        # Evaluate on train set
-        print("\n=== Evaluating on TRAIN set ===")
-        results["train_individual_performance"] = self.evaluate_individual_models(use_train=True)
-        results["train_ensemble_performance"], results["train_best_comparison"] = self.evaluate_ensemble_methods(use_train=True)
-        results["train_error_patterns"] = self.analyze_error_patterns(use_train=True)
-        
-        # Save summary results
-        summary = {
-            "model_size": self.model_size,
-            "seeds": self.seeds,
-            "num_models": len(self.reward_models),
-            "dataset_size": {
-                "train": len(self.train_texts) // 2,  # Divide by 2 because we have original + detoxified
-                "test": len(self.test_texts) // 2
-            }
-        }
-        
-        # Extract key correlation metrics
-        if isinstance(results["correlations"], pd.DataFrame):
-            model_cols = [f"seed_{seed}" for seed in self.seeds if seed in self.reward_models]
-            
-            if len(model_cols) > 1:
-                model_corr = results["correlations"].loc[model_cols, model_cols]
-                avg_model_corr = (model_corr.sum().sum() - len(model_cols)) / (len(model_cols) * (len(model_cols) - 1))
-                summary["average_model_correlation"] = avg_model_corr
-                
-            if "ground_truth" in results["correlations"].columns:
-                gt_corr = results["correlations"].loc[model_cols, "ground_truth"].mean()
-                summary["average_ground_truth_correlation"] = gt_corr
-                
-            if "true_label" in results["correlations"].columns:
-                label_corr = results["correlations"].loc[model_cols, "true_label"].mean()
-                summary["average_label_correlation"] = label_corr
-        
-        # Save summary
-        with open(os.path.join(self.output_dir, 'analysis_summary.json'), 'w') as f:
-            json.dump(summary, f, indent=2)
-            
-        return results
-
-
-def analyze_across_model_sizes(
-    model_sizes: List[str],
-    seeds: List[int],
-    checkpoints: Dict[str, int],
-    output_dir: str = "reward_model_analysis"
-):
-    """
-    Run analysis across different model sizes and compare results.
-    
-    Args:
-        model_sizes: List of model sizes to analyze
-        seeds: List of seeds to use for each model size
-        checkpoints: Dictionary mapping model sizes to checkpoint numbers
-        output_dir: Directory to save analysis results
-    """
-    print(f"Analyzing across model sizes: {model_sizes}")
-    
-    # Create output directory
-    os.makedirs(output_dir, exist_ok=True)
-    
-    # Run analysis for each model size
-    summaries = {}
-    
-    for model_size in model_sizes:
-        print(f"\n{'='*50}")
-        print(f"Analyzing model size: {model_size}")
-        print(f"{'='*50}\n")
-        
-        checkpoint = checkpoints.get(model_size, 30)  # Default to 30 if not specified
-        
-        analyzer = RewardModelEnsembleAnalyzer(
-            model_size=model_size,
-            seeds=seeds,
-            checkpoint=checkpoint,
-            output_dir=output_dir
+        fig.update_layout(
+            height=300*len(metrics_to_plot),
+            width=900,
+            title_text="Ensemble Methods vs Individual Models",
+            showlegend=False
         )
         
-        summary = analyzer.run_full_analysis()
-        summaries[model_size] = summary
-    
-    # Compare results across model sizes
-    print("\nComparing results across model sizes...")
-    
-    # Extract key metrics for comparison
-    comparison = {
-        "model_sizes": model_sizes,
-        "seeds": seeds,
-        "metrics": {}
-    }
-    
-    # Define metrics to compare
-    metrics_to_compare = [
-        "average_model_correlation",
-        "average_ground_truth_correlation",
-        "average_label_correlation",
-        "disagreement_rate"
-    ]
-    
-    # Add ensemble improvement metrics
-    ensemble_metrics = [
-        "accuracy_improvement_percent",
-        "f1_improvement_percent",
-        "auc_improvement_percent"
-    ]
-    
-    # Extract metrics
-    for metric in metrics_to_compare:
-        comparison["metrics"][metric] = {
-            size: summaries[size].get(metric, None) for size in model_sizes
-        }
+        fig.write_html(os.path.join(ensemble_dir, "ensemble_comparison.html"))
         
-    # Extract ensemble improvement metrics
-    for metric in ensemble_metrics:
-        comparison["metrics"][metric] = {
-            size: summaries[size].get("ensemble_improvements", {}).get(metric, None) 
-            for size in model_sizes
-        }
-    
-    # Save comparison
-    with open(os.path.join(output_dir, 'cross_model_comparison.json'), 'w') as f:
-        json.dump(comparison, f, indent=2)
-    
-    # Plot key metrics across model sizes
-    for metric in metrics_to_compare + ensemble_metrics:
-        values = [comparison["metrics"][metric].get(size, None) for size in model_sizes]
+        # Analyze pairwise correlations between model predictions
+        correlation_matrix = np.zeros((len(model_ids), len(model_ids)))
         
-        # Skip if any values are None
-        if None in values:
-            continue
-            
-        plt.figure(figsize=(10, 6))
-        plt.bar(model_sizes, values)
-        plt.xlabel('Model Size')
-        plt.ylabel(metric.replace('_', ' ').title())
-        plt.title(f'{metric.replace("_", " ").title()} Across Model Sizes')
+        for i, model_id1 in enumerate(model_ids):
+            for j, model_id2 in enumerate(model_ids):
+                correlation = np.corrcoef(all_scores[model_id1], all_scores[model_id2])[0, 1]
+                correlation_matrix[i, j] = correlation
+        
+        # Plot correlation heatmap
+        plt.figure(figsize=(12, 10))
+        sns.heatmap(correlation_matrix, annot=True, fmt=".3f", 
+                   xticklabels=model_ids, yticklabels=model_ids, cmap="viridis")
+        plt.title("Correlation Between Model Predictions")
         plt.tight_layout()
-        plt.savefig(os.path.join(output_dir, f'comparison_{metric}.png'))
-        plt.close()
-    
-    print("\nCross-model comparison complete!")
-    return comparison
-
-
-def weighted_ensemble_predictions(
-    model_size: str,
-    seeds: List[int],
-    checkpoint: int,
-    weights: Optional[Dict[int, float]] = None,
-    texts: List[str] = None,
-    dataset_path: Optional[str] = None
-):
-    """
-    Generate predictions using a weighted ensemble of reward models.
-    
-    Args:
-        model_size: Size of the model (70m, 160m, 410m, 1b)
-        seeds: List of seeds to use in the ensemble
-        checkpoint: Checkpoint number to use
-        weights: Optional dictionary mapping seeds to weights (defaults to equal weights)
-        texts: List of texts to generate predictions for
-        dataset_path: Optional path to a dataset to use instead of texts
+        plt.savefig(os.path.join(ensemble_dir, "model_correlation.png"), dpi=300)
         
-    Returns:
-        Array of ensemble predictions
-    """
-    # Initialize analyzer to load models
-    analyzer = RewardModelEnsembleAnalyzer(
-        model_size=model_size,
-        seeds=seeds,
-        checkpoint=checkpoint,
-        output_dir="temp"  # Temporary directory
-    )
+        # Save correlation matrix
+        corr_df = pd.DataFrame(correlation_matrix, index=model_ids, columns=model_ids)
+        corr_df.to_csv(os.path.join(ensemble_dir, "model_correlation.csv"))
+        
+        return {
+            "ensemble_scores": ensemble_scores,
+            "ensemble_metrics": ensemble_metrics,
+            "correlation_matrix": correlation_matrix,
+            "weights": dict(zip(model_ids, weights))
+        }
     
-    # Use equal weights if not provided
-    if weights is None:
-        weights = {seed: 1.0 / len(seeds) for seed in seeds}
-    
-    # Normalize weights
-    total_weight = sum(weights.values())
-    weights = {seed: weight / total_weight for seed, weight in weights.items()}
-    
-    # Load texts from dataset if provided
-    if texts is None and dataset_path is not None:
-        try:
-            ds = load_dataset(dataset_path)
-            if isinstance(ds, dict) and 'train' in ds:
-                ds = ds['train']
+    def analyze_by_model_size(self, results_dict):
+        """
+        Analyze performance by model size.
+        
+        Args:
+            results_dict: Dictionary with evaluation results
             
-            # Extract texts from dataset
-            if 'text' in ds.column_names:
-                texts = ds['text']
-            elif 'output' in ds.column_names:
-                texts = ds['output']
-            else:
-                raise ValueError(f"Could not find text column in dataset: {dataset_path}")
-                
-        except Exception as e:
-            print(f"Error loading dataset: {e}")
-            return None
+        Returns:
+            DataFrame with size-based analysis
+        """
+        # Extract model sizes
+        size_metrics = {}
+        
+        for model_id, metrics in results_dict.items():
+            size = model_id.split('-')[1]  # Extract size from model_id
+            
+            if size not in size_metrics:
+                size_metrics[size] = []
+            
+            size_metrics[size].append(metrics)
+        
+        # Calculate average metrics by size
+        size_avg_metrics = {}
+        for size, metrics_list in size_metrics.items():
+            # Calculate average of each metric
+            avg_metrics = {}
+            for metric in metrics_list[0].keys():
+                avg_metrics[metric] = np.mean([m[metric] for m in metrics_list])
+            
+            size_avg_metrics[size] = avg_metrics
+        
+        return pd.DataFrame(size_avg_metrics).T
     
-    if texts is None:
-        raise ValueError("Either texts or dataset_path must be provided")
+    def analyze_by_seed(self, results_dict):
+        """
+        Analyze performance by seed.
+        
+        Args:
+            results_dict: Dictionary with evaluation results
+            
+        Returns:
+            DataFrame with seed-based analysis
+        """
+        # Extract seeds
+        seed_metrics = {}
+        
+        for model_id, metrics in results_dict.items():
+            seed = model_id.split('-')[-1]  # Extract seed from model_id
+            
+            if seed not in seed_metrics:
+                seed_metrics[seed] = []
+            
+            seed_metrics[seed].append(metrics)
+        
+        # Calculate average metrics by seed
+        seed_avg_metrics = {}
+        for seed, metrics_list in seed_metrics.items():
+            # Calculate average of each metric
+            avg_metrics = {}
+            for metric in metrics_list[0].keys():
+                avg_metrics[metric] = np.mean([m[metric] for m in metrics_list])
+            
+            seed_avg_metrics[seed] = avg_metrics
+        
+        return pd.DataFrame(seed_avg_metrics).T
     
-    # Get predictions from each model
-    all_predictions = {}
-    for seed, model in analyzer.reward_models.items():
-        if seed in weights:
-            predictions = analyzer.get_model_predictions(
-                texts, 
-                model, 
-                analyzer.reward_tokenizers[seed]
+    def run_full_analysis(self, original_dataset_path, detoxified_dataset_path, 
+                         toxicity_prompts_dataset_path=None, batch_size=16, max_samples=None):
+        """
+        Run a full analysis on all datasets.
+        
+        Args:
+            original_dataset_path: Path to original (toxic) dataset
+            detoxified_dataset_path: Path to detoxified dataset
+            toxicity_prompts_dataset_path: Path to toxicity prompts dataset (optional)
+            batch_size: Batch size for processing
+            max_samples: Maximum number of samples to process (None for all)
+            
+        Returns:
+            Dictionary with all analysis results
+        """
+        results = {}
+        
+        # Analyze value heads
+        print("Analyzing value heads...")
+        results["value_head_similarity"] = self.analyze_value_heads()
+        
+        # Compare original vs detoxified datasets
+        print("Comparing original vs detoxified datasets...")
+        results["original_vs_detoxified"] = self.compare_paired_datasets(
+            original_dataset_path, detoxified_dataset_path,
+            "original", "detoxified",
+
+
+            batch_size=batch_size,
+            max_samples=max_samples
+        )
+        
+        # Analyze ensemble methods
+        print("Analyzing ensemble methods...")
+        results["ensemble_analysis"] = self.analyze_ensemble_methods(
+            original_dataset_path, detoxified_dataset_path,
+            "original", "detoxified",
+            batch_size=batch_size,
+            max_samples=max_samples
+        )
+        
+        # If toxicity prompts dataset is provided, evaluate on it
+        if toxicity_prompts_dataset_path:
+            print("Evaluating on toxicity prompts dataset...")
+            results["toxicity_prompts"] = self.evaluate_on_dataset(
+                toxicity_prompts_dataset_path,
+                "toxicity_prompts",
+                batch_size=batch_size,
+                max_samples=max_samples,
+                text_key="text"  # Adjust based on the dataset structure
             )
-            all_predictions[seed] = predictions
+        
+        # Create summary report
+        self.create_summary_report(results)
+        
+        return results
     
-    # Calculate weighted ensemble predictions
-    ensemble_preds = np.zeros(len(texts))
-    for seed, preds in all_predictions.items():
-        ensemble_preds += weights[seed] * preds
+    def create_summary_report(self, results):
+        """Create a summary report of all analyses."""
+        print("Creating summary report...")
+        
+        # Create a directory for the summary
+        summary_dir = os.path.join(self.output_dir, "summary")
+        os.makedirs(summary_dir, exist_ok=True)
+        
+        # Extract key metrics
+        summary = {
+            "value_head_analysis": {
+                "average_similarity": np.mean(results["value_head_similarity"]) if "value_head_similarity" in results else None
+            },
+            "original_vs_detoxified": {}
+        }
+        
+        # Extract ensemble performance metrics
+        if "ensemble_analysis" in results and results["ensemble_analysis"]:
+            ensemble_metrics = results["ensemble_analysis"].get("ensemble_metrics", {})
+            
+            # Find best ensemble method
+            if ensemble_metrics:
+                best_method = max(ensemble_metrics.keys(), key=lambda k: ensemble_metrics[k]["auc_roc"] 
+                                 if k in ensemble_methods else 0)
+                
+                summary["best_ensemble"] = {
+                    "method": best_method,
+                    "metrics": ensemble_metrics[best_method]
+                }
+                
+                # Find best individual model
+                individual_models = {k: v for k, v in ensemble_metrics.items() if k not in ensemble_methods}
+                if individual_models:
+                    best_model = max(individual_models.keys(), key=lambda k: individual_models[k]["auc_roc"])
+                    
+                    summary["best_individual"] = {
+                        "model": best_model,
+                        "metrics": individual_models[best_model]
+                    }
+                    
+                    # Calculate improvement
+                    if "best_ensemble" in summary and "best_individual" in summary:
+                        best_ensemble = summary["best_ensemble"]["metrics"]
+                        best_individual = summary["best_individual"]["metrics"]
+                        
+                        summary["ensemble_improvement"] = {
+                            "accuracy": best_ensemble["accuracy"] - best_individual["accuracy"],
+                            "f1": best_ensemble["f1"] - best_individual["f1"],
+                            "auc_roc": best_ensemble["auc_roc"] - best_individual["auc_roc"],
+                            "pr_auc": best_ensemble["pr_auc"] - best_individual["pr_auc"]
+                        }
+        
+        # Extract correlation metrics
+        if "ensemble_analysis" in results and results["ensemble_analysis"]:
+            if "correlation_matrix" in results["ensemble_analysis"]:
+                corr_matrix = results["ensemble_analysis"]["correlation_matrix"]
+                # Calculate average correlation between models
+                n_models = corr_matrix.shape[0]
+                if n_models > 1:
+                    # Sum all correlations and subtract diagonal (which are all 1)
+                    total_corr = np.sum(corr_matrix) - n_models
+                    # Divide by number of off-diagonal elements
+                    avg_corr = total_corr / (n_models * (n_models - 1))
+                    summary["average_model_correlation"] = float(avg_corr)
+        
+        # Save summary
+        with open(os.path.join(summary_dir, "analysis_summary.json"), "w") as f:
+            # Convert numpy values to Python types for JSON serialization
+            def convert_to_serializable(obj):
+                if isinstance(obj, np.ndarray):
+                    return obj.tolist()
+                elif isinstance(obj, np.generic):
+                    return obj.item()
+                elif isinstance(obj, dict):
+                    return {k: convert_to_serializable(v) for k, v in obj.items()}
+                elif isinstance(obj, list):
+                    return [convert_to_serializable(i) for i in obj]
+                else:
+                    return obj
+            
+            json.dump(convert_to_serializable(summary), f, indent=2)
+        
+        # Create a visual summary
+        self.create_visual_summary(summary, summary_dir)
+        
+        return summary
     
-    return ensemble_preds
+    def create_visual_summary(self, summary, output_dir):
+        """Create visual summary of the analysis."""
+        # Create a dashboard-like visualization
+        try:
+            # Create a multi-panel figure
+            fig = plt.figure(figsize=(15, 12))
+            fig.suptitle(f"Reward Model Ensemble Analysis Summary", fontsize=16)
+            
+            # Define grid layout
+            gs = fig.add_gridspec(3, 2, hspace=0.4, wspace=0.3)
+            
+            # Panel 1: Ensemble vs Individual Performance
+            if "best_ensemble" in summary and "best_individual" in summary:
+                ax1 = fig.add_subplot(gs[0, 0])
+                
+                metrics = ["accuracy", "f1", "auc_roc", "pr_auc"]
+                ensemble_values = [summary["best_ensemble"]["metrics"][m] for m in metrics]
+                individual_values = [summary["best_individual"]["metrics"][m] for m in metrics]
+                
+                x = np.arange(len(metrics))
+                width = 0.35
+                
+                ax1.bar(x - width/2, ensemble_values, width, label=f'Best Ensemble ({summary["best_ensemble"]["method"]})')
+                ax1.bar(x + width/2, individual_values, width, label=f'Best Individual ({summary["best_individual"]["model"]})')
+                
+                ax1.set_title("Performance Comparison")
+                ax1.set_xticks(x)
+                ax1.set_xticklabels([m.upper() for m in metrics])
+                ax1.set_ylim(0, 1)
+                ax1.legend()
+                ax1.grid(True, alpha=0.3)
+            
+            # Panel 2: Ensemble Improvement
+            if "ensemble_improvement" in summary:
+                ax2 = fig.add_subplot(gs[0, 1])
+                
+                metrics = ["accuracy", "f1", "auc_roc", "pr_auc"]
+                improvement_values = [summary["ensemble_improvement"][m] for m in metrics]
+                
+                colors = ['green' if v > 0 else 'red' for v in improvement_values]
+                
+                ax2.bar(metrics, improvement_values, color=colors)
+                ax2.set_title("Ensemble Improvement")
+                ax2.set_xticklabels([m.upper() for m in metrics])
+                ax2.axhline(y=0, color='k', linestyle='-', alpha=0.3)
+                ax2.grid(True, alpha=0.3)
+                
+                # Add percentage labels
+                for i, v in enumerate(improvement_values):
+                    if v > 0:
+                        ax2.text(i, v + 0.01, f"+{v*100:.1f}%", ha='center')
+                    else:
+                        ax2.text(i, v - 0.02, f"{v*100:.1f}%", ha='center')
+            
+            # Panel 3: Model Correlation Heatmap
+            if "average_model_correlation" in summary:
+                ax3 = fig.add_subplot(gs[1, 0])
+                ax3.text(0.5, 0.5, f"Average Model Correlation: {summary['average_model_correlation']:.4f}", 
+                        ha='center', va='center', fontsize=14)
+                ax3.axis('off')
+            
+            # Panel 4: Value Head Similarity
+            if "value_head_analysis" in summary and summary["value_head_analysis"]["average_similarity"] is not None:
+                ax4 = fig.add_subplot(gs[1, 1])
+                ax4.text(0.5, 0.5, f"Average Value Head Similarity: {summary['value_head_analysis']['average_similarity']:.4f}", 
+                        ha='center', va='center', fontsize=14)
+                ax4.axis('off')
+            
+            # Save the figure
+            plt.tight_layout()
+            plt.savefig(os.path.join(output_dir, "analysis_summary.png"), dpi=300)
+            plt.close()
+            
+        except Exception as e:
+            print(f"Error creating visual summary: {e}")
+
+
+class RewardModelEnsemble:
+    """Class to create and use an ensemble of reward models."""
+    
+    def __init__(self, 
+                 model_specs: List[Dict[str, Any]], 
+                 ensemble_method: str = "weighted_mean",
+                 weights: Optional[Dict[str, float]] = None,
+                 device: str = "cuda" if torch.cuda.is_available() else "cpu"):
+        """
+        Initialize the ensemble.
+        
+        Args:
+            model_specs: List of dictionaries with model specifications:
+                         [{"size": "70m", "seed": 42, "checkpoint": 30, "hub_id": "..."}]
+            ensemble_method: Method to use for ensemble ("mean", "median", "max", "min", "weighted_mean")
+            weights: Optional dictionary mapping model IDs to weights (for weighted_mean)
+            device: Device to run models on
+        """
+        self.model_specs = model_specs
+        self.ensemble_method = ensemble_method
+        self.device = device
+        
+        # Load models
+        self.models = {}
+        self.tokenizers = {}
+        self.analyzer = RewardModelAnalyzer(model_specs, device=device)
+        
+        # Use the analyzer to load models
+        self.analyzer.load_models()
+        self.models = self.analyzer.models
+        self.tokenizers = self.analyzer.tokenizers
+        
+        # Set up weights
+        self.weights = weights or {model_id: 1.0 for model_id in self.models}
+        
+        # Normalize weights
+        total_weight = sum(self.weights.values())
+        self.weights = {k: v / total_weight for k, v in self.weights.values()}
+        
+        # Define ensemble methods
+        self.ensemble_methods = {
+            "mean": lambda scores: np.mean(scores, axis=0),
+            "median": lambda scores: np.median(scores, axis=0),
+            "max": lambda scores: np.max(scores, axis=0),
+            "min": lambda scores: np.min(scores, axis=0),
+            "weighted_mean": lambda scores: np.average(scores, axis=0, weights=list(self.weights.values()))
+        }
+    
+    def predict(self, texts: List[str], batch_size: int = 16, max_length: int = 512) -> np.ndarray:
+        """
+        Generate predictions using the ensemble.
+        
+        Args:
+            texts: List of texts to generate predictions for
+            batch_size: Batch size for processing
+            max_length: Maximum sequence length
+            
+        Returns:
+            Array of ensemble predictions
+        """
+        # Get predictions from each model
+        all_predictions = {}
+        
+        for model_id, model in self.models.items():
+            # Process in batches
+            model_preds = []
+            
+            for i in range(0, len(texts), batch_size):
+                batch_texts = texts[i:i+batch_size]
+                
+                # Tokenize
+                inputs = self.tokenizers[model_id](
+                    batch_texts,
+                    return_tensors="pt",
+                    padding=True,
+                    truncation=True,
+                    max_length=max_length
+                )
+                
+                # Move to device
+                inputs = {k: v.to(self.device) for k, v in inputs.items()}
+                
+                # Get predictions
+                with torch.no_grad():
+                    outputs = model(**inputs)
+                
+                # Convert to list of floats
+                batch_preds = outputs.squeeze().cpu().numpy()
+                
+                # Handle single item case
+                if not isinstance(batch_preds, np.ndarray) or batch_preds.ndim == 0:
+                    batch_preds = np.array([batch_preds])
+                
+                model_preds.extend(batch_preds)
+            
+            all_predictions[model_id] = np.array(model_preds)
+        
+        # Apply ensemble method
+        predictions_array = np.array([all_predictions[model_id] for model_id in self.models])
+        ensemble_preds = self.ensemble_methods[self.ensemble_method](predictions_array)
+        
+        return ensemble_preds
+    
+    def save(self, output_dir: str):
+        """
+        Save the ensemble configuration.
+        
+        Args:
+            output_dir: Directory to save the ensemble configuration
+        """
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Save configuration
+        config = {
+            "ensemble_method": self.ensemble_method,
+            "weights": self.weights,
+            "model_specs": self.model_specs
+        }
+        
+        with open(os.path.join(output_dir, "ensemble_config.json"), "w") as f:
+            json.dump(config, f, indent=2)
+        
+        print(f"Ensemble configuration saved to {output_dir}")
+    
+    @classmethod
+    def load(cls, config_path: str, device: str = "cuda" if torch.cuda.is_available() else "cpu"):
+        """
+        Load an ensemble from a configuration file.
+        
+        Args:
+            config_path: Path to the ensemble configuration file
+            device: Device to run models on
+            
+        Returns:
+            RewardModelEnsemble instance
+        """
+        with open(config_path, "r") as f:
+            config = json.load(f)
+        
+        return cls(
+            model_specs=config["model_specs"],
+            ensemble_method=config["ensemble_method"],
+            weights=config["weights"],
+            device=device
+        )
 
 
 def main():
     """Main function to run the analysis."""
-    parser = argparse.ArgumentParser(description="Analyze reward model ensembles")
+    parser = argparse.ArgumentParser(description="Analyze and ensemble reward models")
+    
+    # Model specification options
     parser.add_argument("--model_sizes", nargs="+", default=["70m", "160m", "410m", "1b"],
                         help="Model sizes to analyze")
     parser.add_argument("--seeds", nargs="+", type=int, default=[42, 100, 200, 300, 400],
                         help="Seeds to analyze")
+    parser.add_argument("--checkpoints", nargs="+", type=int, default=None,
+                        help="Checkpoints to use (one per model size)")
+    
+    # Dataset options
+    parser.add_argument("--original_dataset", type=str, default=None,
+                        help="Path or HuggingFace ID for original (toxic) dataset")
+    parser.add_argument("--detoxified_dataset", type=str, default=None,
+                        help="Path or HuggingFace ID for detoxified dataset")
+    parser.add_argument("--toxicity_prompts_dataset", type=str, default="allenai/real-toxicity-prompts",
+                        help="Path or HuggingFace ID for toxicity prompts dataset")
+    parser.add_argument("--max_samples", type=int, default=None,
+                        help="Maximum number of samples to process")
+    parser.add_argument("--batch_size", type=int, default=16,
+                        help="Batch size for processing")
+    
+    # Analysis options
     parser.add_argument("--output_dir", default="reward_model_analysis",
                         help="Directory to save analysis results")
-    parser.add_argument("--cross_model", action="store_true",
-                        help="Run analysis across model sizes")
+    parser.add_argument("--analyze_only", action="store_true",
+                        help="Only run analysis, don't create ensemble")
+    parser.add_argument("--ensemble_method", default="weighted_mean",
+                        choices=["mean", "median", "max", "min", "weighted_mean"],
+                        help="Method to use for ensemble")
     
     args = parser.parse_args()
     
-    # Define checkpoints for each model size
-    checkpoints = {
+    # Create model specifications
+    model_specs = []
+    default_checkpoints = {
         "70m": 30,
         "160m": 50,
         "410m": 70,
         "1b": 70
     }
     
-    if args.cross_model:
-        # Run analysis across model sizes
-        analyze_across_model_sizes(
-            model_sizes=args.model_sizes,
-            seeds=args.seeds,
-            checkpoints=checkpoints,
-            output_dir=args.output_dir
-        )
+    # If checkpoints are provided, use them
+    if args.checkpoints:
+        if len(args.checkpoints) != len(args.model_sizes):
+            print(f"Warning: Number of checkpoints ({len(args.checkpoints)}) doesn't match number of model sizes ({len(args.model_sizes)})")
+            print("Using default checkpoints for missing values")
+        
+        checkpoints = {}
+        for i, size in enumerate(args.model_sizes):
+            if i < len(args.checkpoints):
+                checkpoints[size] = args.checkpoints[i]
+            else:
+                checkpoints[size] = default_checkpoints.get(size, 30)
     else:
-        # Run analysis for each model size separately
-        for model_size in args.model_sizes:
-            print(f"\n{'='*50}")
-            print(f"Analyzing model size: {model_size}")
-            print(f"{'='*50}\n")
-            
-            checkpoint = checkpoints.get(model_size, 30)  # Default to 30 if not specified
-            
-            analyzer = RewardModelEnsembleAnalyzer(
-                model_size=model_size,
-                seeds=args.seeds,
-                checkpoint=checkpoint,
-                output_dir=args.output_dir
-            )
-            
-            analyzer.run_full_analysis()
+        checkpoints = default_checkpoints
+    
+    # Create model specs
+    for size in args.model_sizes:
+        for seed in args.seeds:
+            model_specs.append({
+                "size": size,
+                "seed": seed,
+                "checkpoint": checkpoints.get(size, 30),
+                "hub_id": f"ajagota71/toxicity-reward-model-v-head-max-margin-seed-{seed}-pythia-{size}-checkpoint-{checkpoints.get(size, 30)}"
+            })
+    
+    # Create analyzer
+    analyzer = RewardModelAnalyzer(
+        model_specs=model_specs,
+        device="cuda" if torch.cuda.is_available() else "cpu",
+        output_dir=args.output_dir
+    )
+    
+    # Run analysis
+    results = analyzer.run_full_analysis(
+        original_dataset_path=args.original_dataset or f"ajagota71/EleutherAI_pythia-{args.model_sizes[0]}_2000_samples_original",
+        detoxified_dataset_path=args.detoxified_dataset or f"ajagota71/ajagota71_pythia-{args.model_sizes[0]}-detox-epoch-100_2000_samples_detoxified",
+        toxicity_prompts_dataset_path=args.toxicity_prompts_dataset,
+        batch_size=args.batch_size,
+        max_samples=args.max_samples
+    )
+    
+    # Create ensemble if requested
+    if not args.analyze_only:
+        print("\nCreating reward model ensemble...")
+        
+        # Get weights from analysis results
+        weights = None
+        if "ensemble_analysis" in results and "weights" in results["ensemble_analysis"]:
+            weights = results["ensemble_analysis"]["weights"]
+        
+        # Create ensemble
+        ensemble = RewardModelEnsemble(
+            model_specs=model_specs,
+            ensemble_method=args.ensemble_method,
+            weights=weights
+        )
+        
+        # Save ensemble
+        ensemble_dir = os.path.join(args.output_dir, "ensemble")
+        ensemble.save(ensemble_dir)
+        
+        print(f"Ensemble created and saved to {ensemble_dir}")
 
 
 if __name__ == "__main__":
-    main() 
+    main()
