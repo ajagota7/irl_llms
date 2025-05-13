@@ -244,6 +244,18 @@ class RewardModelAnalyzer:
         plots_dir = os.path.join(self.output_dir, "plots")
         os.makedirs(plots_dir, exist_ok=True)
         
+        # Ensure all scores are flattened to simple numbers
+        for model_id in results:
+            # Convert any nested lists to flat lists
+            flat_scores = []
+            for score in results[model_id]:
+                if isinstance(score, (list, np.ndarray)):
+                    if len(score) > 0:
+                        flat_scores.append(float(score[0]))  # Take first element if it's a list
+                else:
+                    flat_scores.append(float(score))
+            results[model_id] = flat_scores
+        
         # Create DataFrame for easier plotting
         data = []
         for model_id, scores in results.items():
@@ -252,6 +264,10 @@ class RewardModelAnalyzer:
                 'score': scores
             })
             data.append(model_data)
+        
+        if not data:
+            print(f"Warning: No data available for {plot_name}")
+            return
         
         df = pd.concat(data, ignore_index=True)
         
@@ -405,8 +421,11 @@ class RewardModelAnalyzer:
                 with torch.no_grad():
                     rewards = model(**inputs)
                 
+                # Convert to list of floats
+                rewards_list = rewards.cpu().numpy().flatten().tolist()
+                
                 # Add to results
-                results[model_id].extend(rewards.cpu().numpy().tolist())
+                results[model_id].extend(rewards_list)
         
         # Create plots
         self.create_distribution_plot(results, f"{dataset_name}_distribution", 
