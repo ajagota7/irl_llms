@@ -23,11 +23,13 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import requests
+import wandb  # Add wandb import
 
 import sys
 # Add the parent directory to the path so we can import from src
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from irl_utilities import RewardModel
+from rlhf_utilities import build_dataset  # Import build_dataset for proper dataset splitting
 
 
 class RewardModelAnalyzer:
@@ -36,7 +38,10 @@ class RewardModelAnalyzer:
     def __init__(self, 
                  model_specs: List[Dict[str, Any]], 
                  device: str = "cuda" if torch.cuda.is_available() else "cpu",
-                 output_dir: str = "analysis_results"):
+                 output_dir: str = "analysis_results",
+                 use_wandb: bool = False,
+                 wandb_project: str = "reward-model-ensemble",
+                 wandb_entity: Optional[str] = None):
         """
         Initialize the analyzer with model specifications.
         
@@ -45,11 +50,21 @@ class RewardModelAnalyzer:
                          [{"size": "70m", "seed": 42, "checkpoint": 30, "hub_id": "..."}]
             device: Device to run models on
             output_dir: Directory to save analysis results
+            use_wandb: Whether to use Weights & Biases for logging
+            wandb_project: W&B project name
+            wandb_entity: W&B entity name
         """
         self.model_specs = model_specs
         self.device = device
         self.output_dir = output_dir
         os.makedirs(output_dir, exist_ok=True)
+        
+        # Setup wandb
+        self.use_wandb = use_wandb
+        if use_wandb:
+            wandb.init(project=wandb_project, entity=wandb_entity, 
+                      name=f"reward-model-analysis-{len(model_specs)}-models",
+                      config={"model_specs": model_specs})
         
         # Load models
         self.models = {}
@@ -153,6 +168,30 @@ class RewardModelAnalyzer:
             weights = model.v_head.weight.data.cpu().numpy()
             self.value_head_weights[model_id] = weights
     
+    def log_to_wandb(self, data_dict, prefix=""):
+        """Log metrics and images to wandb."""
+        if not self.use_wandb:
+            return
+            
+        # Log metrics
+        metrics_dict = {}
+        for key, value in data_dict.items():
+            if isinstance(value, (int, float)):
+                metrics_dict[f"{prefix}/{key}"] = value
+            elif isinstance(value, dict):
+                for subkey, subvalue in value.items():
+                    if isinstance(subvalue, (int, float)):
+                        metrics_dict[f"{prefix}/{key}/{subkey}"] = subvalue
+        
+        if metrics_dict:
+            wandb.log(metrics_dict)
+        
+        # Log images
+        for key, value in data_dict.items():
+            if isinstance(value, str) and value.endswith((".png", ".jpg", ".jpeg")):
+                if os.path.exists(value):
+                    wandb.log({f"{prefix}/{key}": wandb.Image(value)})
+    
     def analyze_value_heads(self):
         """Analyze the value head weights across models."""
         print("Analyzing value head weights...")
@@ -189,7 +228,12 @@ class RewardModelAnalyzer:
                     xticklabels=model_ids, yticklabels=model_ids, cmap="viridis")
         plt.title("Cosine Similarity Between Value Head Weights")
         plt.tight_layout()
-        plt.savefig(os.path.join(value_head_dir, "value_head_similarity.png"), dpi=300)
+        heatmap_path = os.path.join(value_head_dir, "value_head_similarity.png")
+        plt.savefig(heatmap_path, dpi=300)
+        
+        # Log to wandb
+        if self.use_wandb:
+            wandb.log({"value_head/similarity_heatmap": wandb.Image(heatmap_path)})
         
         # Save similarity matrix
         similarity_df = pd.DataFrame(similarity_matrix, index=model_ids, columns=model_ids)
@@ -223,8 +267,14 @@ class RewardModelAnalyzer:
                     height=600, width=800
                 )
                 fig.update_traces(marker=dict(size=12), textposition='top center')
-                fig.write_html(os.path.join(value_head_dir, "value_head_umap.html"))
-                fig.write_image(os.path.join(value_head_dir, "value_head_umap.png"), scale=2)
+                umap_html_path = os.path.join(value_head_dir, "value_head_umap.html")
+                umap_png_path = os.path.join(value_head_dir, "value_head_umap.png")
+                fig.write_html(umap_html_path)
+                fig.write_image(umap_png_path, scale=2)
+                
+                # Log to wandb
+                if self.use_wandb:
+                    wandb.log({"value_head/umap_projection": wandb.Image(umap_png_path)})
                 
             except Exception as e:
                 print(f"Error in UMAP visualization: {e}")
@@ -277,7 +327,18 @@ class RewardModelAnalyzer:
         stats['q3'] = df.groupby('model')['score'].quantile(0.75)
         
         # Save statistics
-        stats.to_csv(os.path.join(plots_dir, f"{plot_name}_stats.csv"))
+        stats_path = os.path.join(plots_dir, f"{plot_name}_stats.csv")
+        stats.to_csv(stats_path)
+        
+        # Log statistics to wandb
+        if self.use_wandb:
+            # Log mean scores for each model
+            for model_id in results:
+                wandb.log({f"{plot_name}/mean_score/{model_id}": stats.loc[model_id, 'mean']})
+            
+            # Create a wandb table for all statistics
+            wandb_table = wandb.Table(dataframe=stats.reset_index())
+            wandb.log({f"{plot_name}/statistics": wandb_table})
         
         # Create KDE plot
         plt.figure(figsize=(15, 10))
@@ -288,7 +349,8 @@ class RewardModelAnalyzer:
         plt.ylabel("Density")
         plt.legend()
         plt.grid(True, alpha=0.3)
-        plt.savefig(os.path.join(plots_dir, f"{plot_name}_kde.png"), dpi=300)
+        kde_path = os.path.join(plots_dir, f"{plot_name}_kde.png")
+        plt.savefig(kde_path, dpi=300)
         plt.close()
         
         # Create boxplot
@@ -300,7 +362,8 @@ class RewardModelAnalyzer:
         plt.xticks(rotation=45)
         plt.grid(True, alpha=0.3)
         plt.tight_layout()
-        plt.savefig(os.path.join(plots_dir, f"{plot_name}_boxplot.png"), dpi=300)
+        boxplot_path = os.path.join(plots_dir, f"{plot_name}_boxplot.png")
+        plt.savefig(boxplot_path, dpi=300)
         plt.close()
         
         # Create violin plot
@@ -312,7 +375,8 @@ class RewardModelAnalyzer:
         plt.xticks(rotation=45)
         plt.grid(True, alpha=0.3)
         plt.tight_layout()
-        plt.savefig(os.path.join(plots_dir, f"{plot_name}_violin.png"), dpi=300)
+        violin_path = os.path.join(plots_dir, f"{plot_name}_violin.png")
+        plt.savefig(violin_path, dpi=300)
         plt.close()
         
         # Create interactive plotly histogram
@@ -323,57 +387,76 @@ class RewardModelAnalyzer:
             yaxis_title="Count",
             legend_title="Model"
         )
-        fig.write_html(os.path.join(plots_dir, f"{plot_name}_histogram.html"))
+        histogram_html_path = os.path.join(plots_dir, f"{plot_name}_histogram.html")
+        histogram_png_path = os.path.join(plots_dir, f"{plot_name}_histogram.png")
+        fig.write_html(histogram_html_path)
+        fig.write_image(histogram_png_path, scale=2)
+        
+        # Log plots to wandb
+        if self.use_wandb:
+            wandb.log({
+                f"{plot_name}/kde_plot": wandb.Image(kde_path),
+                f"{plot_name}/boxplot": wandb.Image(boxplot_path),
+                f"{plot_name}/violin_plot": wandb.Image(violin_path),
+                f"{plot_name}/histogram": wandb.Image(histogram_png_path)
+            })
     
-    def evaluate_on_dataset(self, dataset_path: str, dataset_name: str, batch_size: int = 16, 
-                           max_samples: Optional[int] = None, text_key: str = "output"):
+    def evaluate_on_dataset(self, dataset, dataset_name: str, batch_size: int = 16, 
+                           max_samples: Optional[int] = None, text_key: str = "output",
+                           split: Optional[str] = None):
         """
         Evaluate all models on a dataset.
         
         Args:
-            dataset_path: Path or HuggingFace ID of the dataset
+            dataset: Dataset to evaluate on (can be path, HuggingFace ID, or pre-loaded dataset)
             dataset_name: Name for the dataset in results
             batch_size: Batch size for processing
             max_samples: Maximum number of samples to process (None for all)
             text_key: Key in the dataset that contains the text to evaluate
+            split: Dataset split to evaluate on (train, test, or None for all)
             
         Returns:
             Dictionary with evaluation results
         """
-        print(f"Evaluating models on {dataset_name} dataset...")
+        split_suffix = f"_{split}" if split else ""
+        print(f"Evaluating models on {dataset_name}{split_suffix} dataset...")
         
         # Check if we have any models
         if not self.models:
             print("No models available for evaluation. Skipping.")
             return None
         
-        # Load dataset
-        try:
-            if dataset_path.startswith(("http", "https", "s3://")):
-                # Download from URL
-                response = requests.get(dataset_path)
-                data = response.json()
-            elif os.path.exists(dataset_path):
-                # Load from local file
-                with open(dataset_path, "r") as f:
-                    data = json.load(f)
-            else:
-                # Try to load from HuggingFace
-                ds = load_dataset(dataset_path)
-                if "train" in ds:
-                    ds = ds["train"]
-                
-                # Convert to list of dictionaries
-                data = ds.to_pandas().to_dict(orient="records")
-        except Exception as e:
-            print(f"Error loading dataset {dataset_path}: {e}")
-            return None
+        # Load dataset if it's a path or HuggingFace ID
+        if isinstance(dataset, str):
+            try:
+                if dataset.startswith(("http", "https", "s3://")):
+                    # Download from URL
+                    response = requests.get(dataset)
+                    data = response.json()
+                elif os.path.exists(dataset):
+                    # Load from local file
+                    with open(dataset, "r") as f:
+                        data = json.load(f)
+                else:
+                    # Try to load from HuggingFace
+                    ds = load_dataset(dataset)
+                    if "train" in ds:
+                        ds = ds["train"]
+                    
+                    # Convert to list of dictionaries
+                    data = ds.to_pandas().to_dict(orient="records")
+            except Exception as e:
+                print(f"Error loading dataset {dataset}: {e}")
+                return None
+        else:
+            # Dataset is already loaded
+            data = dataset
         
         # Limit samples if specified
         if max_samples is not None and max_samples < len(data):
             data = data[:max_samples]
         
-        print(f"Processing {len(data)} samples from {dataset_name} dataset")
+        print(f"Processing {len(data)} samples from {dataset_name}{split_suffix} dataset")
         
         # Store results for each model
         results = {model_id: [] for model_id in self.models}
@@ -384,12 +467,12 @@ class RewardModelAnalyzer:
             return None
         
         # Process in batches
-        for i in tqdm(range(0, len(data), batch_size), desc=f"Evaluating {dataset_name}"):
+        for i in tqdm(range(0, len(data), batch_size), desc=f"Evaluating {dataset_name}{split_suffix}"):
             batch = data[i:i+batch_size]
             
             # Extract texts from batch
             # Handle the special case for allenai/real-toxicity-prompts dataset
-            if dataset_path == "allenai/real-toxicity-prompts":
+            if isinstance(dataset, str) and dataset == "allenai/real-toxicity-prompts":
                 texts = []
                 for item in batch:
                     if "prompt" in item and isinstance(item["prompt"], dict) and "text" in item["prompt"]:
@@ -401,8 +484,15 @@ class RewardModelAnalyzer:
                     else:
                         # Skip items without text
                         continue
+            # Handle HuggingFace dataset objects
+            elif hasattr(batch, 'query'):
+                texts = batch['query']
+            # Handle dictionaries with text_key
+            elif isinstance(batch, list) and isinstance(batch[0], dict):
+                texts = [item[text_key] if text_key in item else item.get('text', '') for item in batch]
+            # Handle other cases
             else:
-                texts = [item[text_key] if text_key in item else item['text'] for item in batch]
+                texts = batch
             
             # Score texts with each model
             for model_id, model in self.models.items():
@@ -428,31 +518,34 @@ class RewardModelAnalyzer:
                 results[model_id].extend(rewards_list)
         
         # Create plots
-        self.create_distribution_plot(results, f"{dataset_name}_distribution", 
-                                     title=f"Reward Distribution on {dataset_name} Dataset")
+        plot_name = f"{dataset_name}{split_suffix}_distribution"
+        self.create_distribution_plot(results, plot_name, 
+                                     title=f"Reward Distribution on {dataset_name}{split_suffix} Dataset")
         
         return results
     
-    def compare_paired_datasets(self, dataset1_path: str, dataset2_path: str, 
+    def compare_paired_datasets(self, dataset1, dataset2, 
                                dataset1_name: str = "dataset1", dataset2_name: str = "dataset2",
                                batch_size: int = 16, max_samples: Optional[int] = None,
-                               text_key: str = "output"):
+                               text_key: str = "output", split: Optional[str] = None):
         """
         Compare model performance on two paired datasets.
         
         Args:
-            dataset1_path: Path or HuggingFace ID of the first dataset
-            dataset2_path: Path or HuggingFace ID of the second dataset
+            dataset1: First dataset (path, HuggingFace ID, or pre-loaded dataset)
+            dataset2: Second dataset (path, HuggingFace ID, or pre-loaded dataset)
             dataset1_name: Name for the first dataset in results
             dataset2_name: Name for the second dataset in results
             batch_size: Batch size for processing
             max_samples: Maximum number of samples to process (None for all)
             text_key: Key in the dataset that contains the text to evaluate
+            split: Dataset split to evaluate on (train, test, or None for all)
             
         Returns:
             Dictionary with comparison results
         """
-        print(f"Comparing models on {dataset1_name} vs {dataset2_name} datasets...")
+        split_suffix = f"_{split}" if split else ""
+        print(f"Comparing models on {dataset1_name} vs {dataset2_name}{split_suffix} datasets...")
         
         # Check if we have any models
         if not self.models:
@@ -460,8 +553,8 @@ class RewardModelAnalyzer:
             return None
         
         # Evaluate on both datasets
-        results1 = self.evaluate_on_dataset(dataset1_path, dataset1_name, batch_size, max_samples, text_key)
-        results2 = self.evaluate_on_dataset(dataset2_path, dataset2_name, batch_size, max_samples, text_key)
+        results1 = self.evaluate_on_dataset(dataset1, dataset1_name, batch_size, max_samples, text_key, split)
+        results2 = self.evaluate_on_dataset(dataset2, dataset2_name, batch_size, max_samples, text_key, split)
         
         # If either evaluation failed, return None
         if results1 is None or results2 is None:
@@ -469,7 +562,7 @@ class RewardModelAnalyzer:
             return None
         
         # Create a directory for comparison
-        comparison_dir = os.path.join(self.output_dir, f"{dataset1_name}_vs_{dataset2_name}")
+        comparison_dir = os.path.join(self.output_dir, f"{dataset1_name}_vs_{dataset2_name}{split_suffix}")
         os.makedirs(comparison_dir, exist_ok=True)
         
         # Calculate score differences
@@ -482,7 +575,8 @@ class RewardModelAnalyzer:
         
         # Save differences
         diff_df = pd.DataFrame(diff_results)
-        diff_df.to_csv(os.path.join(comparison_dir, "score_differences.csv"), index=False)
+        diff_path = os.path.join(comparison_dir, "score_differences.csv")
+        diff_df.to_csv(diff_path, index=False)
         
         # Calculate statistics on differences
         diff_stats = {}
@@ -497,7 +591,18 @@ class RewardModelAnalyzer:
         
         # Save difference statistics
         diff_stats_df = pd.DataFrame(diff_stats).T
-        diff_stats_df.to_csv(os.path.join(comparison_dir, "difference_statistics.csv"))
+        diff_stats_path = os.path.join(comparison_dir, "difference_statistics.csv")
+        diff_stats_df.to_csv(diff_stats_path)
+        
+        # Log to wandb
+        if self.use_wandb:
+            # Log mean differences for each model
+            for model_id, stats in diff_stats.items():
+                wandb.log({f"comparison{split_suffix}/{dataset1_name}_vs_{dataset2_name}/mean_diff/{model_id}": stats["mean_diff"]})
+            
+            # Create a wandb table for all statistics
+            wandb_table = wandb.Table(dataframe=diff_stats_df.reset_index())
+            wandb.log({f"comparison{split_suffix}/{dataset1_name}_vs_{dataset2_name}/statistics": wandb_table})
         
         # Plot mean differences
         plt.figure(figsize=(12, 8))
@@ -511,11 +616,17 @@ class RewardModelAnalyzer:
         
         plt.barh(sorted_model_ids, sorted_mean_diffs)
         plt.axvline(x=0, color='r', linestyle='-', alpha=0.3)
-        plt.title(f"Mean Score Difference ({dataset2_name} - {dataset1_name})")
+        plt.title(f"Mean Score Difference ({dataset2_name} - {dataset1_name}){split_suffix}")
         plt.xlabel("Mean Difference")
         plt.grid(True, alpha=0.3)
         plt.tight_layout()
-        plt.savefig(os.path.join(comparison_dir, "mean_differences.png"), dpi=300)
+        mean_diff_path = os.path.join(comparison_dir, "mean_differences.png")
+        plt.savefig(mean_diff_path, dpi=300)
+        plt.close()
+        
+        # Log to wandb
+        if self.use_wandb:
+            wandb.log({f"comparison{split_suffix}/{dataset1_name}_vs_{dataset2_name}/mean_differences": wandb.Image(mean_diff_path)})
         
         # Plot paired distributions for each model
         for model_id in self.models:
@@ -523,12 +634,18 @@ class RewardModelAnalyzer:
                 plt.figure(figsize=(10, 6))
                 plt.hist(results1[model_id], alpha=0.5, bins=30, label=dataset1_name)
                 plt.hist(results2[model_id], alpha=0.5, bins=30, label=dataset2_name)
-                plt.title(f"Score Distribution for {model_id}")
+                plt.title(f"Score Distribution for {model_id}{split_suffix}")
                 plt.xlabel("Reward Score")
                 plt.ylabel("Frequency")
                 plt.legend()
                 plt.grid(True, alpha=0.3)
-                plt.savefig(os.path.join(comparison_dir, f"{model_id}_distributions.png"), dpi=300)
+                dist_path = os.path.join(comparison_dir, f"{model_id}_distributions.png")
+                plt.savefig(dist_path, dpi=300)
+                plt.close()
+                
+                # Log to wandb
+                if self.use_wandb:
+                    wandb.log({f"comparison{split_suffix}/{dataset1_name}_vs_{dataset2_name}/distribution/{model_id}": wandb.Image(dist_path)})
         
         return {
             "dataset1_results": results1,
@@ -537,32 +654,34 @@ class RewardModelAnalyzer:
             "diff_stats": diff_stats
         }
     
-    def analyze_ensemble_methods(self, dataset1_path: str, dataset2_path: str,
+    def analyze_ensemble_methods(self, dataset1, dataset2,
                                 dataset1_name: str, dataset2_name: str,
                                 batch_size: int = 16, max_samples: Optional[int] = None,
-                                text_key: str = "output"):
+                                text_key: str = "output", split: Optional[str] = None):
         """
         Analyze different ensemble methods for combining model predictions.
         
         Args:
-            dataset1_path: Path or HuggingFace ID of the first dataset (e.g., toxic)
-            dataset2_path: Path or HuggingFace ID of the second dataset (e.g., detoxified)
+            dataset1: First dataset (e.g., toxic)
+            dataset2: Second dataset (e.g., detoxified)
             dataset1_name: Name for the first dataset
             dataset2_name: Name for the second dataset
             batch_size: Batch size for processing
             max_samples: Maximum number of samples to process (None for all)
             text_key: Key in the dataset that contains the text to evaluate
+            split: Dataset split to evaluate on (train, test, or None for all)
             
         Returns:
             Dictionary with ensemble analysis results
         """
-        print("Analyzing ensemble methods...")
+        split_suffix = f"_{split}" if split else ""
+        print(f"Analyzing ensemble methods on {split_suffix} split...")
         
         # Get results from paired datasets
         comparison_results = self.compare_paired_datasets(
-            dataset1_path, dataset2_path, 
+            dataset1, dataset2, 
             dataset1_name, dataset2_name,
-            batch_size, max_samples, text_key
+            batch_size, max_samples, text_key, split
         )
         
         if comparison_results is None:
@@ -573,7 +692,7 @@ class RewardModelAnalyzer:
         results2 = comparison_results["dataset2_results"]  # e.g., detoxified
         
         # Create a directory for ensemble analysis
-        ensemble_dir = os.path.join(self.output_dir, "ensemble_analysis")
+        ensemble_dir = os.path.join(self.output_dir, f"ensemble_analysis{split_suffix}")
         os.makedirs(ensemble_dir, exist_ok=True)
         
         # Prepare data for ensemble analysis
@@ -664,7 +783,19 @@ class RewardModelAnalyzer:
         
         # Save ensemble metrics
         ensemble_df = pd.DataFrame(ensemble_metrics).T
-        ensemble_df.to_csv(os.path.join(ensemble_dir, "ensemble_metrics.csv"))
+        ensemble_metrics_path = os.path.join(ensemble_dir, "ensemble_metrics.csv")
+        ensemble_df.to_csv(ensemble_metrics_path)
+        
+        # Log to wandb
+        if self.use_wandb:
+            # Log metrics for each method
+            for method_name, metrics in ensemble_metrics.items():
+                for metric_name, value in metrics.items():
+                    wandb.log({f"ensemble{split_suffix}/{method_name}/{metric_name}": value})
+            
+            # Create a wandb table for all metrics
+            wandb_table = wandb.Table(dataframe=ensemble_df.reset_index().rename(columns={"index": "method"}))
+            wandb.log({f"ensemble{split_suffix}/metrics": wandb_table})
         
         # Plot metrics comparison
         metrics_to_plot = ["accuracy", "f1", "auc_roc", "pr_auc"]
@@ -686,7 +817,13 @@ class RewardModelAnalyzer:
             axes[i].grid(True, alpha=0.3)
         
         plt.tight_layout()
-        plt.savefig(os.path.join(ensemble_dir, "ensemble_comparison.png"), dpi=300)
+        ensemble_comparison_path = os.path.join(ensemble_dir, "ensemble_comparison.png")
+        plt.savefig(ensemble_comparison_path, dpi=300)
+        plt.close()
+        
+        # Log to wandb
+        if self.use_wandb:
+            wandb.log({f"ensemble{split_suffix}/comparison": wandb.Image(ensemble_comparison_path)})
         
         # Create interactive plotly visualization
         fig = make_subplots(rows=len(metrics_to_plot), cols=1, 
@@ -719,11 +856,12 @@ class RewardModelAnalyzer:
         fig.update_layout(
             height=300*len(metrics_to_plot),
             width=900,
-            title_text="Ensemble Methods vs Individual Models",
+            title_text=f"Ensemble Methods vs Individual Models{split_suffix}",
             showlegend=False
         )
         
-        fig.write_html(os.path.join(ensemble_dir, "ensemble_comparison.html"))
+        ensemble_html_path = os.path.join(ensemble_dir, "ensemble_comparison.html")
+        fig.write_html(ensemble_html_path)
         
         # Analyze pairwise correlations between model predictions
         correlation_matrix = np.zeros((len(model_ids), len(model_ids)))
@@ -737,9 +875,15 @@ class RewardModelAnalyzer:
         plt.figure(figsize=(12, 10))
         sns.heatmap(correlation_matrix, annot=True, fmt=".3f", 
                    xticklabels=model_ids, yticklabels=model_ids, cmap="viridis")
-        plt.title("Correlation Between Model Predictions")
+        plt.title(f"Correlation Between Model Predictions{split_suffix}")
         plt.tight_layout()
-        plt.savefig(os.path.join(ensemble_dir, "model_correlation.png"), dpi=300)
+        correlation_path = os.path.join(ensemble_dir, "model_correlation.png")
+        plt.savefig(correlation_path, dpi=300)
+        plt.close()
+        
+        # Log to wandb
+        if self.use_wandb:
+            wandb.log({f"ensemble{split_suffix}/model_correlation": wandb.Image(correlation_path)})
         
         # Save correlation matrix
         corr_df = pd.DataFrame(correlation_matrix, index=model_ids, columns=model_ids)
@@ -752,76 +896,11 @@ class RewardModelAnalyzer:
             "weights": dict(zip(model_ids, weights))
         }
     
-    def analyze_by_model_size(self, results_dict):
-        """
-        Analyze performance by model size.
-        
-        Args:
-            results_dict: Dictionary with evaluation results
-            
-        Returns:
-            DataFrame with size-based analysis
-        """
-        # Extract model sizes
-        size_metrics = {}
-        
-        for model_id, metrics in results_dict.items():
-            size = model_id.split('-')[1]  # Extract size from model_id
-            
-            if size not in size_metrics:
-                size_metrics[size] = []
-            
-            size_metrics[size].append(metrics)
-        
-        # Calculate average metrics by size
-        size_avg_metrics = {}
-        for size, metrics_list in size_metrics.items():
-            # Calculate average of each metric
-            avg_metrics = {}
-            for metric in metrics_list[0].keys():
-                avg_metrics[metric] = np.mean([m[metric] for m in metrics_list])
-            
-            size_avg_metrics[size] = avg_metrics
-        
-        return pd.DataFrame(size_avg_metrics).T
-    
-    def analyze_by_seed(self, results_dict):
-        """
-        Analyze performance by seed.
-        
-        Args:
-            results_dict: Dictionary with evaluation results
-            
-        Returns:
-            DataFrame with seed-based analysis
-        """
-        # Extract seeds
-        seed_metrics = {}
-        
-        for model_id, metrics in results_dict.items():
-            seed = model_id.split('-')[-1]  # Extract seed from model_id
-            
-            if seed not in seed_metrics:
-                seed_metrics[seed] = []
-            
-            seed_metrics[seed].append(metrics)
-        
-        # Calculate average metrics by seed
-        seed_avg_metrics = {}
-        for seed, metrics_list in seed_metrics.items():
-            # Calculate average of each metric
-            avg_metrics = {}
-            for metric in metrics_list[0].keys():
-                avg_metrics[metric] = np.mean([m[metric] for m in metrics_list])
-            
-            seed_avg_metrics[seed] = avg_metrics
-        
-        return pd.DataFrame(seed_avg_metrics).T
-    
     def run_full_analysis(self, original_dataset_path, detoxified_dataset_path, 
-                         toxicity_prompts_dataset_path=None, batch_size=16, max_samples=None):
+                         toxicity_prompts_dataset_path=None, batch_size=16, max_samples=None,
+                         train_test_split=0.8, seed=42):
         """
-        Run a full analysis on all datasets.
+        Run a full analysis on all datasets with proper train/test splitting.
         
         Args:
             original_dataset_path: Path to original (toxic) dataset
@@ -829,6 +908,8 @@ class RewardModelAnalyzer:
             toxicity_prompts_dataset_path: Path to toxicity prompts dataset (optional)
             batch_size: Batch size for processing
             max_samples: Maximum number of samples to process (None for all)
+            train_test_split: Fraction of data to use for training
+            seed: Random seed for reproducibility
             
         Returns:
             Dictionary with all analysis results
@@ -841,37 +922,89 @@ class RewardModelAnalyzer:
             return results
         
         # Analyze value heads
-        print("Analyzing value heads...")
+        print("Analyzing value head weights...")
         results["value_head_similarity"] = self.analyze_value_heads()
         
-        # Compare original vs detoxified datasets
-        print("Comparing original vs detoxified datasets...")
-        results["original_vs_detoxified"] = self.compare_paired_datasets(
+        # Load and split paired datasets
+        print("Loading and splitting paired datasets...")
+        paired_datasets = self.load_and_split_paired_datasets(
             original_dataset_path, detoxified_dataset_path,
-            "original", "detoxified",
-            batch_size=batch_size,
-            max_samples=max_samples
+            train_test_split=train_test_split, seed=seed
         )
         
-        # Analyze ensemble methods
-        print("Analyzing ensemble methods...")
-        results["ensemble_analysis"] = self.analyze_ensemble_methods(
-            original_dataset_path, detoxified_dataset_path,
-            "original", "detoxified",
-            batch_size=batch_size,
-            max_samples=max_samples
-        )
+        if paired_datasets:
+            # Analyze train split
+            print("Analyzing train split...")
+            results["train"] = {
+                "original_vs_detoxified": self.compare_paired_datasets(
+                    paired_datasets['train']['original'], 
+                    paired_datasets['train']['detoxified'],
+                    "original", "detoxified",
+                    batch_size=batch_size,
+                    max_samples=max_samples,
+                    split="train"
+                ),
+                "ensemble_analysis": self.analyze_ensemble_methods(
+                    paired_datasets['train']['original'], 
+                    paired_datasets['train']['detoxified'],
+                    "original", "detoxified",
+                    batch_size=batch_size,
+                    max_samples=max_samples,
+                    split="train"
+                )
+            }
+            
+            # Analyze test split
+            print("Analyzing test split...")
+            results["test"] = {
+                "original_vs_detoxified": self.compare_paired_datasets(
+                    paired_datasets['test']['original'], 
+                    paired_datasets['test']['detoxified'],
+                    "original", "detoxified",
+                    batch_size=batch_size,
+                    max_samples=max_samples,
+                    split="test"
+                ),
+                "ensemble_analysis": self.analyze_ensemble_methods(
+                    paired_datasets['test']['original'], 
+                    paired_datasets['test']['detoxified'],
+                    "original", "detoxified",
+                    batch_size=batch_size,
+                    max_samples=max_samples,
+                    split="test"
+                )
+            }
         
         # If toxicity prompts dataset is provided, evaluate on it
         if toxicity_prompts_dataset_path:
-            print("Evaluating on toxicity prompts dataset...")
-            results["toxicity_prompts"] = self.evaluate_on_dataset(
-                toxicity_prompts_dataset_path,
-                "toxicity_prompts",
-                batch_size=batch_size,
-                max_samples=max_samples,
-                text_key="text"  # Adjust based on the dataset structure
+            print("Loading and splitting toxicity prompts dataset...")
+            toxicity_datasets = self.load_and_split_toxicity_prompts(
+                dataset_path=toxicity_prompts_dataset_path,
+                seed=seed
             )
+            
+            if toxicity_datasets:
+                # Evaluate on train split
+                print("Evaluating on toxicity prompts train split...")
+                results["toxicity_prompts_train"] = self.evaluate_on_dataset(
+                    toxicity_datasets['train'],
+                    "toxicity_prompts",
+                    batch_size=batch_size,
+                    max_samples=max_samples,
+                    text_key="query",
+                    split="train"
+                )
+                
+                # Evaluate on test split
+                print("Evaluating on toxicity prompts test split...")
+                results["toxicity_prompts_test"] = self.evaluate_on_dataset(
+                    toxicity_datasets['test'],
+                    "toxicity_prompts",
+                    batch_size=batch_size,
+                    max_samples=max_samples,
+                    text_key="query",
+                    split="test"
+                )
         
         # Create summary report
         self.create_summary_report(results)
@@ -998,6 +1131,134 @@ class RewardModelAnalyzer:
         print(f"Summary report saved to {report_dir}")
         
         return summary
+
+    def load_and_split_paired_datasets(self, original_dataset_path, detoxified_dataset_path, 
+                                      train_test_split=0.8, seed=42):
+        """
+        Load and split paired datasets into train and test sets.
+        
+        Args:
+            original_dataset_path: Path to original (toxic) dataset
+            detoxified_dataset_path: Path to detoxified dataset
+            train_test_split: Fraction of data to use for training
+            seed: Random seed for reproducibility
+            
+        Returns:
+            Dictionary with train and test data
+        """
+        print(f"Loading and splitting paired datasets with split {train_test_split}...")
+        
+        # Load datasets
+        try:
+            # Load original dataset
+            if original_dataset_path.startswith(("http", "https", "s3://")):
+                response = requests.get(original_dataset_path)
+                original_data = response.json()
+            elif os.path.exists(original_dataset_path):
+                with open(original_dataset_path, "r") as f:
+                    original_data = json.load(f)
+            else:
+                # Try to load from HuggingFace
+                ds = load_dataset(original_dataset_path)
+                if "train" in ds:
+                    ds = ds["train"]
+                original_data = ds.to_pandas().to_dict(orient="records")
+            
+            # Load detoxified dataset
+            if detoxified_dataset_path.startswith(("http", "https", "s3://")):
+                response = requests.get(detoxified_dataset_path)
+                detoxified_data = response.json()
+            elif os.path.exists(detoxified_dataset_path):
+                with open(detoxified_dataset_path, "r") as f:
+                    detoxified_data = json.load(f)
+            else:
+                # Try to load from HuggingFace
+                ds = load_dataset(detoxified_dataset_path)
+                if "train" in ds:
+                    ds = ds["train"]
+                detoxified_data = ds.to_pandas().to_dict(orient="records")
+            
+            # Ensure datasets have the same length
+            min_len = min(len(original_data), len(detoxified_data))
+            original_data = original_data[:min_len]
+            detoxified_data = detoxified_data[:min_len]
+            
+            # Set random seed for reproducibility
+            np.random.seed(seed)
+            
+            # Create indices for train/test split
+            indices = np.random.permutation(min_len)
+            train_size = int(train_test_split * min_len)
+            
+            train_indices = indices[:train_size]
+            test_indices = indices[train_size:]
+            
+            # Split data into train/test sets
+            train_data = {
+                'original': [original_data[i] for i in train_indices],
+                'detoxified': [detoxified_data[i] for i in train_indices]
+            }
+            
+            test_data = {
+                'original': [original_data[i] for i in test_indices],
+                'detoxified': [detoxified_data[i] for i in test_indices]
+            }
+            
+            print(f"Split datasets into {len(train_data['original'])} train and {len(test_data['original'])} test samples")
+            
+            return {
+                'train': train_data,
+                'test': test_data
+            }
+        
+        except Exception as e:
+            print(f"Error loading and splitting datasets: {e}")
+            return None
+
+    def load_and_split_toxicity_prompts(self, dataset_path="allenai/real-toxicity-prompts", 
+                                       toxicity_threshold=0.5, seed=42, test_size=0.2):
+        """
+        Load and split toxicity prompts dataset similar to RLHF utilities.
+        
+        Args:
+            dataset_path: Path or HuggingFace ID of the dataset
+            toxicity_threshold: Threshold for filtering toxic prompts
+            seed: Random seed for reproducibility
+            test_size: Fraction of data to use for testing
+            
+        Returns:
+            Dictionary with train and test data
+        """
+        print(f"Loading and splitting toxicity prompts dataset...")
+        
+        try:
+            # Create a mock config for build_dataset
+            config = type('Config', (), {
+                'model': type('ModelConfig', (), {'name': 'EleutherAI/pythia-70m'}),
+                'dataset': type('DatasetConfig', (), {
+                    'name': dataset_path,
+                    'toxicity_threshold': toxicity_threshold,
+                    'input_min_text_length': 32,
+                    'input_max_text_length': 256,
+                    'test_size': test_size
+                }),
+                'training': type('TrainingConfig', (), {'seed': seed})
+            })
+            
+            # Use build_dataset from rlhf_utilities
+            train_ds, test_ds, tokenizer = build_dataset(config)
+            
+            print(f"Split toxicity prompts into {len(train_ds)} train and {len(test_ds)} test samples")
+            
+            return {
+                'train': train_ds,
+                'test': test_ds,
+                'tokenizer': tokenizer
+            }
+        
+        except Exception as e:
+            print(f"Error loading and splitting toxicity prompts: {e}")
+            return None
 
 
 class RewardModelEnsemble:
@@ -1289,6 +1550,10 @@ def main():
                         help="Maximum number of samples to process")
     parser.add_argument("--batch_size", type=int, default=16,
                         help="Batch size for processing")
+    parser.add_argument("--train_test_split", type=float, default=0.8,
+                        help="Fraction of data to use for training")
+    parser.add_argument("--seed", type=int, default=42,
+                        help="Random seed for reproducibility")
     
     # Analysis options
     parser.add_argument("--output_dir", default="reward_model_analysis",
@@ -1300,6 +1565,14 @@ def main():
                         help="Method to use for ensemble")
     parser.add_argument("--download_models", action="store_true",
                         help="Download models from HuggingFace Hub before analysis")
+    
+    # Wandb options
+    parser.add_argument("--use_wandb", action="store_true",
+                        help="Use Weights & Biases for logging")
+    parser.add_argument("--wandb_project", default="reward-model-ensemble",
+                        help="W&B project name")
+    parser.add_argument("--wandb_entity", default=None,
+                        help="W&B entity name")
     
     args = parser.parse_args()
     
@@ -1352,7 +1625,10 @@ def main():
     analyzer = RewardModelAnalyzer(
         model_specs=model_specs,
         device="cuda" if torch.cuda.is_available() else "cpu",
-        output_dir=args.output_dir
+        output_dir=args.output_dir,
+        use_wandb=args.use_wandb,
+        wandb_project=args.wandb_project,
+        wandb_entity=args.wandb_entity
     )
     
     # Run analysis
@@ -1361,7 +1637,9 @@ def main():
         detoxified_dataset_path=args.detoxified_dataset or f"ajagota71/ajagota71_pythia-{args.model_sizes[0]}-detox-epoch-100_2000_samples_detoxified",
         toxicity_prompts_dataset_path=args.toxicity_prompts_dataset,
         batch_size=args.batch_size,
-        max_samples=args.max_samples
+        max_samples=args.max_samples,
+        train_test_split=args.train_test_split,
+        seed=args.seed
     )
     
     # Create ensemble if requested
@@ -1370,8 +1648,11 @@ def main():
         
         # Get weights from analysis results
         weights = None
-        if "ensemble_analysis" in results and "weights" in results["ensemble_analysis"]:
-            weights = results["ensemble_analysis"]["weights"]
+        if "test" in results and "ensemble_analysis" in results["test"] and "weights" in results["test"]["ensemble_analysis"]:
+            # Prefer weights from test set for better generalization
+            weights = results["test"]["ensemble_analysis"]["weights"]
+        elif "train" in results and "ensemble_analysis" in results["train"] and "weights" in results["train"]["ensemble_analysis"]:
+            weights = results["train"]["ensemble_analysis"]["weights"]
         
         # Create ensemble
         ensemble = RewardModelEnsemble(
@@ -1385,6 +1666,10 @@ def main():
         ensemble.save(ensemble_dir)
         
         print(f"Ensemble created and saved to {ensemble_dir}")
+    
+    # Finish wandb run if used
+    if args.use_wandb:
+        wandb.finish()
 
 
 if __name__ == "__main__":
