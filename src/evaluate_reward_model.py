@@ -15,7 +15,7 @@ import json
 import random
 import datetime
 
-from src.irl_utilities import RewardModel
+from src.irl_utilities import RewardModel, plot_score_distribution
 
 
 def load_reward_model(model_path: str, device: str = None, seed: int = 42) -> tuple:
@@ -367,23 +367,65 @@ def prepare_dataset(original_dataset_path, detoxified_dataset_path, train_test_s
     def is_hf_dataset(path):
         return '/' in path and not os.path.exists(path)
     
-    # Load original dataset
-    if is_hf_dataset(original_dataset_path):
-        print(f"Loading original dataset from HuggingFace: {original_dataset_path}")
+    # Function to load a dataset from HuggingFace with proper error handling
+    def load_hf_dataset(dataset_path):
+        print(f"Loading dataset from HuggingFace: {dataset_path}")
         try:
             from datasets import load_dataset
-            original_ds = load_dataset(original_dataset_path)
-            if isinstance(original_ds, dict) and 'train' in original_ds:
-                original_data = original_ds['train']
-            else:
-                original_data = original_ds
             
-            # Convert to list of dictionaries if needed
-            if hasattr(original_data, 'to_pandas'):
-                original_data = original_data.to_pandas().to_dict('records')
+            # Try loading with streaming mode first to avoid caching issues
+            try:
+                ds = load_dataset(dataset_path, streaming=True)
+                # Convert streaming dataset to list
+                if isinstance(ds, dict) and 'train' in ds:
+                    data_list = list(ds['train'])
+                else:
+                    data_list = list(ds)
+                return data_list
+            except Exception as e:
+                print(f"Streaming load failed: {e}")
+                print("Trying standard load...")
+                
+                # Try standard load with force_download to avoid cache
+                ds = load_dataset(dataset_path, force_download=True)
+                if isinstance(ds, dict) and 'train' in ds:
+                    return ds['train'].to_pandas().to_dict('records')
+                else:
+                    return ds.to_pandas().to_dict('records')
+                
         except Exception as e:
             print(f"Error loading dataset from HuggingFace: {e}")
-            raise
+            print("Attempting alternative loading method...")
+            
+            # Try using the Hugging Face Hub API directly
+            try:
+                from huggingface_hub import hf_hub_download
+                import pandas as pd
+                
+                # Try to find a CSV or JSON file in the repo
+                try:
+                    file_path = hf_hub_download(repo_id=dataset_path, filename="data.csv")
+                    return pd.read_csv(file_path).to_dict('records')
+                except:
+                    try:
+                        file_path = hf_hub_download(repo_id=dataset_path, filename="data.json")
+                        with open(file_path, 'r') as f:
+                            return json.load(f)
+                    except:
+                        try:
+                            file_path = hf_hub_download(repo_id=dataset_path, filename="dataset.json")
+                            with open(file_path, 'r') as f:
+                                return json.load(f)
+                        except Exception as e:
+                            print(f"All alternative loading methods failed: {e}")
+                            raise
+            except Exception as e:
+                print(f"Failed to load dataset using hub API: {e}")
+                raise
+    
+    # Load original dataset
+    if is_hf_dataset(original_dataset_path):
+        original_data = load_hf_dataset(original_dataset_path)
     else:
         # Load from local file
         print(f"Loading original dataset from local file: {original_dataset_path}")
@@ -392,21 +434,7 @@ def prepare_dataset(original_dataset_path, detoxified_dataset_path, train_test_s
     
     # Load detoxified dataset
     if is_hf_dataset(detoxified_dataset_path):
-        print(f"Loading detoxified dataset from HuggingFace: {detoxified_dataset_path}")
-        try:
-            from datasets import load_dataset
-            detoxified_ds = load_dataset(detoxified_dataset_path)
-            if isinstance(detoxified_ds, dict) and 'train' in detoxified_ds:
-                detoxified_data = detoxified_ds['train']
-            else:
-                detoxified_data = detoxified_ds
-            
-            # Convert to list of dictionaries if needed
-            if hasattr(detoxified_data, 'to_pandas'):
-                detoxified_data = detoxified_data.to_pandas().to_dict('records')
-        except Exception as e:
-            print(f"Error loading dataset from HuggingFace: {e}")
-            raise
+        detoxified_data = load_hf_dataset(detoxified_dataset_path)
     else:
         # Load from local file
         print(f"Loading detoxified dataset from local file: {detoxified_dataset_path}")
