@@ -81,7 +81,8 @@ class RewardModelAnalyzer:
                 v_head_paths = [
                     os.path.join(hub_id, "v_head.pt"),  # Direct path
                     f"https://huggingface.co/{hub_id}/resolve/main/v_head.pt",  # URL path
-                    os.path.join("models", hub_id, "v_head.pt")  # Local models directory
+                    os.path.join("models", hub_id, "v_head.pt"),  # Local models directory
+                    hub_id  # Try the hub_id directly - this is likely the correct path
                 ]
                 
                 model_loaded = False
@@ -219,6 +220,11 @@ class RewardModelAnalyzer:
         """
         print(f"Evaluating models on {dataset_name} dataset...")
         
+        # Check if we have any models
+        if not self.models:
+            print("No models available for evaluation. Skipping.")
+            return None
+        
         # Load dataset
         try:
             if '/' in dataset_path and not os.path.exists(dataset_path):
@@ -243,6 +249,11 @@ class RewardModelAnalyzer:
         
         # Store results for each model
         results = {model_id: [] for model_id in self.models}
+        
+        # If no models were loaded, return empty results
+        if not results:
+            print("No models available for evaluation. Skipping.")
+            return None
         
         # Process in batches
         for i in tqdm(range(0, len(data), batch_size), desc=f"Evaluating {dataset_name}"):
@@ -329,17 +340,17 @@ class RewardModelAnalyzer:
         return results
     
     def compare_paired_datasets(self, dataset1_path: str, dataset2_path: str, 
-                               dataset1_name: str, dataset2_name: str,
+                               dataset1_name: str = "dataset1", dataset2_name: str = "dataset2",
                                batch_size: int = 16, max_samples: Optional[int] = None,
                                text_key: str = "output"):
         """
-        Compare model performance on paired datasets (e.g., original vs detoxified).
+        Compare model performance on two paired datasets.
         
         Args:
             dataset1_path: Path or HuggingFace ID of the first dataset
             dataset2_path: Path or HuggingFace ID of the second dataset
-            dataset1_name: Name for the first dataset
-            dataset2_name: Name for the second dataset
+            dataset1_name: Name for the first dataset in results
+            dataset2_name: Name for the second dataset in results
             batch_size: Batch size for processing
             max_samples: Maximum number of samples to process (None for all)
             text_key: Key in the dataset that contains the text to evaluate
@@ -349,12 +360,18 @@ class RewardModelAnalyzer:
         """
         print(f"Comparing models on {dataset1_name} vs {dataset2_name} datasets...")
         
+        # Check if we have any models
+        if not self.models:
+            print("No models available for comparison. Skipping.")
+            return None
+        
         # Evaluate on both datasets
         results1 = self.evaluate_on_dataset(dataset1_path, dataset1_name, batch_size, max_samples, text_key)
         results2 = self.evaluate_on_dataset(dataset2_path, dataset2_name, batch_size, max_samples, text_key)
         
+        # If either evaluation failed, return None
         if results1 is None or results2 is None:
-            print("Error evaluating datasets")
+            print("Evaluation failed on one or both datasets. Skipping comparison.")
             return None
         
         # Create a directory for comparison
@@ -723,6 +740,11 @@ class RewardModelAnalyzer:
             Dictionary with all analysis results
         """
         results = {}
+        
+        # Check if we have any models
+        if not self.models:
+            print("No models were loaded. Cannot perform analysis.")
+            return results
         
         # Analyze value heads
         print("Analyzing value heads...")
