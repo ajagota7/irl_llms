@@ -12,6 +12,7 @@ from typing import Dict, List, Tuple, Any, Optional
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from huggingface_hub import HfApi, create_repo
 from omegaconf import DictConfig, OmegaConf
+from datasets import load_dataset
 
 
 class RewardModel(torch.nn.Module):
@@ -508,3 +509,80 @@ def push_to_hub(reward_model, tokenizer, config, checkpoint_suffix=None):
         import traceback
         traceback.print_exc()
         return None
+
+
+def prepare_data(self, original_dataset_path, detoxified_dataset_path):
+    """Prepare data for training."""
+    print(f"Loading datasets from: {original_dataset_path} and {detoxified_dataset_path}")
+    
+    # Function to determine if a path is a HuggingFace dataset ID
+    def is_hf_dataset(path):
+        return '/' in path and not os.path.exists(path)
+    
+    # Function to load from HuggingFace with parquet format
+    def load_hf_dataset(dataset_path):
+        try:
+            print(f"Loading dataset from HuggingFace using parquet format: {dataset_path}")
+            # Try loading with parquet format explicitly
+            ds = load_dataset(dataset_path, split='train', format='parquet')
+            return ds.to_pandas().to_dict('records')
+        except Exception as e:
+            print(f"Error loading with parquet format: {e}")
+            try:
+                # Fallback to regular loading
+                print(f"Trying to load dataset from HuggingFace with default format: {dataset_path}")
+                ds = load_dataset(dataset_path)
+                if isinstance(ds, dict) and 'train' in ds:
+                    ds = ds['train']
+                return ds.to_pandas().to_dict('records')
+            except Exception as e:
+                print(f"Error loading dataset from HuggingFace: {e}")
+                raise
+    
+    # Load original dataset
+    if is_hf_dataset(original_dataset_path):
+        print(f"Loading original dataset from HuggingFace: {original_dataset_path}")
+        original_data = load_hf_dataset(original_dataset_path)
+    else:
+        # Load from local file
+        print(f"Loading original dataset from local file: {original_dataset_path}")
+        with open(original_dataset_path, 'r') as f:
+            original_data = json.load(f)
+    
+    # Load detoxified dataset
+    if is_hf_dataset(detoxified_dataset_path):
+        print(f"Loading detoxified dataset from HuggingFace: {detoxified_dataset_path}")
+        detoxified_data = load_hf_dataset(detoxified_dataset_path)
+    else:
+        # Load from local file
+        print(f"Loading detoxified dataset from local file: {detoxified_dataset_path}")
+        with open(detoxified_dataset_path, 'r') as f:
+            detoxified_data = json.load(f)
+    
+    # Verify data lengths match
+    if len(original_data) != len(detoxified_data):
+        print("Warning: Dataset lengths don't match!")
+        # Use the smaller length
+        min_len = min(len(original_data), len(detoxified_data))
+        original_data = original_data[:min_len]
+        detoxified_data = detoxified_data[:min_len]
+        
+    print(f"Loaded {len(original_data)} paired samples")
+    
+    # Split data into train/test sets
+    train_size = int(self.config.training.train_test_split * len(original_data))
+    
+    train_data = {
+        'original': original_data[:train_size],
+        'detoxified': detoxified_data[:train_size]
+    }
+    
+    test_data = {
+        'original': original_data[train_size:],
+        'detoxified': detoxified_data[train_size:]
+    }
+    
+    print(f"Training set: {len(train_data['original'])} samples")
+    print(f"Test set: {len(test_data['original'])} samples")
+    
+    return train_data, test_data
