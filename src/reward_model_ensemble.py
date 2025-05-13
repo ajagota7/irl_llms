@@ -22,6 +22,7 @@ import umap
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import requests
 
 import sys
 # Add the parent directory to the path so we can import from src
@@ -254,16 +255,22 @@ class RewardModelAnalyzer:
         
         # Load dataset
         try:
-            if '/' in dataset_path and not os.path.exists(dataset_path):
-                # HuggingFace dataset
-                dataset = load_dataset(dataset_path)
-                if isinstance(dataset, dict) and 'train' in dataset:
-                    dataset = dataset['train']
-                data = dataset.to_pandas().to_dict('records')
-            else:
-                # Local file
-                with open(dataset_path, 'r') as f:
+            if dataset_path.startswith(("http", "https", "s3://")):
+                # Download from URL
+                response = requests.get(dataset_path)
+                data = response.json()
+            elif os.path.exists(dataset_path):
+                # Load from local file
+                with open(dataset_path, "r") as f:
                     data = json.load(f)
+            else:
+                # Try to load from HuggingFace
+                ds = load_dataset(dataset_path)
+                if "train" in ds:
+                    ds = ds["train"]
+                
+                # Convert to list of dictionaries
+                data = ds.to_pandas().to_dict(orient="records")
         except Exception as e:
             print(f"Error loading dataset {dataset_path}: {e}")
             return None
@@ -285,84 +292,47 @@ class RewardModelAnalyzer:
         # Process in batches
         for i in tqdm(range(0, len(data), batch_size), desc=f"Evaluating {dataset_name}"):
             batch = data[i:i+batch_size]
-            texts = [item[text_key] if text_key in item else item['text'] for item in batch]
             
-            # Process with each model
+            # Extract texts from batch
+            # Handle the special case for allenai/real-toxicity-prompts dataset
+            if dataset_path == "allenai/real-toxicity-prompts":
+                texts = []
+                for item in batch:
+                    if "prompt" in item and isinstance(item["prompt"], dict) and "text" in item["prompt"]:
+                        texts.append(item["prompt"]["text"])
+                    elif text_key in item:
+                        texts.append(item[text_key])
+                    elif "text" in item:
+                        texts.append(item["text"])
+                    else:
+                        # Skip items without text
+                        continue
+            else:
+                texts = [item[text_key] if text_key in item else item['text'] for item in batch]
+            
+            # Score texts with each model
             for model_id, model in self.models.items():
                 tokenizer = self.tokenizers[model_id]
                 
-                # Tokenize
+                # Tokenize texts
                 inputs = tokenizer(
                     texts,
                     return_tensors="pt",
                     padding=True,
                     truncation=True,
                     max_length=512
-                )
-                
-                # Move to device
-                inputs = {k: v.to(self.device) for k, v in inputs.items()}
+                ).to(self.device)
                 
                 # Get rewards
                 with torch.no_grad():
                     rewards = model(**inputs)
                 
-                # Convert to list of floats
-                rewards_list = rewards.squeeze().cpu().tolist()
-                
-                # Handle single item case
-                if not isinstance(rewards_list, list):
-                    rewards_list = [rewards_list]
-                
-                # Store results
-                results[model_id].extend(rewards_list)
+                # Add to results
+                results[model_id].extend(rewards.cpu().numpy().tolist())
         
-        # Create a directory for dataset evaluation
-        dataset_dir = os.path.join(self.output_dir, f"{dataset_name}_evaluation")
-        os.makedirs(dataset_dir, exist_ok=True)
-        
-        # Save raw scores
-        scores_df = pd.DataFrame(results)
-        scores_df.to_csv(os.path.join(dataset_dir, "model_scores.csv"), index=False)
-        
-        # Calculate statistics
-        stats_dict = {}
-        for model_id, scores in results.items():
-            stats_dict[model_id] = {
-                "mean": np.mean(scores),
-                "std": np.std(scores),
-                "min": np.min(scores),
-                "max": np.max(scores),
-                "median": np.median(scores),
-                "q1": np.percentile(scores, 25),
-                "q3": np.percentile(scores, 75)
-            }
-        
-        # Save statistics
-        stats_df = pd.DataFrame(stats_dict).T
-        stats_df.to_csv(os.path.join(dataset_dir, "score_statistics.csv"))
-        
-        # Plot score distributions
-        plt.figure(figsize=(15, 10))
-        for model_id, scores in results.items():
-            sns.kdeplot(scores, label=model_id)
-        plt.title(f"Score Distribution on {dataset_name} Dataset")
-        plt.xlabel("Reward Score")
-        plt.ylabel("Density")
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        plt.savefig(os.path.join(dataset_dir, "score_distributions.png"), dpi=300)
-        
-        # Create boxplot
-        plt.figure(figsize=(15, 10))
-        plt.boxplot([results[model_id] for model_id in results], labels=list(results.keys()))
-        plt.title(f"Score Distribution on {dataset_name} Dataset")
-        plt.xlabel("Model")
-        plt.ylabel("Reward Score")
-        plt.xticks(rotation=45)
-        plt.grid(True, alpha=0.3)
-        plt.tight_layout()
-        plt.savefig(os.path.join(dataset_dir, "score_boxplots.png"), dpi=300)
+        # Create plots
+        self.create_distribution_plot(results, f"{dataset_name}_distribution", 
+                                     title=f"Reward Distribution on {dataset_name} Dataset")
         
         return results
     
