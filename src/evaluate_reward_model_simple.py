@@ -19,7 +19,6 @@ from transformers import AutoTokenizer
 # Add the parent directory to the path so we can import from src
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.irl_train import IRLTrainer
 from src.irl_utilities import RewardModel, plot_score_distribution
 from omegaconf import OmegaConf
 
@@ -117,6 +116,148 @@ def load_reward_model(model_path: str, device: str = None, seed: int = 42) -> tu
     
     print(f"Successfully loaded reward model")
     return reward_model, tokenizer
+
+
+def prepare_dataset(original_dataset_path, detoxified_dataset_path, train_test_split=0.8, seed=42):
+    """
+    Prepare data for evaluation, directly implementing the logic from IRLTrainer.prepare_data.
+    
+    Args:
+        original_dataset_path: Path or HF ID for original dataset
+        detoxified_dataset_path: Path or HF ID for detoxified dataset
+        train_test_split: Fraction of data to use for training
+        seed: Random seed for reproducibility
+        
+    Returns:
+        Tuple of (train_data, test_data) dictionaries
+    """
+    print(f"Loading datasets from: {original_dataset_path} and {detoxified_dataset_path}")
+    
+    # Function to determine if a path is a HuggingFace dataset ID
+    def is_hf_dataset(path):
+        return '/' in path and not os.path.exists(path)
+    
+    # Load original dataset
+    if is_hf_dataset(original_dataset_path):
+        print(f"Loading original dataset from HuggingFace: {original_dataset_path}")
+        try:
+            from datasets import load_dataset
+            original_ds = load_dataset(original_dataset_path, trust_remote_code=True)
+            if isinstance(original_ds, dict) and 'train' in original_ds:
+                original_data = original_ds['train']
+            else:
+                original_data = original_ds
+            
+            # Convert to list of dictionaries if needed
+            if hasattr(original_data, 'to_pandas'):
+                original_data = original_data.to_pandas().to_dict('records')
+            else:
+                original_data = [item for item in original_data]
+        except Exception as e:
+            print(f"Error loading dataset from HuggingFace: {e}")
+            # Try direct HTTP request as fallback
+            try:
+                import requests
+                import json
+                
+                # Try different file paths
+                for path in ['data.json', 'train.json', 'data/train.json']:
+                    url = f"https://huggingface.co/datasets/{original_dataset_path}/resolve/main/{path}"
+                    print(f"Trying direct download from: {url}")
+                    response = requests.get(url)
+                    if response.status_code == 200:
+                        original_data = json.loads(response.text)
+                        break
+                else:
+                    raise ValueError(f"Could not download dataset: {original_dataset_path}")
+            except Exception as nested_e:
+                print(f"All attempts to load dataset failed: {nested_e}")
+                raise
+    else:
+        # Load from local file
+        print(f"Loading original dataset from local file: {original_dataset_path}")
+        with open(original_dataset_path, 'r') as f:
+            original_data = json.load(f)
+    
+    # Load detoxified dataset
+    if is_hf_dataset(detoxified_dataset_path):
+        print(f"Loading detoxified dataset from HuggingFace: {detoxified_dataset_path}")
+        try:
+            from datasets import load_dataset
+            detoxified_ds = load_dataset(detoxified_dataset_path, trust_remote_code=True)
+            if isinstance(detoxified_ds, dict) and 'train' in detoxified_ds:
+                detoxified_data = detoxified_ds['train']
+            else:
+                detoxified_data = detoxified_ds
+            
+            # Convert to list of dictionaries if needed
+            if hasattr(detoxified_data, 'to_pandas'):
+                detoxified_data = detoxified_data.to_pandas().to_dict('records')
+            else:
+                detoxified_data = [item for item in detoxified_data]
+        except Exception as e:
+            print(f"Error loading dataset from HuggingFace: {e}")
+            # Try direct HTTP request as fallback
+            try:
+                import requests
+                import json
+                
+                # Try different file paths
+                for path in ['data.json', 'train.json', 'data/train.json']:
+                    url = f"https://huggingface.co/datasets/{detoxified_dataset_path}/resolve/main/{path}"
+                    print(f"Trying direct download from: {url}")
+                    response = requests.get(url)
+                    if response.status_code == 200:
+                        detoxified_data = json.loads(response.text)
+                        break
+                else:
+                    raise ValueError(f"Could not download dataset: {detoxified_dataset_path}")
+            except Exception as nested_e:
+                print(f"All attempts to load dataset failed: {nested_e}")
+                raise
+    else:
+        # Load from local file
+        print(f"Loading detoxified dataset from local file: {detoxified_dataset_path}")
+        with open(detoxified_dataset_path, 'r') as f:
+            detoxified_data = json.load(f)
+    
+    # Verify data lengths match
+    if len(original_data) != len(detoxified_data):
+        print("Warning: Dataset lengths don't match!")
+        # Use the smaller length
+        min_len = min(len(original_data), len(detoxified_data))
+        original_data = original_data[:min_len]
+        detoxified_data = detoxified_data[:min_len]
+        
+    print(f"Loaded {len(original_data)} paired samples")
+    
+    # Set random seed for reproducibility
+    np.random.seed(seed)
+    
+    # Create indices and shuffle
+    indices = np.arange(len(original_data))
+    np.random.shuffle(indices)
+    
+    # Split data into train/test sets
+    train_size = int(train_test_split * len(original_data))
+    
+    train_indices = indices[:train_size]
+    test_indices = indices[train_size:]
+    
+    train_data = {
+        'original': [original_data[i] for i in train_indices],
+        'detoxified': [detoxified_data[i] for i in train_indices]
+    }
+    
+    test_data = {
+        'original': [original_data[i] for i in test_indices],
+        'detoxified': [detoxified_data[i] for i in test_indices]
+    }
+    
+    print(f"Training set: {len(train_data['original'])} samples")
+    print(f"Test set: {len(test_data['original'])} samples")
+    
+    return train_data, test_data
 
 
 def evaluate_dataset(reward_model, tokenizer, original_data, detoxified_data, 
@@ -283,39 +424,16 @@ def main():
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed)
     
-    # Create a minimal config for IRLTrainer
-    config = {
-        "training": {
-            "train_test_split": args.train_test_split,
-            "seed": args.seed,
-            "batch_size": args.batch_size,
-            "max_length": args.max_length
-        },
-        "dataset": {
-            "original_model_name": "original",
-            "detoxified_model_name": "detoxified",
-            "original_dataset_path": args.original_dataset,
-            "detoxified_dataset_path": args.detoxified_dataset
-        },
-        "output": {
-            "base_dir": args.output_dir
-        },
-        "model": {
-            "reward_model_base": "dummy"
-        }
-    }
-    
     # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
     
-    # Initialize a dummy trainer just to use its data loading methods
-    dummy_trainer = IRLTrainer(OmegaConf.create(config))
-    
-    # Load datasets using the trainer's method
-    print("Loading datasets using IRLTrainer's prepare_data method...")
-    train_data, test_data = dummy_trainer.prepare_data(
+    # Load datasets directly using our own implementation
+    print("Loading datasets...")
+    train_data, test_data = prepare_dataset(
         args.original_dataset,
-        args.detoxified_dataset
+        args.detoxified_dataset,
+        args.train_test_split,
+        args.seed
     )
     
     # Load the reward model
@@ -351,7 +469,7 @@ def main():
             train_metrics['detoxified_scores'], 
             args.output_dir
         )
-        print(f"Train distribution plot saved to {train_plot_path}")
+        print(f"Train distribution plot saved to {args.output_dir}")
         
         # Store results
         results["train"] = {k: v for k, v in train_metrics.items() 
@@ -385,7 +503,7 @@ def main():
             test_metrics['detoxified_scores'], 
             args.output_dir
         )
-        print(f"Test distribution plot saved to {test_plot_path}")
+        print(f"Test distribution plot saved to {args.output_dir}")
         
         # Store results
         results["test"] = {k: v for k, v in test_metrics.items() 
