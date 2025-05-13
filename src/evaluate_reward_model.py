@@ -13,6 +13,7 @@ from transformers import AutoTokenizer
 from typing import List, Dict, Union, Optional
 import json
 import random
+import datetime
 
 from src.irl_utilities import RewardModel
 
@@ -387,6 +388,18 @@ def main():
     parser.add_argument("--seed", type=int, default=42,
                       help="Random seed for reproducibility")
     
+    # Dataset arguments
+    parser.add_argument("--original_dataset", type=str,
+                        help="Path to the original dataset")
+    parser.add_argument("--detoxified_dataset", type=str,
+                        help="Path to the detoxified dataset")
+    parser.add_argument("--train_test_split", type=float, default=0.2,
+                        help="Train/test split ratio")
+    parser.add_argument("--eval_split", type=str, choices=["train", "test", "both"], default="both",
+                        help="Evaluate on train/test split")
+    parser.add_argument("--output_dir", type=str, default="output",
+                        help="Output directory for dataset evaluation")
+    
     args = parser.parse_args()
     
     # Set global seeds
@@ -525,6 +538,121 @@ def main():
             plot_comparison(metrics, 
                            title=f"Reward Model Comparison ({os.path.basename(args.model_path)})",
                            output_path=args.plot)
+    
+    elif args.dataset:
+        # Evaluate on paired datasets with train/test split
+        if not args.original_dataset or not args.detoxified_dataset:
+            parser.error("--dataset requires --original_dataset and --detoxified_dataset")
+        
+        # Create output directory if needed
+        os.makedirs(args.output_dir, exist_ok=True)
+        
+        # Prepare datasets
+        train_data, test_data = prepare_dataset(
+            args.original_dataset,
+            args.detoxified_dataset,
+            args.train_test_split,
+            args.seed
+        )
+        
+        results = {}
+        
+        # Evaluate on train split if requested
+        if args.eval_split in ["train", "both"]:
+            print("\nEvaluating on training split...")
+            train_metrics = evaluate_dataset(
+                train_data, 
+                reward_model, 
+                tokenizer,
+                args.batch_size, 
+                args.max_length, 
+                "train"
+            )
+            
+            # Print key metrics
+            print(f"Train accuracy: {train_metrics['train_accuracy']:.4f}")
+            print(f"Train F1 score: {train_metrics['train_f1']:.4f}")
+            print(f"Train AUC-ROC: {train_metrics['train_auc_roc']:.4f}")
+            print(f"Train original mean reward: {train_metrics['train_avg_original_reward']:.4f}")
+            print(f"Train detoxified mean reward: {train_metrics['train_avg_detoxified_reward']:.4f}")
+            print(f"Train reward difference: {train_metrics['train_reward_diff']:.4f}")
+            
+            # Plot distribution for train split
+            train_plot_path = os.path.join(args.output_dir, "train_distribution.png")
+            plot_score_distribution(
+                train_metrics['original_scores'], 
+                train_metrics['detoxified_scores'], 
+                train_plot_path
+            )
+            print(f"Train distribution plot saved to {train_plot_path}")
+            
+            # Store results
+            results["train"] = {k: v for k, v in train_metrics.items() 
+                              if k not in ['original_scores', 'detoxified_scores']}
+        
+        # Evaluate on test split if requested
+        if args.eval_split in ["test", "both"]:
+            print("\nEvaluating on test split...")
+            test_metrics = evaluate_dataset(
+                test_data, 
+                reward_model, 
+                tokenizer,
+                args.batch_size, 
+                args.max_length, 
+                "test"
+            )
+            
+            # Print key metrics
+            print(f"Test accuracy: {test_metrics['test_accuracy']:.4f}")
+            print(f"Test F1 score: {test_metrics['test_f1']:.4f}")
+            print(f"Test AUC-ROC: {test_metrics['test_auc_roc']:.4f}")
+            print(f"Test original mean reward: {test_metrics['test_avg_original_reward']:.4f}")
+            print(f"Test detoxified mean reward: {test_metrics['test_avg_detoxified_reward']:.4f}")
+            print(f"Test reward difference: {test_metrics['test_reward_diff']:.4f}")
+            
+            # Plot distribution for test split
+            test_plot_path = os.path.join(args.output_dir, "test_distribution.png")
+            plot_score_distribution(
+                test_metrics['original_scores'], 
+                test_metrics['detoxified_scores'], 
+                test_plot_path
+            )
+            print(f"Test distribution plot saved to {test_plot_path}")
+            
+            # Store results
+            results["test"] = {k: v for k, v in test_metrics.items() 
+                             if k not in ['original_scores', 'detoxified_scores']}
+        
+        # Save combined results if requested
+        if args.output:
+            # Add metadata
+            results["metadata"] = {
+                "model_path": args.model_path,
+                "original_dataset": args.original_dataset,
+                "detoxified_dataset": args.detoxified_dataset,
+                "train_test_split": args.train_test_split,
+                "seed": args.seed,
+                "timestamp": datetime.datetime.now().isoformat()
+            }
+            
+            # Save to file
+            with open(args.output, 'w') as f:
+                json.dump(results, f, indent=2)
+            print(f"Results saved to {args.output}")
+            
+            # Also save as CSV for easy analysis
+            csv_path = os.path.join(args.output_dir, "metrics_summary.csv")
+            
+            # Flatten metrics for CSV
+            flat_metrics = {}
+            for split in results:
+                if split != "metadata":
+                    for metric, value in results[split].items():
+                        flat_metrics[f"{split}_{metric}"] = value
+            
+            # Convert to DataFrame and save
+            pd.DataFrame([flat_metrics]).to_csv(csv_path, index=False)
+            print(f"Summary metrics saved to {csv_path}")
 
 
 if __name__ == "__main__":
