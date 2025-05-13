@@ -1004,49 +1004,126 @@ class RewardModelEnsemble:
     """Class to create and use an ensemble of reward models."""
     
     def __init__(self, 
-                 model_specs: List[Dict[str, Any]], 
-                 ensemble_method: str = "weighted_mean",
+                 model_specs: List[Dict[str, Any]],
+                 ensemble_method: str = "mean",
                  weights: Optional[Dict[str, float]] = None,
                  device: str = "cuda" if torch.cuda.is_available() else "cpu"):
         """
         Initialize the ensemble.
         
         Args:
-            model_specs: List of dictionaries with model specifications:
-                         [{"size": "70m", "seed": 42, "checkpoint": 30, "hub_id": "..."}]
-            ensemble_method: Method to use for ensemble ("mean", "median", "max", "min", "weighted_mean")
-            weights: Optional dictionary mapping model IDs to weights (for weighted_mean)
+            model_specs: List of dictionaries with model specifications
+            ensemble_method: Method to use for ensemble (mean, median, max, min, weighted_mean)
+            weights: Dictionary mapping model IDs to weights (for weighted_mean)
             device: Device to run models on
         """
         self.model_specs = model_specs
         self.ensemble_method = ensemble_method
         self.device = device
         
+        # Initialize weights
+        if weights is None:
+            # Default to equal weights
+            self.weights = {f"pythia-{spec['size']}-seed-{spec['seed']}": 1.0 
+                           for spec in model_specs}
+        else:
+            self.weights = weights
+        
+        # Normalize weights
+        if self.weights:
+            total_weight = sum(self.weights.values())
+            if total_weight > 0:
+                self.weights = {k: v / total_weight for k, v in self.weights.items()}
+        
         # Load models
         self.models = {}
         self.tokenizers = {}
-        self.analyzer = RewardModelAnalyzer(model_specs, device=device)
+        self.load_models()
+    
+    def load_models(self):
+        """Load all reward models based on specifications."""
+        print("Loading reward models...")
+        successful_loads = 0
         
-        # Use the analyzer to load models
-        self.analyzer.load_models()
-        self.models = self.analyzer.models
-        self.tokenizers = self.analyzer.tokenizers
+        for spec in tqdm(self.model_specs):
+            model_id = f"pythia-{spec['size']}-seed-{spec['seed']}"
+            hub_id = spec.get('hub_id', f"ajagota71/toxicity-reward-model-v-head-max-margin-seed-{spec['seed']}-pythia-{spec['size']}-checkpoint-{spec['checkpoint']}")
+            
+            try:
+                # Load tokenizer
+                self.tokenizers[model_id] = AutoTokenizer.from_pretrained(hub_id)
+                if self.tokenizers[model_id].pad_token is None:
+                    self.tokenizers[model_id].pad_token = self.tokenizers[model_id].eos_token
+                
+                # Load model using the approach from the working notebook
+                print(f"Loading model from {hub_id}")
+                
+                # First, get the base model from the repo
+                base_model = AutoModelForCausalLM.from_pretrained(hub_id)
+                base_model_name = base_model.config._name_or_path
+                print(f"Base model name: {base_model_name}")
+                
+                # Create reward model
+                reward_model = RewardModel(
+                    model_name=base_model_name,
+                    device=self.device,
+                    num_unfrozen_layers=0
+                )
+                
+                # Load value head weights
+                try:
+                    from huggingface_hub import hf_hub_download
+                    v_head_path = hf_hub_download(repo_id=hub_id, filename="v_head.pt")
+                    print(f"Downloaded v_head.pt from {hub_id} to {v_head_path}")
+                    
+                    v_head_state = torch.load(v_head_path, map_location=self.device)
+                    
+                    # Check the structure of v_head_state
+                    if isinstance(v_head_state, dict) and 'v_head' in v_head_state:
+                        # If it's a dictionary with a 'v_head' key (from RewardModel.save())
+                        reward_model.v_head.load_state_dict(v_head_state['v_head'])
+                        print("Loaded v_head weights from dictionary")
+                    elif isinstance(v_head_state, dict) and 'weight' in v_head_state:
+                        # If it's just the state dict of the v_head module
+                        reward_model.v_head.load_state_dict(v_head_state)
+                        print("Loaded v_head weights directly from state dict")
+                    else:
+                        # Try to load as a tensor
+                        try:
+                            reward_model.v_head.weight.data = v_head_state
+                            print("Loaded v_head weights as tensor")
+                        except:
+                            print("WARNING: Could not load v_head weights, using default initialization")
+                    
+                    # Print value head stats
+                    v_head_weight = reward_model.v_head.weight.data.cpu().numpy()
+                    print(f"Value head stats - Shape: {v_head_weight.shape}, Mean: {np.mean(v_head_weight):.6f}")
+                    
+                    # Store the model
+                    self.models[model_id] = reward_model
+                    successful_loads += 1
+                    print(f"Successfully loaded {model_id}")
+                    
+                except Exception as e:
+                    print(f"Error loading v_head weights: {e}")
+                    continue
+                
+            except Exception as e:
+                print(f"Error loading model {model_id}: {e}")
+                continue
         
-        # Set up weights
-        self.weights = weights or {model_id: 1.0 for model_id in self.models}
-        
-        # Normalize weights
-        total_weight = sum(self.weights.values())
-        self.weights = {k: v / total_weight for k, v in self.weights.values()}
-        
-        # Define ensemble methods
-        self.ensemble_methods = {
-            "mean": lambda scores: np.mean(scores, axis=0),
-            "median": lambda scores: np.median(scores, axis=0),
-            "max": lambda scores: np.max(scores, axis=0),
-            "min": lambda scores: np.min(scores, axis=0),
-            "weighted_mean": lambda scores: np.average(scores, axis=0, weights=list(self.weights.values()))
-        }
+        if successful_loads == 0:
+            print("\n" + "="*80)
+            print("ERROR: No models were successfully loaded!")
+            print("Please check the following:")
+            print("1. Verify that the model paths are correct")
+            print("2. Ensure you have access to the HuggingFace models")
+            print("3. Try downloading the models locally first using:")
+            print("   from huggingface_hub import snapshot_download")
+            print("   snapshot_download(repo_id='ajagota71/toxicity-reward-model-v-head-max-margin-seed-42-pythia-70m-checkpoint-30')")
+            print("="*80 + "\n")
+        else:
+            print(f"Successfully loaded {successful_loads} models")
     
     def predict(self, texts: List[str], batch_size: int = 16, max_length: int = 512) -> np.ndarray:
         """
