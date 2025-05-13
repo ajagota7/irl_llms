@@ -426,8 +426,9 @@ class RewardModelAnalyzer:
             print("No models available for evaluation. Skipping.")
             return None
         
-        # Load dataset if it's a path or HuggingFace ID
+        # Handle different dataset types
         if isinstance(dataset, str):
+            # Load dataset if it's a path or HuggingFace ID
             try:
                 if dataset.startswith(("http", "https", "s3://")):
                     # Download from URL
@@ -442,21 +443,36 @@ class RewardModelAnalyzer:
                     ds = load_dataset(dataset)
                     if "train" in ds:
                         ds = ds["train"]
-                    
-                    # Convert to list of dictionaries
                     data = ds.to_pandas().to_dict(orient="records")
             except Exception as e:
                 print(f"Error loading dataset {dataset}: {e}")
                 return None
-        else:
-            # Dataset is already loaded
+        elif hasattr(dataset, '__getitem__') and hasattr(dataset, '__len__'):
+            # Dataset is already loaded - could be a HuggingFace dataset or list
             data = dataset
+        else:
+            print(f"Unsupported dataset type: {type(dataset)}")
+            return None
+        
+        # Get dataset length based on type
+        if hasattr(data, '__len__'):
+            data_len = len(data)
+        else:
+            print("Cannot determine dataset length. Skipping.")
+            return None
         
         # Limit samples if specified
-        if max_samples is not None and max_samples < len(data):
-            data = data[:max_samples]
+        if max_samples is not None and max_samples < data_len:
+            if hasattr(data, 'select'):
+                # HuggingFace dataset
+                data = data.select(range(max_samples))
+                data_len = max_samples
+            else:
+                # List or other sequence
+                data = data[:max_samples]
+                data_len = max_samples
         
-        print(f"Processing {len(data)} samples from {dataset_name}{split_suffix} dataset")
+        print(f"Processing {data_len} samples from {dataset_name}{split_suffix} dataset")
         
         # Store results for each model
         results = {model_id: [] for model_id in self.models}
@@ -467,12 +483,25 @@ class RewardModelAnalyzer:
             return None
         
         # Process in batches
-        for i in tqdm(range(0, len(data), batch_size), desc=f"Evaluating {dataset_name}{split_suffix}"):
-            batch = data[i:i+batch_size]
+        for i in tqdm(range(0, data_len, batch_size), desc=f"Evaluating {dataset_name}{split_suffix}"):
+            # Get batch based on dataset type
+            if hasattr(data, 'select'):
+                # HuggingFace dataset
+                end_idx = min(i + batch_size, data_len)
+                batch = data.select(range(i, end_idx))
+            else:
+                # List or other sequence
+                batch = data[i:i+batch_size]
             
-            # Extract texts from batch
-            # Handle the special case for allenai/real-toxicity-prompts dataset
-            if isinstance(dataset, str) and dataset == "allenai/real-toxicity-prompts":
+            # Extract texts from batch based on dataset type
+            if hasattr(batch, 'query'):
+                # HuggingFace dataset with query field (from RLHF utilities)
+                texts = batch['query']
+            elif hasattr(batch, 'features') and 'query' in batch.features:
+                # Another way HuggingFace might structure it
+                texts = [item['query'] for item in batch]
+            elif isinstance(batch, list) and isinstance(batch[0], dict):
+                # List of dictionaries
                 texts = []
                 for item in batch:
                     if "prompt" in item and isinstance(item["prompt"], dict) and "text" in item["prompt"]:
@@ -482,17 +511,15 @@ class RewardModelAnalyzer:
                     elif "text" in item:
                         texts.append(item["text"])
                     else:
-                        # Skip items without text
-                        continue
-            # Handle HuggingFace dataset objects
-            elif hasattr(batch, 'query'):
-                texts = batch['query']
-            # Handle dictionaries with text_key
-            elif isinstance(batch, list) and isinstance(batch[0], dict):
-                texts = [item[text_key] if text_key in item else item.get('text', '') for item in batch]
-            # Handle other cases
+                        # Use a default empty string if no text field is found
+                        texts.append("")
             else:
-                texts = batch
+                # Try to convert to list if it's another iterable
+                try:
+                    texts = list(batch)
+                except:
+                    print(f"Could not extract texts from batch of type {type(batch)}")
+                    continue
             
             # Score texts with each model
             for model_id, model in self.models.items():
