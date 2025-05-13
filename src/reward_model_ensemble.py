@@ -23,7 +23,10 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-from src.irl_utilities import RewardModel
+import sys
+# Add the parent directory to the path so we can import from src
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from irl_utilities import RewardModel
 
 
 class RewardModelAnalyzer:
@@ -687,8 +690,6 @@ class RewardModelAnalyzer:
         results["original_vs_detoxified"] = self.compare_paired_datasets(
             original_dataset_path, detoxified_dataset_path,
             "original", "detoxified",
-
-
             batch_size=batch_size,
             max_samples=max_samples
         )
