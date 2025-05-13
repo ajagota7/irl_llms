@@ -13,7 +13,7 @@ from tqdm import tqdm
 import json
 import argparse
 from typing import Dict, List, Tuple, Any, Optional, Union
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, AutoModelForCausalLM
 from datasets import load_dataset
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score, precision_recall_curve, auc
 from scipy import stats
@@ -69,55 +69,63 @@ class RewardModelAnalyzer:
             hub_id = spec.get('hub_id', f"ajagota71/toxicity-reward-model-v-head-max-margin-seed-{spec['seed']}-pythia-{spec['size']}-checkpoint-{spec['checkpoint']}")
             
             try:
-                # Check if we have a local path from downloading
-                local_path = spec.get('local_path')
-                if local_path and os.path.exists(local_path):
-                    print(f"Loading model from local path: {local_path}")
-                    
-                    # Load tokenizer
-                    self.tokenizers[model_id] = AutoTokenizer.from_pretrained(local_path)
-                    if self.tokenizers[model_id].pad_token is None:
-                        self.tokenizers[model_id].pad_token = self.tokenizers[model_id].eos_token
-                    
-                    # Try to load the model using the new method
-                    try:
-                        self.models[model_id] = RewardModel.load_from_hf_model(local_path, device=self.device)
-                        successful_loads += 1
-                        print(f"Successfully loaded {model_id} from {local_path}")
-                        continue
-                    except Exception as e:
-                        print(f"Failed to load model from {local_path}: {e}")
-                
                 # Load tokenizer
                 self.tokenizers[model_id] = AutoTokenizer.from_pretrained(hub_id)
                 if self.tokenizers[model_id].pad_token is None:
                     self.tokenizers[model_id].pad_token = self.tokenizers[model_id].eos_token
                 
-                # Load model
+                # Load model using the approach from the working notebook
                 print(f"Loading model from {hub_id}")
                 
-                # Try different paths for v_head.pt
-                v_head_paths = [
-                    os.path.join(hub_id, "v_head.pt"),  # Direct path
-                    f"https://huggingface.co/{hub_id}/resolve/main/v_head.pt",  # URL path
-                    os.path.join("models", hub_id, "v_head.pt"),  # Local models directory
-                    hub_id  # Try the hub_id directly - this is likely the correct path
-                ]
+                # First, get the base model from the repo
+                base_model = AutoModelForCausalLM.from_pretrained(hub_id)
+                base_model_name = base_model.config._name_or_path
+                print(f"Base model name: {base_model_name}")
                 
-                model_loaded = False
-                for path in v_head_paths:
-                    try:
-                        print(f"Trying to load from: {path}")
-                        self.models[model_id] = RewardModel.load(path, device=self.device)
-                        model_loaded = True
-                        successful_loads += 1
-                        print(f"Successfully loaded {model_id}")
-                        break
-                    except Exception as e:
-                        print(f"Failed to load from {path}: {e}")
+                # Create reward model
+                reward_model = RewardModel(
+                    model_name=base_model_name,
+                    device=self.device,
+                    num_unfrozen_layers=0
+                )
                 
-                if not model_loaded:
-                    print(f"Could not load model {model_id} from any path")
+                # Load value head weights
+                try:
+                    from huggingface_hub import hf_hub_download
+                    v_head_path = hf_hub_download(repo_id=hub_id, filename="v_head.pt")
+                    print(f"Downloaded v_head.pt from {hub_id} to {v_head_path}")
+                    
+                    v_head_state = torch.load(v_head_path, map_location=self.device)
+                    
+                    # Check the structure of v_head_state
+                    if isinstance(v_head_state, dict) and 'v_head' in v_head_state:
+                        # If it's a dictionary with a 'v_head' key (from RewardModel.save())
+                        reward_model.v_head.load_state_dict(v_head_state['v_head'])
+                        print("Loaded v_head weights from dictionary")
+                    elif isinstance(v_head_state, dict) and 'weight' in v_head_state:
+                        # If it's just the state dict of the v_head module
+                        reward_model.v_head.load_state_dict(v_head_state)
+                        print("Loaded v_head weights directly from state dict")
+                    else:
+                        # Try to load as a tensor
+                        try:
+                            reward_model.v_head.weight.data = v_head_state
+                            print("Loaded v_head weights as tensor")
+                        except:
+                            print("WARNING: Could not load v_head weights, using default initialization")
+                    
+                    # Print value head stats
+                    v_head_weight = reward_model.v_head.weight.data.cpu().numpy()
+                    print(f"Value head stats - Shape: {v_head_weight.shape}, Mean: {np.mean(v_head_weight):.6f}")
+                    
+                    # Store the model
+                    self.models[model_id] = reward_model
+                    successful_loads += 1
+                    print(f"Successfully loaded {model_id}")
+                    
+                except Exception as e:
+                    print(f"Error loading v_head weights: {e}")
+                    continue
                 
             except Exception as e:
                 print(f"Error loading model {model_id}: {e}")
