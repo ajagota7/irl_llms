@@ -363,79 +363,75 @@ def prepare_dataset(original_dataset_path, detoxified_dataset_path, train_test_s
     """
     print(f"Loading datasets from: {original_dataset_path} and {detoxified_dataset_path}")
     
-    # Load datasets directly using the datasets library
-    from datasets import load_dataset
+    # Function to determine if a path is a HuggingFace dataset ID
+    def is_hf_dataset(path):
+        return '/' in path and not os.path.exists(path)
     
+    # Function to load a dataset from HuggingFace or local file
+    def load_single_dataset(dataset_path):
+        if is_hf_dataset(dataset_path):
+            print(f"Loading dataset from HuggingFace: {dataset_path}")
+            try:
+                # First try using datasets library
+                from datasets import load_dataset
+                try:
+                    dataset = load_dataset(dataset_path)
+                    if isinstance(dataset, dict) and 'train' in dataset:
+                        data = dataset['train']
+                    else:
+                        data = dataset
+                    
+                    # Convert to list of dictionaries
+                    if hasattr(data, 'to_pandas'):
+                        data = data.to_pandas().to_dict('records')
+                    else:
+                        data = [item for item in data]
+                    
+                    return data
+                except Exception as e:
+                    print(f"Error loading with datasets library: {e}")
+                    raise
+                    
+            except Exception as e:
+                print(f"Failed to load dataset from HuggingFace: {e}")
+                # Try direct HTTP request as fallback
+                try:
+                    import requests
+                    import json
+                    
+                    # Try to get the dataset directly via HTTP
+                    url = f"https://huggingface.co/datasets/{dataset_path}/resolve/main/data.json"
+                    print(f"Attempting direct download from: {url}")
+                    response = requests.get(url)
+                    
+                    if response.status_code == 200:
+                        return json.loads(response.text)
+                    
+                    # Try alternative file names
+                    for filename in ['train.json', 'test.json', 'data/train.json', 'data/test.json']:
+                        url = f"https://huggingface.co/datasets/{dataset_path}/resolve/main/{filename}"
+                        print(f"Trying: {url}")
+                        response = requests.get(url)
+                        if response.status_code == 200:
+                            return json.loads(response.text)
+                    
+                    raise ValueError(f"Could not download dataset: {dataset_path}")
+                except Exception as nested_e:
+                    print(f"Direct download failed: {nested_e}")
+                    raise ValueError(f"All methods to load dataset failed: {dataset_path}")
+        else:
+            # Load from local file
+            print(f"Loading dataset from local file: {dataset_path}")
+            with open(dataset_path, 'r') as f:
+                return json.load(f)
+    
+    # Load both datasets
     try:
-        # Load original dataset
-        print(f"Loading original dataset: {original_dataset_path}")
-        original_dataset = load_dataset(original_dataset_path, download_mode="force_redownload")
-        
-        # Load detoxified dataset
-        print(f"Loading detoxified dataset: {detoxified_dataset_path}")
-        detoxified_dataset = load_dataset(detoxified_dataset_path, download_mode="force_redownload")
-        
-        # Convert to lists of dictionaries
-        if 'train' in original_dataset:
-            original_data = original_dataset['train']
-        else:
-            original_data = original_dataset
-            
-        if 'train' in detoxified_dataset:
-            detoxified_data = detoxified_dataset['train']
-        else:
-            detoxified_data = detoxified_dataset
-        
-        # Convert to Python lists
-        original_data = [item for item in original_data]
-        detoxified_data = [item for item in detoxified_data]
-        
+        original_data = load_single_dataset(original_dataset_path)
+        detoxified_data = load_single_dataset(detoxified_dataset_path)
     except Exception as e:
         print(f"Error loading datasets: {e}")
-        print("Trying alternative approach...")
-        
-        # Try direct download
-        import requests
-        import tempfile
-        import os
-        
-        def download_dataset(dataset_path):
-            # Try to download the dataset info.json
-            url = f"https://huggingface.co/datasets/{dataset_path}/resolve/main/dataset_info.json"
-            response = requests.get(url)
-            if response.status_code == 200:
-                # Found dataset info, now download the data files
-                data_url = f"https://huggingface.co/datasets/{dataset_path}/resolve/main/data/train.arrow"
-                data_response = requests.get(data_url)
-                if data_response.status_code == 200:
-                    # Save to temp file
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=".arrow") as f:
-                        f.write(data_response.content)
-                        temp_path = f.name
-                    
-                    # Load with pyarrow
-                    import pyarrow as pa
-                    table = pa.ipc.open_file(temp_path).read_all()
-                    
-                    # Convert to list of dicts
-                    records = []
-                    for i in range(len(table)):
-                        record = {col: table[col][i].as_py() for col in table.column_names}
-                        records.append(record)
-                    
-                    # Clean up
-                    os.unlink(temp_path)
-                    return records
-            
-            # If we get here, direct download failed
-            raise ValueError(f"Could not download dataset: {dataset_path}")
-        
-        try:
-            original_data = download_dataset(original_dataset_path)
-            detoxified_data = download_dataset(detoxified_dataset_path)
-        except Exception as e:
-            print(f"Alternative approach failed: {e}")
-            raise
+        raise
     
     # Verify data lengths match
     if len(original_data) != len(detoxified_data):
