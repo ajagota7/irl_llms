@@ -231,6 +231,84 @@ class RewardModelAnalyzer:
         
         return similarity_matrix
     
+    def create_distribution_plot(self, results, plot_name, title="Reward Distribution"):
+        """
+        Create distribution plots for model rewards.
+        
+        Args:
+            results: Dictionary mapping model IDs to lists of reward scores
+            plot_name: Name for the plot file
+            title: Title for the plot
+        """
+        # Create directory for plots
+        plots_dir = os.path.join(self.output_dir, "plots")
+        os.makedirs(plots_dir, exist_ok=True)
+        
+        # Create DataFrame for easier plotting
+        data = []
+        for model_id, scores in results.items():
+            model_data = pd.DataFrame({
+                'model': model_id,
+                'score': scores
+            })
+            data.append(model_data)
+        
+        df = pd.concat(data, ignore_index=True)
+        
+        # Calculate statistics
+        stats = df.groupby('model')['score'].agg(['mean', 'std', 'min', 'max', 'median'])
+        stats['q1'] = df.groupby('model')['score'].quantile(0.25)
+        stats['q3'] = df.groupby('model')['score'].quantile(0.75)
+        
+        # Save statistics
+        stats.to_csv(os.path.join(plots_dir, f"{plot_name}_stats.csv"))
+        
+        # Create KDE plot
+        plt.figure(figsize=(15, 10))
+        for model_id in results:
+            sns.kdeplot(results[model_id], label=model_id)
+        plt.title(title)
+        plt.xlabel("Reward Score")
+        plt.ylabel("Density")
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        plt.savefig(os.path.join(plots_dir, f"{plot_name}_kde.png"), dpi=300)
+        plt.close()
+        
+        # Create boxplot
+        plt.figure(figsize=(15, 10))
+        plt.boxplot([results[model_id] for model_id in results], labels=list(results.keys()))
+        plt.title(title)
+        plt.xlabel("Model")
+        plt.ylabel("Reward Score")
+        plt.xticks(rotation=45)
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(os.path.join(plots_dir, f"{plot_name}_boxplot.png"), dpi=300)
+        plt.close()
+        
+        # Create violin plot
+        plt.figure(figsize=(15, 10))
+        sns.violinplot(x='model', y='score', data=df)
+        plt.title(title)
+        plt.xlabel("Model")
+        plt.ylabel("Reward Score")
+        plt.xticks(rotation=45)
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(os.path.join(plots_dir, f"{plot_name}_violin.png"), dpi=300)
+        plt.close()
+        
+        # Create interactive plotly histogram
+        fig = px.histogram(df, x='score', color='model', marginal='box', 
+                          title=title, opacity=0.7, barmode='overlay')
+        fig.update_layout(
+            xaxis_title="Reward Score",
+            yaxis_title="Count",
+            legend_title="Model"
+        )
+        fig.write_html(os.path.join(plots_dir, f"{plot_name}_histogram.html"))
+    
     def evaluate_on_dataset(self, dataset_path: str, dataset_name: str, batch_size: int = 16, 
                            max_samples: Optional[int] = None, text_key: str = "output"):
         """
