@@ -1106,17 +1106,35 @@ def download_models(model_specs):
         from huggingface_hub import snapshot_download
         
         print("Downloading models from HuggingFace Hub...")
+        downloaded_paths = {}
+        
         for spec in tqdm(model_specs):
             hub_id = spec.get('hub_id', f"ajagota71/toxicity-reward-model-v-head-max-margin-seed-{spec['seed']}-pythia-{spec['size']}-checkpoint-{spec['checkpoint']}")
             
             try:
                 print(f"Downloading {hub_id}...")
-                snapshot_download(repo_id=hub_id, local_dir=f"models/{hub_id}")
-                print(f"Successfully downloaded {hub_id}")
+                local_dir = f"models/{hub_id}"
+                path = snapshot_download(repo_id=hub_id, local_dir=local_dir)
+                downloaded_paths[hub_id] = path
+                print(f"Successfully downloaded {hub_id} to {path}")
+                
+                # Check if v_head.pt exists in the downloaded directory
+                v_head_path = os.path.join(path, "v_head.pt")
+                if os.path.exists(v_head_path):
+                    print(f"Found v_head.pt at {v_head_path}")
+                else:
+                    print(f"Warning: v_head.pt not found in {path}")
+                    # List files in the directory
+                    print("Files in the directory:")
+                    for file in os.listdir(path):
+                        print(f"  {file}")
             except Exception as e:
                 print(f"Error downloading {hub_id}: {e}")
+        
+        return downloaded_paths
     except ImportError:
         print("huggingface_hub not installed. Please install with: pip install huggingface_hub")
+        return {}
 
 
 def main():
@@ -1190,6 +1208,17 @@ def main():
                 "hub_id": f"ajagota71/toxicity-reward-model-v-head-max-margin-seed-{seed}-pythia-{size}-checkpoint-{checkpoints.get(size, 30)}"
             })
     
+    # Download models if requested
+    downloaded_paths = {}
+    if args.download_models:
+        downloaded_paths = download_models(model_specs)
+        
+        # Update model specs with downloaded paths
+        for spec in model_specs:
+            hub_id = spec.get('hub_id')
+            if hub_id in downloaded_paths:
+                spec['local_path'] = downloaded_paths[hub_id]
+    
     # Create analyzer
     analyzer = RewardModelAnalyzer(
         model_specs=model_specs,
@@ -1227,10 +1256,6 @@ def main():
         ensemble.save(ensemble_dir)
         
         print(f"Ensemble created and saved to {ensemble_dir}")
-
-    # Download models if requested
-    if args.download_models:
-        download_models(model_specs)
 
 
 if __name__ == "__main__":
