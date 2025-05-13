@@ -519,8 +519,9 @@ def prepare_data(original_dataset_path, detoxified_dataset_path, train_test_spli
     def is_hf_dataset(path):
         return '/' in path and not os.path.exists(path)
     
-    # Function to load from HuggingFace with parquet format
+    # Function to load from HuggingFace with multiple fallback options
     def load_hf_dataset(dataset_path):
+        """Load dataset from HuggingFace with multiple fallback options."""
         try:
             print(f"Loading dataset from HuggingFace: {dataset_path}")
             # Try loading with default format first
@@ -531,13 +532,62 @@ def prepare_data(original_dataset_path, detoxified_dataset_path, train_test_spli
         except Exception as e:
             print(f"Error loading with default format: {e}")
             try:
-                # Fallback to parquet format
-                print(f"Trying to load dataset from HuggingFace with parquet format: {dataset_path}")
-                ds = load_dataset(dataset_path, split='train', format='parquet')
+                # Try with just the split parameter
+                print(f"Trying to load dataset with split parameter: {dataset_path}")
+                ds = load_dataset(dataset_path, split='train')
                 return ds.to_pandas().to_dict('records')
             except Exception as e:
-                print(f"Error loading dataset from HuggingFace: {e}")
-                raise
+                print(f"Error loading with split parameter: {e}")
+                try:
+                    # Try with streaming mode
+                    print(f"Trying to load dataset in streaming mode: {dataset_path}")
+                    ds = load_dataset(dataset_path, streaming=True)
+                    if isinstance(ds, dict) and 'train' in ds:
+                        ds = ds['train']
+                    # Convert streaming dataset to list
+                    data = list(ds.take(10000))  # Limit to 10000 samples
+                    return data
+                except Exception as e:
+                    print(f"Error loading in streaming mode: {e}")
+                    try:
+                        # Last resort: try to download the dataset directly
+                        print(f"Trying to download dataset directly: {dataset_path}")
+                        from huggingface_hub import hf_hub_download
+                        import pandas as pd
+                        import os
+                        
+                        # Extract repo_id and filename
+                        repo_id = dataset_path
+                        
+                        # Try to download the dataset info to find the files
+                        try:
+                            dataset_info = hf_hub_download(repo_id=repo_id, filename="dataset_info.json", repo_type="dataset")
+                            print(f"Downloaded dataset info: {dataset_info}")
+                        except:
+                            pass
+                        
+                        # Try to download a parquet file
+                        try:
+                            file_path = hf_hub_download(repo_id=repo_id, filename="data/train-00000-of-00001.parquet", repo_type="dataset")
+                            df = pd.read_parquet(file_path)
+                            return df.to_dict('records')
+                        except Exception as e1:
+                            print(f"Error downloading parquet file: {e1}")
+                            
+                            # Try to download a JSON file
+                            try:
+                                file_path = hf_hub_download(repo_id=repo_id, filename="data.json", repo_type="dataset")
+                                with open(file_path, 'r') as f:
+                                    return json.load(f)
+                            except Exception as e2:
+                                print(f"Error downloading JSON file: {e2}")
+                                raise Exception(f"Failed to load dataset {dataset_path} after multiple attempts")
+                    except Exception as e:
+                        print(f"Error downloading dataset directly: {e}")
+                        raise
+        except Exception as e:
+            print(f"Error loading dataset from HuggingFace: {e}")
+            raise
     
     # Load original dataset
     if is_hf_dataset(original_dataset_path):
