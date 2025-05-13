@@ -483,6 +483,19 @@ class RewardModelAnalyzer:
         # Store text IDs if available
         text_ids = []
         
+        # Store toxicity metrics if available (for toxicity prompts dataset)
+        toxicity_metrics = {
+            "toxicity": [],
+            "severe_toxicity": [],
+            "insult": [],
+            "threat": [],
+            "identity_attack": [],
+            "profanity": [],
+            "sexually_explicit": [],
+            "flirtation": []
+        }
+        has_toxicity_metrics = False
+        
         # If no models were loaded, return empty results
         if not results:
             print("No models available for evaluation. Skipping.")
@@ -508,6 +521,14 @@ class RewardModelAnalyzer:
                     batch_ids = batch['id']
                 else:
                     batch_ids = [f"{dataset_name}_{i+j}" for j in range(len(texts))]
+                
+                # Check for toxicity metrics in the toxicity prompts dataset
+                if dataset_name == "toxicity_prompts" and hasattr(batch, 'prompt'):
+                    for metric in toxicity_metrics.keys():
+                        if hasattr(batch.prompt, metric):
+                            toxicity_metrics[metric].extend(batch.prompt[metric])
+                            has_toxicity_metrics = True
+                
             elif hasattr(batch, 'features') and 'query' in batch.features:
                 # Another way HuggingFace might structure it
                 texts = [item['query'] for item in batch]
@@ -516,6 +537,16 @@ class RewardModelAnalyzer:
                     batch_ids = [item['id'] for item in batch]
                 else:
                     batch_ids = [f"{dataset_name}_{i+j}" for j in range(len(texts))]
+                
+                # Check for toxicity metrics in the toxicity prompts dataset
+                if dataset_name == "toxicity_prompts":
+                    for j, item in enumerate(batch):
+                        if 'prompt' in item and isinstance(item['prompt'], dict):
+                            for metric in toxicity_metrics.keys():
+                                if metric in item['prompt']:
+                                    toxicity_metrics[metric].append(item['prompt'][metric])
+                                    has_toxicity_metrics = True
+                
             elif isinstance(batch, list) and isinstance(batch[0], dict):
                 # List of dictionaries
                 texts = []
@@ -524,6 +555,14 @@ class RewardModelAnalyzer:
                     # Get text
                     if "prompt" in item and isinstance(item["prompt"], dict) and "text" in item["prompt"]:
                         texts.append(item["prompt"]["text"])
+                        
+                        # Check for toxicity metrics in the toxicity prompts dataset
+                        if dataset_name == "toxicity_prompts":
+                            for metric in toxicity_metrics.keys():
+                                if metric in item["prompt"]:
+                                    toxicity_metrics[metric].append(item["prompt"][metric])
+                                    has_toxicity_metrics = True
+                                
                     elif text_key in item:
                         texts.append(item[text_key])
                     elif "text" in item:
@@ -586,6 +625,20 @@ class RewardModelAnalyzer:
                 "text": [t[:1000] if len(t) > 1000 else t for t in all_texts]  # Truncate long texts
             }
             
+            # Add toxicity metrics if available
+            if has_toxicity_metrics and dataset_name == "toxicity_prompts":
+                print(f"Adding toxicity metrics to the detailed scores table")
+                for metric, values in toxicity_metrics.items():
+                    if values:  # Only add if we have values
+                        # Ensure we have the right number of values
+                        if len(values) > len(all_texts):
+                            values = values[:len(all_texts)]
+                        elif len(values) < len(all_texts):
+                            # Pad with NaN
+                            values = values + [float('nan')] * (len(all_texts) - len(values))
+                        
+                        table_data[f"original_{metric}"] = values
+            
             # Add scores from each model
             for model_id, scores in results.items():
                 # Extract seed from model_id for cleaner column names
@@ -606,6 +659,29 @@ class RewardModelAnalyzer:
             
             # Create correlation heatmap between different seeds
             score_columns = [col for col in df.columns if col.startswith("score_seed_")]
+            
+            # If we have toxicity metrics, include them in correlation analysis
+            if has_toxicity_metrics:
+                metric_columns = [col for col in df.columns if col.startswith("original_")]
+                correlation_columns = score_columns + metric_columns
+                
+                # Create a correlation matrix between model scores and toxicity metrics
+                if len(correlation_columns) > 1:
+                    corr_matrix = df[correlation_columns].corr()
+                    
+                    plt.figure(figsize=(12, 10))
+                    sns.heatmap(corr_matrix, annot=True, fmt=".3f", cmap="viridis")
+                    plt.title(f"Correlation Between Model Scores and Toxicity Metrics on {dataset_name}{split_suffix}")
+                    plt.tight_layout()
+                    
+                    corr_path = os.path.join(scores_dir, f"{dataset_name}{split_suffix}_metrics_correlation.png")
+                    plt.savefig(corr_path, dpi=300)
+                    plt.close()
+                    
+                    # Log to wandb
+                    wandb.log({f"metrics_correlation/{dataset_name}{split_suffix}": wandb.Image(corr_path)})
+            
+            # Create correlation heatmap between different seeds
             if len(score_columns) > 1:
                 corr_matrix = df[score_columns].corr()
                 
