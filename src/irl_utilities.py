@@ -7,6 +7,7 @@ import torch
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import json
 from typing import Dict, List, Tuple, Any, Optional
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from huggingface_hub import HfApi, create_repo
@@ -427,6 +428,23 @@ def push_to_hub(reward_model, tokenizer, config, checkpoint_suffix=None):
         # Save model and tokenizer
         print(f"Saving model files to {output_dir}")
         reward_model.model.save_pretrained(output_dir)
+        
+        # Save the value head separately
+        v_head_path = os.path.join(output_dir, "v_head.pt")
+        torch.save(reward_model.v_head.state_dict(), v_head_path)
+        
+        # Save model configuration info
+        model_info = {
+            "model_type": "irl_reward_model",
+            "base_model": config.model.reward_model_base,
+            "value_head_size": reward_model.model.config.hidden_size
+        }
+        
+        # Add value head info to config
+        model_config_path = os.path.join(output_dir, "reward_model_config.json")
+        with open(model_config_path, "w") as f:
+            json.dump(model_info, f, indent=2)
+        
         tokenizer.save_pretrained(output_dir)
         
         # Save config
