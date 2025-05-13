@@ -23,7 +23,8 @@ from src.irl_utilities import (
     get_loss_function, 
     plot_metrics, 
     plot_score_distribution, 
-    push_to_hub
+    push_to_hub,
+    prepare_data as prepare_data_util
 )
 
 
@@ -100,84 +101,12 @@ class IRLTrainer:
         ).to(self.device)
         
     def prepare_data(self, original_dataset_path, detoxified_dataset_path):
-        """Prepare data for training."""
-        print(f"Loading datasets from: {original_dataset_path} and {detoxified_dataset_path}")
-        
-        # Function to determine if a path is a HuggingFace dataset ID
-        def is_hf_dataset(path):
-            return '/' in path and not os.path.exists(path)
-        
-        # Load original dataset
-        if is_hf_dataset(original_dataset_path):
-            print(f"Loading original dataset from HuggingFace: {original_dataset_path}")
-            try:
-                original_ds = load_dataset(original_dataset_path)
-                if isinstance(original_ds, dict) and 'train' in original_ds:
-                    original_data = original_ds['train']
-                else:
-                    original_data = original_ds
-                
-                # Convert to list of dictionaries if needed
-                if hasattr(original_data, 'to_pandas'):
-                    original_data = original_data.to_pandas().to_dict('records')
-            except Exception as e:
-                print(f"Error loading dataset from HuggingFace: {e}")
-                raise
-        else:
-            # Load from local file
-            print(f"Loading original dataset from local file: {original_dataset_path}")
-            with open(original_dataset_path, 'r') as f:
-                original_data = json.load(f)
-        
-        # Load detoxified dataset
-        if is_hf_dataset(detoxified_dataset_path):
-            print(f"Loading detoxified dataset from HuggingFace: {detoxified_dataset_path}")
-            try:
-                detoxified_ds = load_dataset(detoxified_dataset_path)
-                if isinstance(detoxified_ds, dict) and 'train' in detoxified_ds:
-                    detoxified_data = detoxified_ds['train']
-                else:
-                    detoxified_data = detoxified_ds
-                
-                # Convert to list of dictionaries if needed
-                if hasattr(detoxified_data, 'to_pandas'):
-                    detoxified_data = detoxified_data.to_pandas().to_dict('records')
-            except Exception as e:
-                print(f"Error loading dataset from HuggingFace: {e}")
-                raise
-        else:
-            # Load from local file
-            print(f"Loading detoxified dataset from local file: {detoxified_dataset_path}")
-            with open(detoxified_dataset_path, 'r') as f:
-                detoxified_data = json.load(f)
-        
-        # Verify data lengths match
-        if len(original_data) != len(detoxified_data):
-            print("Warning: Dataset lengths don't match!")
-            # Use the smaller length
-            min_len = min(len(original_data), len(detoxified_data))
-            original_data = original_data[:min_len]
-            detoxified_data = detoxified_data[:min_len]
-            
-        print(f"Loaded {len(original_data)} paired samples")
-        
-        # Split data into train/test sets
-        train_size = int(self.config.training.train_test_split * len(original_data))
-        
-        train_data = {
-            'original': original_data[:train_size],
-            'detoxified': detoxified_data[:train_size]
-        }
-        
-        test_data = {
-            'original': original_data[train_size:],
-            'detoxified': detoxified_data[train_size:]
-        }
-        
-        print(f"Training set: {len(train_data['original'])} samples")
-        print(f"Test set: {len(test_data['original'])} samples")
-        
-        return train_data, test_data
+        """Prepare data for training by calling the utility function."""
+        return prepare_data_util(
+            original_dataset_path, 
+            detoxified_dataset_path, 
+            train_test_split=self.config.training.train_test_split
+        )
     
     def data_loader(self, original_data, detoxified_data, batch_size):
         """Create batches of paired data."""
