@@ -882,164 +882,92 @@ class RewardModelAnalyzer:
         """Create a summary report of all analyses."""
         print("Creating summary report...")
         
-        # Create a directory for the summary
-        summary_dir = os.path.join(self.output_dir, "summary")
-        os.makedirs(summary_dir, exist_ok=True)
+        # Create directory for report
+        report_dir = os.path.join(self.output_dir, "summary")
+        os.makedirs(report_dir, exist_ok=True)
         
         # Extract key metrics
-        summary = {
-            "value_head_analysis": {
-                "average_similarity": np.mean(results["value_head_similarity"]) if "value_head_similarity" in results else None
-            },
-            "original_vs_detoxified": {}
-        }
+        summary = {}
         
-        # Extract ensemble performance metrics
-        if "ensemble_analysis" in results and results["ensemble_analysis"]:
-            ensemble_metrics = results["ensemble_analysis"].get("ensemble_metrics", {})
+        # Model comparison metrics
+        if "original_vs_detoxified" in results:
+            summary["model_comparison"] = {}
+            for model_id in self.models:
+                if model_id in results["original_vs_detoxified"]["metrics"]:
+                    metrics = results["original_vs_detoxified"]["metrics"][model_id]
+                    summary["model_comparison"][model_id] = {
+                        "auc_roc": metrics["auc_roc"],
+                        "auc_pr": metrics["auc_pr"],
+                        "accuracy": metrics["accuracy"],
+                        "f1_score": metrics["f1_score"],
+                        "mean_diff": metrics["mean_diff"]
+                    }
+        
+        # Ensemble metrics
+        if "ensemble_analysis" in results and "metrics" in results["ensemble_analysis"]:
+            ensemble_metrics = results["ensemble_analysis"]["metrics"]
+            summary["ensemble_comparison"] = ensemble_metrics
             
             # Find best ensemble method
             if ensemble_metrics:
-                best_method = max(ensemble_metrics.keys(), key=lambda k: ensemble_metrics[k]["auc_roc"] 
-                                 if k in ensemble_methods else 0)
+                # Get all ensemble methods from the metrics
+                ensemble_methods = list(ensemble_metrics.keys())
                 
-                summary["best_ensemble"] = {
+                # Find the best method based on AUC-ROC
+                best_method = max(ensemble_metrics.keys(), 
+                                 key=lambda k: ensemble_metrics[k]["auc_roc"] if k in ensemble_metrics else 0)
+                
+                summary["best_ensemble_method"] = {
                     "method": best_method,
                     "metrics": ensemble_metrics[best_method]
                 }
-                
-                # Find best individual model
-                individual_models = {k: v for k, v in ensemble_metrics.items() if k not in ensemble_methods}
-                if individual_models:
-                    best_model = max(individual_models.keys(), key=lambda k: individual_models[k]["auc_roc"])
-                    
-                    summary["best_individual"] = {
-                        "model": best_model,
-                        "metrics": individual_models[best_model]
-                    }
-                    
-                    # Calculate improvement
-                    if "best_ensemble" in summary and "best_individual" in summary:
-                        best_ensemble = summary["best_ensemble"]["metrics"]
-                        best_individual = summary["best_individual"]["metrics"]
-                        
-                        summary["ensemble_improvement"] = {
-                            "accuracy": best_ensemble["accuracy"] - best_individual["accuracy"],
-                            "f1": best_ensemble["f1"] - best_individual["f1"],
-                            "auc_roc": best_ensemble["auc_roc"] - best_individual["auc_roc"],
-                            "pr_auc": best_ensemble["pr_auc"] - best_individual["pr_auc"]
-                        }
         
-        # Extract correlation metrics
-        if "ensemble_analysis" in results and results["ensemble_analysis"]:
-            if "correlation_matrix" in results["ensemble_analysis"]:
-                corr_matrix = results["ensemble_analysis"]["correlation_matrix"]
-                # Calculate average correlation between models
-                n_models = corr_matrix.shape[0]
-                if n_models > 1:
-                    # Sum all correlations and subtract diagonal (which are all 1)
-                    total_corr = np.sum(corr_matrix) - n_models
-                    # Divide by number of off-diagonal elements
-                    avg_corr = total_corr / (n_models * (n_models - 1))
-                    summary["average_model_correlation"] = float(avg_corr)
+        # Value head analysis
+        if "value_head_analysis" in results:
+            summary["value_head_analysis"] = results["value_head_analysis"]
         
         # Save summary
-        with open(os.path.join(summary_dir, "analysis_summary.json"), "w") as f:
-            # Convert numpy values to Python types for JSON serialization
-            def convert_to_serializable(obj):
-                if isinstance(obj, np.ndarray):
-                    return obj.tolist()
-                elif isinstance(obj, np.generic):
-                    return obj.item()
-                elif isinstance(obj, dict):
-                    return {k: convert_to_serializable(v) for k, v in obj.items()}
-                elif isinstance(obj, list):
-                    return [convert_to_serializable(i) for i in obj]
-                else:
-                    return obj
-            
-            json.dump(convert_to_serializable(summary), f, indent=2)
+        with open(os.path.join(report_dir, "summary.json"), "w") as f:
+            json.dump(summary, f, indent=2)
         
-        # Create a visual summary
-        self.create_visual_summary(summary, summary_dir)
+        # Create summary plots
+        if "model_comparison" in summary:
+            # Create bar chart of key metrics
+            metrics = ["auc_roc", "auc_pr", "accuracy", "f1_score", "mean_diff"]
+            for metric in metrics:
+                plt.figure(figsize=(12, 8))
+                values = [summary["model_comparison"][model_id][metric] for model_id in summary["model_comparison"]]
+                plt.bar(list(summary["model_comparison"].keys()), values)
+                plt.title(f"{metric.upper()} by Model")
+                plt.xlabel("Model")
+                plt.ylabel(metric.upper())
+                plt.xticks(rotation=45)
+                plt.tight_layout()
+                plt.savefig(os.path.join(report_dir, f"{metric}_comparison.png"), dpi=300)
+                plt.close()
+        
+        # Create ensemble comparison plot if available
+        if "ensemble_comparison" in summary:
+            metrics = ["auc_roc", "auc_pr", "accuracy", "f1_score"]
+            for metric in metrics:
+                plt.figure(figsize=(12, 8))
+                values = [summary["ensemble_comparison"][method][metric] 
+                         for method in summary["ensemble_comparison"]
+                         if metric in summary["ensemble_comparison"][method]]
+                methods = [method for method in summary["ensemble_comparison"] 
+                          if metric in summary["ensemble_comparison"][method]]
+                plt.bar(methods, values)
+                plt.title(f"{metric.upper()} by Ensemble Method")
+                plt.xlabel("Ensemble Method")
+                plt.ylabel(metric.upper())
+                plt.xticks(rotation=45)
+                plt.tight_layout()
+                plt.savefig(os.path.join(report_dir, f"ensemble_{metric}_comparison.png"), dpi=300)
+                plt.close()
+        
+        print(f"Summary report saved to {report_dir}")
         
         return summary
-    
-    def create_visual_summary(self, summary, output_dir):
-        """Create visual summary of the analysis."""
-        # Create a dashboard-like visualization
-        try:
-            # Create a multi-panel figure
-            fig = plt.figure(figsize=(15, 12))
-            fig.suptitle(f"Reward Model Ensemble Analysis Summary", fontsize=16)
-            
-            # Define grid layout
-            gs = fig.add_gridspec(3, 2, hspace=0.4, wspace=0.3)
-            
-            # Panel 1: Ensemble vs Individual Performance
-            if "best_ensemble" in summary and "best_individual" in summary:
-                ax1 = fig.add_subplot(gs[0, 0])
-                
-                metrics = ["accuracy", "f1", "auc_roc", "pr_auc"]
-                ensemble_values = [summary["best_ensemble"]["metrics"][m] for m in metrics]
-                individual_values = [summary["best_individual"]["metrics"][m] for m in metrics]
-                
-                x = np.arange(len(metrics))
-                width = 0.35
-                
-                ax1.bar(x - width/2, ensemble_values, width, label=f'Best Ensemble ({summary["best_ensemble"]["method"]})')
-                ax1.bar(x + width/2, individual_values, width, label=f'Best Individual ({summary["best_individual"]["model"]})')
-                
-                ax1.set_title("Performance Comparison")
-                ax1.set_xticks(x)
-                ax1.set_xticklabels([m.upper() for m in metrics])
-                ax1.set_ylim(0, 1)
-                ax1.legend()
-                ax1.grid(True, alpha=0.3)
-            
-            # Panel 2: Ensemble Improvement
-            if "ensemble_improvement" in summary:
-                ax2 = fig.add_subplot(gs[0, 1])
-                
-                metrics = ["accuracy", "f1", "auc_roc", "pr_auc"]
-                improvement_values = [summary["ensemble_improvement"][m] for m in metrics]
-                
-                colors = ['green' if v > 0 else 'red' for v in improvement_values]
-                
-                ax2.bar(metrics, improvement_values, color=colors)
-                ax2.set_title("Ensemble Improvement")
-                ax2.set_xticklabels([m.upper() for m in metrics])
-                ax2.axhline(y=0, color='k', linestyle='-', alpha=0.3)
-                ax2.grid(True, alpha=0.3)
-                
-                # Add percentage labels
-                for i, v in enumerate(improvement_values):
-                    if v > 0:
-                        ax2.text(i, v + 0.01, f"+{v*100:.1f}%", ha='center')
-                    else:
-                        ax2.text(i, v - 0.02, f"{v*100:.1f}%", ha='center')
-            
-            # Panel 3: Model Correlation Heatmap
-            if "average_model_correlation" in summary:
-                ax3 = fig.add_subplot(gs[1, 0])
-                ax3.text(0.5, 0.5, f"Average Model Correlation: {summary['average_model_correlation']:.4f}", 
-                        ha='center', va='center', fontsize=14)
-                ax3.axis('off')
-            
-            # Panel 4: Value Head Similarity
-            if "value_head_analysis" in summary and summary["value_head_analysis"]["average_similarity"] is not None:
-                ax4 = fig.add_subplot(gs[1, 1])
-                ax4.text(0.5, 0.5, f"Average Value Head Similarity: {summary['value_head_analysis']['average_similarity']:.4f}", 
-                        ha='center', va='center', fontsize=14)
-                ax4.axis('off')
-            
-            # Save the figure
-            plt.tight_layout()
-            plt.savefig(os.path.join(output_dir, "analysis_summary.png"), dpi=300)
-            plt.close()
-            
-        except Exception as e:
-            print(f"Error creating visual summary: {e}")
 
 
 class RewardModelEnsemble:
