@@ -12,21 +12,34 @@ import matplotlib.pyplot as plt
 from transformers import AutoTokenizer
 from typing import List, Dict, Union, Optional
 import json
+import random
 
 from src.irl_utilities import RewardModel
 
 
-def load_reward_model(model_path: str, device: str = None) -> tuple:
+def load_reward_model(model_path: str, device: str = None, seed: int = 42) -> tuple:
     """
     Load a trained reward model from a local path or HuggingFace Hub.
     
     Args:
         model_path: Path to the model directory or HuggingFace model ID
         device: Device to load the model on ('cuda', 'cpu', or None for auto-detection)
+        seed: Random seed for deterministic behavior
         
     Returns:
         Tuple of (reward_model, tokenizer)
     """
+    # Set seeds for reproducibility
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    
+    # Enable deterministic behavior in PyTorch
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
     
@@ -128,37 +141,37 @@ def score_texts(texts: List[str], reward_model: RewardModel, tokenizer, batch_si
     Returns:
         List of reward scores for each text
     """
-    reward_model.eval()
+    reward_model.eval()  # Ensure model is in evaluation mode
     all_scores = []
     
-    # Process in batches
-    for i in range(0, len(texts), batch_size):
-        batch_texts = texts[i:i+batch_size]
-        
-        # Tokenize
-        inputs = tokenizer(
-            batch_texts,
-            return_tensors="pt",
-            padding=True,
-            truncation=True,
-            max_length=max_length
-        )
-        
-        # Move to device
-        inputs = {k: v.to(reward_model.device) for k, v in inputs.items()}
-        
-        # Get rewards
-        with torch.no_grad():
+    with torch.no_grad():  # Ensure no gradients are computed
+        # Process in batches
+        for i in range(0, len(texts), batch_size):
+            batch_texts = texts[i:i+batch_size]
+            
+            # Tokenize with fixed padding to ensure consistency
+            inputs = tokenizer(
+                batch_texts,
+                return_tensors="pt",
+                padding="max_length",  # Use max_length padding for consistency
+                truncation=True,
+                max_length=max_length
+            )
+            
+            # Move to device
+            inputs = {k: v.to(reward_model.device) for k, v in inputs.items()}
+            
+            # Get rewards
             rewards = reward_model(**inputs)
-        
-        # Convert to list of floats
-        rewards_list = rewards.squeeze().cpu().tolist()
-        
-        # Handle single item case
-        if not isinstance(rewards_list, list):
-            rewards_list = [rewards_list]
-        
-        all_scores.extend(rewards_list)
+            
+            # Convert to list of floats
+            rewards_list = rewards.squeeze().cpu().tolist()
+            
+            # Handle single item case
+            if not isinstance(rewards_list, list):
+                rewards_list = [rewards_list]
+            
+            all_scores.extend(rewards_list)
     
     return all_scores
 
@@ -370,10 +383,21 @@ def main():
     parser.add_argument("--max_length", type=int, default=512,
                       help="Maximum token length")
     
+    # Add seed argument
+    parser.add_argument("--seed", type=int, default=42,
+                      help="Random seed for reproducibility")
+    
     args = parser.parse_args()
     
-    # Load the model
-    reward_model, tokenizer = load_reward_model(args.model_path, args.device)
+    # Set global seeds
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
+    random.seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(args.seed)
+    
+    # Load the model with seed
+    reward_model, tokenizer = load_reward_model(args.model_path, args.device, args.seed)
     
     # Process based on input type
     if args.text:
