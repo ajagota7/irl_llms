@@ -350,7 +350,7 @@ def load_texts_from_file(file_path: str) -> List[str]:
 
 def prepare_dataset(original_dataset_path, detoxified_dataset_path, train_test_split=0.8, seed=42):
     """
-    Prepare data for evaluation, similar to the prepare_data method in IRLTrainer.
+    Prepare data for evaluation, using the same approach as IRLTrainer.prepare_data.
     
     Args:
         original_dataset_path: Path or HF ID for original dataset
@@ -367,71 +367,89 @@ def prepare_dataset(original_dataset_path, detoxified_dataset_path, train_test_s
     def is_hf_dataset(path):
         return '/' in path and not os.path.exists(path)
     
-    # Function to load a dataset from HuggingFace or local file
-    def load_single_dataset(dataset_path):
-        if is_hf_dataset(dataset_path):
-            print(f"Loading dataset from HuggingFace: {dataset_path}")
+    # Load original dataset
+    if is_hf_dataset(original_dataset_path):
+        print(f"Loading original dataset from HuggingFace: {original_dataset_path}")
+        try:
+            from datasets import load_dataset
+            original_ds = load_dataset(original_dataset_path, trust_remote_code=True)
+            if isinstance(original_ds, dict) and 'train' in original_ds:
+                original_data = original_ds['train']
+            else:
+                original_data = original_ds
+            
+            # Convert to list of dictionaries if needed
+            if hasattr(original_data, 'to_pandas'):
+                original_data = original_data.to_pandas().to_dict('records')
+            else:
+                original_data = [item for item in original_data]
+        except Exception as e:
+            print(f"Error loading dataset from HuggingFace: {e}")
+            # Try direct HTTP request as fallback
             try:
-                # First try using datasets library
-                from datasets import load_dataset
-                try:
-                    dataset = load_dataset(dataset_path)
-                    if isinstance(dataset, dict) and 'train' in dataset:
-                        data = dataset['train']
-                    else:
-                        data = dataset
-                    
-                    # Convert to list of dictionaries
-                    if hasattr(data, 'to_pandas'):
-                        data = data.to_pandas().to_dict('records')
-                    else:
-                        data = [item for item in data]
-                    
-                    return data
-                except Exception as e:
-                    print(f"Error loading with datasets library: {e}")
-                    raise
-                    
-            except Exception as e:
-                print(f"Failed to load dataset from HuggingFace: {e}")
-                # Try direct HTTP request as fallback
-                try:
-                    import requests
-                    import json
-                    
-                    # Try to get the dataset directly via HTTP
-                    url = f"https://huggingface.co/datasets/{dataset_path}/resolve/main/data.json"
-                    print(f"Attempting direct download from: {url}")
+                import requests
+                import json
+                
+                # Try different file paths
+                for path in ['data.json', 'train.json', 'data/train.json']:
+                    url = f"https://huggingface.co/datasets/{original_dataset_path}/resolve/main/{path}"
+                    print(f"Trying direct download from: {url}")
                     response = requests.get(url)
-                    
                     if response.status_code == 200:
-                        return json.loads(response.text)
-                    
-                    # Try alternative file names
-                    for filename in ['train.json', 'test.json', 'data/train.json', 'data/test.json']:
-                        url = f"https://huggingface.co/datasets/{dataset_path}/resolve/main/{filename}"
-                        print(f"Trying: {url}")
-                        response = requests.get(url)
-                        if response.status_code == 200:
-                            return json.loads(response.text)
-                    
-                    raise ValueError(f"Could not download dataset: {dataset_path}")
-                except Exception as nested_e:
-                    print(f"Direct download failed: {nested_e}")
-                    raise ValueError(f"All methods to load dataset failed: {dataset_path}")
-        else:
-            # Load from local file
-            print(f"Loading dataset from local file: {dataset_path}")
-            with open(dataset_path, 'r') as f:
-                return json.load(f)
+                        original_data = json.loads(response.text)
+                        break
+                else:
+                    raise ValueError(f"Could not download dataset: {original_dataset_path}")
+            except Exception as nested_e:
+                print(f"All attempts to load dataset failed: {nested_e}")
+                raise
+    else:
+        # Load from local file
+        print(f"Loading original dataset from local file: {original_dataset_path}")
+        with open(original_dataset_path, 'r') as f:
+            original_data = json.load(f)
     
-    # Load both datasets
-    try:
-        original_data = load_single_dataset(original_dataset_path)
-        detoxified_data = load_single_dataset(detoxified_dataset_path)
-    except Exception as e:
-        print(f"Error loading datasets: {e}")
-        raise
+    # Load detoxified dataset
+    if is_hf_dataset(detoxified_dataset_path):
+        print(f"Loading detoxified dataset from HuggingFace: {detoxified_dataset_path}")
+        try:
+            from datasets import load_dataset
+            detoxified_ds = load_dataset(detoxified_dataset_path, trust_remote_code=True)
+            if isinstance(detoxified_ds, dict) and 'train' in detoxified_ds:
+                detoxified_data = detoxified_ds['train']
+            else:
+                detoxified_data = detoxified_ds
+            
+            # Convert to list of dictionaries if needed
+            if hasattr(detoxified_data, 'to_pandas'):
+                detoxified_data = detoxified_data.to_pandas().to_dict('records')
+            else:
+                detoxified_data = [item for item in detoxified_data]
+        except Exception as e:
+            print(f"Error loading dataset from HuggingFace: {e}")
+            # Try direct HTTP request as fallback
+            try:
+                import requests
+                import json
+                
+                # Try different file paths
+                for path in ['data.json', 'train.json', 'data/train.json']:
+                    url = f"https://huggingface.co/datasets/{detoxified_dataset_path}/resolve/main/{path}"
+                    print(f"Trying direct download from: {url}")
+                    response = requests.get(url)
+                    if response.status_code == 200:
+                        detoxified_data = json.loads(response.text)
+                        break
+                else:
+                    raise ValueError(f"Could not download dataset: {detoxified_dataset_path}")
+            except Exception as nested_e:
+                print(f"All attempts to load dataset failed: {nested_e}")
+                raise
+    else:
+        # Load from local file
+        print(f"Loading detoxified dataset from local file: {detoxified_dataset_path}")
+        with open(detoxified_dataset_path, 'r') as f:
+            detoxified_data = json.load(f)
     
     # Verify data lengths match
     if len(original_data) != len(detoxified_data):
