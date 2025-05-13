@@ -150,6 +150,51 @@ class RewardModel(torch.nn.Module):
 
         return model
 
+    @classmethod
+    def load_from_hf_model(cls, model_path, device="cuda"):
+        """
+        Load a reward model from a HuggingFace model directory.
+        
+        Args:
+            model_path: Path to the model directory
+            device: Device to load the model on
+            
+        Returns:
+            RewardModel instance
+        """
+        import os
+        from transformers import AutoModelForCausalLM
+        
+        # Load the base model
+        model = AutoModelForCausalLM.from_pretrained(model_path)
+        model.to(device)
+        
+        # Create a new reward model
+        reward_model = cls(model_name=model_path, device=device)
+        reward_model.model = model
+        
+        # Load the value head if it exists
+        v_head_path = os.path.join(model_path, "v_head.pt")
+        if os.path.exists(v_head_path):
+            try:
+                # Try to load the value head directly
+                reward_model.v_head.load_state_dict(torch.load(v_head_path, map_location=device))
+                print(f"Successfully loaded value head from {v_head_path}")
+            except Exception as e:
+                print(f"Error loading value head from {v_head_path}: {e}")
+                # Try to load as a complete state dict
+                try:
+                    state_dict = torch.load(v_head_path, map_location=device)
+                    reward_model.v_head = torch.nn.Linear(model.config.hidden_size, 1)
+                    reward_model.v_head.to(device)
+                    reward_model.v_head.weight.data = state_dict['weight']
+                    reward_model.v_head.bias.data = state_dict['bias']
+                    print(f"Successfully loaded value head weights directly")
+                except Exception as e2:
+                    print(f"Error loading value head weights: {e2}")
+        
+        return reward_model
+
 
 # IRL method implementations
 def max_margin_loss(original_rewards, detoxified_rewards, margin=0.1):

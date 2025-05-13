@@ -69,6 +69,25 @@ class RewardModelAnalyzer:
             hub_id = spec.get('hub_id', f"ajagota71/toxicity-reward-model-v-head-max-margin-seed-{spec['seed']}-pythia-{spec['size']}-checkpoint-{spec['checkpoint']}")
             
             try:
+                # Check if we have a local path from downloading
+                local_path = spec.get('local_path')
+                if local_path and os.path.exists(local_path):
+                    print(f"Loading model from local path: {local_path}")
+                    
+                    # Load tokenizer
+                    self.tokenizers[model_id] = AutoTokenizer.from_pretrained(local_path)
+                    if self.tokenizers[model_id].pad_token is None:
+                        self.tokenizers[model_id].pad_token = self.tokenizers[model_id].eos_token
+                    
+                    # Try to load the model using the new method
+                    try:
+                        self.models[model_id] = RewardModel.load_from_hf_model(local_path, device=self.device)
+                        successful_loads += 1
+                        print(f"Successfully loaded {model_id} from {local_path}")
+                        continue
+                    except Exception as e:
+                        print(f"Failed to load model from {local_path}: {e}")
+                
                 # Load tokenizer
                 self.tokenizers[model_id] = AutoTokenizer.from_pretrained(hub_id)
                 if self.tokenizers[model_id].pad_token is None:
