@@ -511,7 +511,7 @@ def push_to_hub(reward_model, tokenizer, config, checkpoint_suffix=None):
         return None
 
 
-def prepare_data(self, original_dataset_path, detoxified_dataset_path):
+def prepare_data(original_dataset_path, detoxified_dataset_path, train_test_split=0.8):
     """Prepare data for training."""
     print(f"Loading datasets from: {original_dataset_path} and {detoxified_dataset_path}")
     
@@ -522,18 +522,18 @@ def prepare_data(self, original_dataset_path, detoxified_dataset_path):
     # Function to load from HuggingFace with parquet format
     def load_hf_dataset(dataset_path):
         try:
-            print(f"Loading dataset from HuggingFace using parquet format: {dataset_path}")
-            # Try loading with parquet format explicitly
-            ds = load_dataset(dataset_path, split='train', format='parquet')
+            print(f"Loading dataset from HuggingFace: {dataset_path}")
+            # Try loading with default format first
+            ds = load_dataset(dataset_path)
+            if isinstance(ds, dict) and 'train' in ds:
+                ds = ds['train']
             return ds.to_pandas().to_dict('records')
         except Exception as e:
-            print(f"Error loading with parquet format: {e}")
+            print(f"Error loading with default format: {e}")
             try:
-                # Fallback to regular loading
-                print(f"Trying to load dataset from HuggingFace with default format: {dataset_path}")
-                ds = load_dataset(dataset_path)
-                if isinstance(ds, dict) and 'train' in ds:
-                    ds = ds['train']
+                # Fallback to parquet format
+                print(f"Trying to load dataset from HuggingFace with parquet format: {dataset_path}")
+                ds = load_dataset(dataset_path, split='train', format='parquet')
                 return ds.to_pandas().to_dict('records')
             except Exception as e:
                 print(f"Error loading dataset from HuggingFace: {e}")
@@ -570,7 +570,7 @@ def prepare_data(self, original_dataset_path, detoxified_dataset_path):
     print(f"Loaded {len(original_data)} paired samples")
     
     # Split data into train/test sets
-    train_size = int(self.config.training.train_test_split * len(original_data))
+    train_size = int(train_test_split * len(original_data))
     
     train_data = {
         'original': original_data[:train_size],
