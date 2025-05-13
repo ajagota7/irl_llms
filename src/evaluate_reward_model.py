@@ -363,83 +363,35 @@ def prepare_dataset(original_dataset_path, detoxified_dataset_path, train_test_s
     """
     print(f"Loading datasets from: {original_dataset_path} and {detoxified_dataset_path}")
     
-    # Function to determine if a path is a HuggingFace dataset ID
-    def is_hf_dataset(path):
-        return '/' in path and not os.path.exists(path)
-    
-    # Function to load a dataset from HuggingFace with proper error handling
-    def load_hf_dataset(dataset_path):
-        print(f"Loading dataset from HuggingFace: {dataset_path}")
-        try:
+    # Simple function to load a dataset
+    def load_dataset_simple(dataset_path):
+        print(f"Loading dataset: {dataset_path}")
+        
+        # Check if it's a local file or HF dataset
+        if os.path.exists(dataset_path):
+            # Local file
+            with open(dataset_path, 'r') as f:
+                return json.load(f)
+        else:
+            # HF dataset
             from datasets import load_dataset
             
-            # Try loading with streaming mode first to avoid caching issues
             try:
-                ds = load_dataset(dataset_path, streaming=True)
-                # Convert streaming dataset to list
-                if isinstance(ds, dict) and 'train' in ds:
-                    data_list = list(ds['train'])
+                # Load the dataset
+                ds = load_dataset(dataset_path)
+                
+                # Convert to list of dictionaries
+                if 'train' in ds:
+                    return ds['train'].to_dict('records')
                 else:
-                    data_list = list(ds)
-                return data_list
+                    return ds.to_dict('records')
             except Exception as e:
-                print(f"Streaming load failed: {e}")
-                print("Trying standard load...")
-                
-                # Try standard load with force_download to avoid cache
-                ds = load_dataset(dataset_path, force_download=True)
-                if isinstance(ds, dict) and 'train' in ds:
-                    return ds['train'].to_pandas().to_dict('records')
-                else:
-                    return ds.to_pandas().to_dict('records')
-                
-        except Exception as e:
-            print(f"Error loading dataset from HuggingFace: {e}")
-            print("Attempting alternative loading method...")
-            
-            # Try using the Hugging Face Hub API directly
-            try:
-                from huggingface_hub import hf_hub_download
-                import pandas as pd
-                
-                # Try to find a CSV or JSON file in the repo
-                try:
-                    file_path = hf_hub_download(repo_id=dataset_path, filename="data.csv")
-                    return pd.read_csv(file_path).to_dict('records')
-                except:
-                    try:
-                        file_path = hf_hub_download(repo_id=dataset_path, filename="data.json")
-                        with open(file_path, 'r') as f:
-                            return json.load(f)
-                    except:
-                        try:
-                            file_path = hf_hub_download(repo_id=dataset_path, filename="dataset.json")
-                            with open(file_path, 'r') as f:
-                                return json.load(f)
-                        except Exception as e:
-                            print(f"All alternative loading methods failed: {e}")
-                            raise
-            except Exception as e:
-                print(f"Failed to load dataset using hub API: {e}")
+                print(f"Error loading dataset: {e}")
                 raise
     
-    # Load original dataset
-    if is_hf_dataset(original_dataset_path):
-        original_data = load_hf_dataset(original_dataset_path)
-    else:
-        # Load from local file
-        print(f"Loading original dataset from local file: {original_dataset_path}")
-        with open(original_dataset_path, 'r') as f:
-            original_data = json.load(f)
-    
-    # Load detoxified dataset
-    if is_hf_dataset(detoxified_dataset_path):
-        detoxified_data = load_hf_dataset(detoxified_dataset_path)
-    else:
-        # Load from local file
-        print(f"Loading detoxified dataset from local file: {detoxified_dataset_path}")
-        with open(detoxified_dataset_path, 'r') as f:
-            detoxified_data = json.load(f)
+    # Load datasets
+    original_data = load_dataset_simple(original_dataset_path)
+    detoxified_data = load_dataset_simple(detoxified_dataset_path)
     
     # Verify data lengths match
     if len(original_data) != len(detoxified_data):
@@ -482,7 +434,7 @@ def prepare_dataset(original_dataset_path, detoxified_dataset_path, train_test_s
 
 def evaluate_dataset(data, reward_model, tokenizer, batch_size=8, max_length=512, split="test"):
     """
-    Evaluate the reward model on a dataset split, similar to the evaluate method in IRLTrainer.
+    Evaluate the reward model on a dataset split.
     
     Args:
         data: Dictionary with 'original' and 'detoxified' keys
@@ -500,86 +452,27 @@ def evaluate_dataset(data, reward_model, tokenizer, batch_size=8, max_length=512
     
     reward_model.eval()
     
-    original_outputs = []
-    detoxified_outputs = []
-    ground_truth_labels = []  # 1 for original (toxic), 0 for detoxified (non-toxic)
-    all_texts = []
+    # Extract text from data
+    original_texts = [item['output'] for item in data['original']]
+    detoxified_texts = [item['output'] for item in data['detoxified']]
     
-    with torch.no_grad():
-        # Process original (toxic) examples in batches
-        for i in range(0, len(data['original']), batch_size):
-            batch = data['original'][i:i+batch_size]
-            texts = [item['output'] for item in batch]
-            all_texts.extend(texts)
-            
-            # Tokenize
-            inputs = tokenizer(
-                texts,
-                return_tensors="pt",
-                padding="max_length",
-                truncation=True,
-                max_length=max_length
-            )
-            # Move to device
-            inputs = {k: v.to(reward_model.device) for k, v in inputs.items()}
-            
-            # Get learned rewards
-            rewards = reward_model(**inputs)
-            
-            # Convert to list of floats
-            rewards_list = rewards.squeeze().cpu().tolist()
-            
-            # Handle single item case
-            if not isinstance(rewards_list, list):
-                rewards_list = [rewards_list]
-            
-            original_outputs.extend(rewards_list)
-            
-            # Add ground truth labels
-            ground_truth_labels.extend([1] * len(batch))
-        
-        # Process detoxified examples in batches
-        for i in range(0, len(data['detoxified']), batch_size):
-            batch = data['detoxified'][i:i+batch_size]
-            texts = [item['output'] for item in batch]
-            all_texts.extend(texts)
-            
-            # Tokenize
-            inputs = tokenizer(
-                texts,
-                return_tensors="pt",
-                padding="max_length",
-                truncation=True,
-                max_length=max_length
-            )
-            # Move to device
-            inputs = {k: v.to(reward_model.device) for k, v in inputs.items()}
-            
-            # Get learned rewards
-            rewards = reward_model(**inputs)
-            
-            # Convert to list of floats
-            rewards_list = rewards.squeeze().cpu().tolist()
-            
-            # Handle single item case
-            if not isinstance(rewards_list, list):
-                rewards_list = [rewards_list]
-            
-            detoxified_outputs.extend(rewards_list)
-            
-            # Add ground truth labels
-            ground_truth_labels.extend([0] * len(batch))
+    # Score texts
+    original_scores = score_texts(original_texts, reward_model, tokenizer, batch_size, max_length)
+    detoxified_scores = score_texts(detoxified_texts, reward_model, tokenizer, batch_size, max_length)
     
-    # Get all outputs together
-    all_outputs = original_outputs + detoxified_outputs
+    # Create ground truth labels (1 for original/toxic, 0 for detoxified/non-toxic)
+    ground_truth_labels = [1] * len(original_scores) + [0] * len(detoxified_scores)
+    
+    # Combine scores
+    all_scores = original_scores + detoxified_scores
     
     # Compute metrics
     metrics = {}
     
     # Convert learned rewards to binary predictions
     # Higher reward should indicate less toxic (more detoxified)
-    threshold = np.mean(all_outputs)  # Simple threshold
-    learned_predictions = (np.array(all_outputs) > threshold).astype(int)
+    threshold = np.mean(all_scores)  # Simple threshold
+    learned_predictions = (np.array(all_scores) > threshold).astype(int)
     learned_predictions = 1 - learned_predictions  # Invert to match ground truth (1=toxic)
     
     # Accuracy
@@ -589,16 +482,16 @@ def evaluate_dataset(data, reward_model, tokenizer, batch_size=8, max_length=512
     metrics[f'{split}_f1'] = f1_score(ground_truth_labels, learned_predictions)
     
     # AUC-ROC
-    metrics[f'{split}_auc_roc'] = roc_auc_score(ground_truth_labels, [-x for x in all_outputs])  # Invert for ROC
+    metrics[f'{split}_auc_roc'] = roc_auc_score(ground_truth_labels, [-x for x in all_scores])  # Invert for ROC
     
     # Average predicted rewards
-    metrics[f'{split}_avg_original_reward'] = np.mean(original_outputs)
-    metrics[f'{split}_avg_detoxified_reward'] = np.mean(detoxified_outputs)
+    metrics[f'{split}_avg_original_reward'] = np.mean(original_scores)
+    metrics[f'{split}_avg_detoxified_reward'] = np.mean(detoxified_scores)
     metrics[f'{split}_reward_diff'] = metrics[f'{split}_avg_detoxified_reward'] - metrics[f'{split}_avg_original_reward']
     
     # Store raw scores for plotting
-    metrics['original_scores'] = original_outputs
-    metrics['detoxified_scores'] = detoxified_outputs
+    metrics['original_scores'] = original_scores
+    metrics['detoxified_scores'] = detoxified_scores
     
     return metrics
 
