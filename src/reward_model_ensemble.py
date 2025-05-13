@@ -477,6 +477,12 @@ class RewardModelAnalyzer:
         # Store results for each model
         results = {model_id: [] for model_id in self.models}
         
+        # Store the texts for reference
+        all_texts = []
+        
+        # Store text IDs if available
+        text_ids = []
+        
         # If no models were loaded, return empty results
         if not results:
             print("No models available for evaluation. Skipping.")
@@ -497,13 +503,25 @@ class RewardModelAnalyzer:
             if hasattr(batch, 'query'):
                 # HuggingFace dataset with query field (from RLHF utilities)
                 texts = batch['query']
+                # Try to get IDs if available
+                if hasattr(batch, 'id'):
+                    batch_ids = batch['id']
+                else:
+                    batch_ids = [f"{dataset_name}_{i+j}" for j in range(len(texts))]
             elif hasattr(batch, 'features') and 'query' in batch.features:
                 # Another way HuggingFace might structure it
                 texts = [item['query'] for item in batch]
+                # Try to get IDs if available
+                if 'id' in batch.features:
+                    batch_ids = [item['id'] for item in batch]
+                else:
+                    batch_ids = [f"{dataset_name}_{i+j}" for j in range(len(texts))]
             elif isinstance(batch, list) and isinstance(batch[0], dict):
                 # List of dictionaries
                 texts = []
-                for item in batch:
+                batch_ids = []
+                for j, item in enumerate(batch):
+                    # Get text
                     if "prompt" in item and isinstance(item["prompt"], dict) and "text" in item["prompt"]:
                         texts.append(item["prompt"]["text"])
                     elif text_key in item:
@@ -513,13 +531,24 @@ class RewardModelAnalyzer:
                     else:
                         # Use a default empty string if no text field is found
                         texts.append("")
+                    
+                    # Get ID
+                    if "id" in item:
+                        batch_ids.append(item["id"])
+                    else:
+                        batch_ids.append(f"{dataset_name}_{i+j}")
             else:
                 # Try to convert to list if it's another iterable
                 try:
                     texts = list(batch)
+                    batch_ids = [f"{dataset_name}_{i+j}" for j in range(len(texts))]
                 except:
                     print(f"Could not extract texts from batch of type {type(batch)}")
                     continue
+            
+            # Store texts and IDs
+            all_texts.extend(texts)
+            text_ids.extend(batch_ids)
             
             # Score texts with each model
             for model_id, model in self.models.items():
@@ -548,6 +577,49 @@ class RewardModelAnalyzer:
         plot_name = f"{dataset_name}{split_suffix}_distribution"
         self.create_distribution_plot(results, plot_name, 
                                      title=f"Reward Distribution on {dataset_name}{split_suffix} Dataset")
+        
+        # Create a detailed table with all scores for each text
+        if self.use_wandb and all_texts:
+            # Create a DataFrame with text IDs, texts, and scores from each model
+            table_data = {
+                "text_id": text_ids,
+                "text": [t[:1000] if len(t) > 1000 else t for t in all_texts]  # Truncate long texts
+            }
+            
+            # Add scores from each model
+            for model_id, scores in results.items():
+                # Extract seed from model_id for cleaner column names
+                seed = model_id.split('-')[-1]
+                table_data[f"score_seed_{seed}"] = scores[:len(all_texts)]
+            
+            # Create DataFrame
+            df = pd.DataFrame(table_data)
+            
+            # Log to wandb as a table
+            wandb_table = wandb.Table(dataframe=df)
+            wandb.log({f"detailed_scores/{dataset_name}{split_suffix}": wandb_table})
+            
+            # Also save locally
+            scores_dir = os.path.join(self.output_dir, "detailed_scores")
+            os.makedirs(scores_dir, exist_ok=True)
+            df.to_csv(os.path.join(scores_dir, f"{dataset_name}{split_suffix}_detailed_scores.csv"), index=False)
+            
+            # Create correlation heatmap between different seeds
+            score_columns = [col for col in df.columns if col.startswith("score_seed_")]
+            if len(score_columns) > 1:
+                corr_matrix = df[score_columns].corr()
+                
+                plt.figure(figsize=(10, 8))
+                sns.heatmap(corr_matrix, annot=True, fmt=".3f", cmap="viridis")
+                plt.title(f"Score Correlation Between Seeds on {dataset_name}{split_suffix}")
+                plt.tight_layout()
+                
+                corr_path = os.path.join(scores_dir, f"{dataset_name}{split_suffix}_seed_correlation.png")
+                plt.savefig(corr_path, dpi=300)
+                plt.close()
+                
+                # Log to wandb
+                wandb.log({f"seed_correlation/{dataset_name}{split_suffix}": wandb.Image(corr_path)})
         
         return results
     
