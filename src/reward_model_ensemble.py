@@ -892,16 +892,44 @@ class RewardModelAnalyzer:
         # Model comparison metrics
         if "original_vs_detoxified" in results:
             summary["model_comparison"] = {}
-            for model_id in self.models:
-                if model_id in results["original_vs_detoxified"]["metrics"]:
-                    metrics = results["original_vs_detoxified"]["metrics"][model_id]
-                    summary["model_comparison"][model_id] = {
-                        "auc_roc": metrics["auc_roc"],
-                        "auc_pr": metrics["auc_pr"],
-                        "accuracy": metrics["accuracy"],
-                        "f1_score": metrics["f1_score"],
-                        "mean_diff": metrics["mean_diff"]
-                    }
+            
+            # Check the structure of the results
+            if isinstance(results["original_vs_detoxified"], dict):
+                # If metrics are directly in the dictionary
+                if "metrics" in results["original_vs_detoxified"]:
+                    metrics_dict = results["original_vs_detoxified"]["metrics"]
+                    for model_id in self.models:
+                        if model_id in metrics_dict:
+                            metrics = metrics_dict[model_id]
+                            summary["model_comparison"][model_id] = {
+                                "auc_roc": metrics.get("auc_roc", 0),
+                                "auc_pr": metrics.get("auc_pr", 0),
+                                "accuracy": metrics.get("accuracy", 0),
+                                "f1_score": metrics.get("f1_score", 0),
+                                "mean_diff": metrics.get("mean_diff", 0)
+                            }
+                else:
+                    # Try to calculate metrics from the raw results
+                    original_results = results["original_vs_detoxified"].get("original", {})
+                    detoxified_results = results["original_vs_detoxified"].get("detoxified", {})
+                    
+                    for model_id in self.models:
+                        if model_id in original_results and model_id in detoxified_results:
+                            # Calculate mean difference
+                            orig_scores = original_results[model_id]
+                            detox_scores = detoxified_results[model_id]
+                            
+                            if orig_scores and detox_scores:
+                                mean_diff = np.mean(detox_scores) - np.mean(orig_scores)
+                                
+                                summary["model_comparison"][model_id] = {
+                                    "mean_diff": mean_diff,
+                                    # Other metrics would require labels, which we don't have here
+                                    "auc_roc": 0,
+                                    "auc_pr": 0,
+                                    "accuracy": 0,
+                                    "f1_score": 0
+                                }
         
         # Ensemble metrics
         if "ensemble_analysis" in results and "metrics" in results["ensemble_analysis"]:
@@ -915,7 +943,7 @@ class RewardModelAnalyzer:
                 
                 # Find the best method based on AUC-ROC
                 best_method = max(ensemble_metrics.keys(), 
-                                 key=lambda k: ensemble_metrics[k]["auc_roc"] if k in ensemble_metrics else 0)
+                                 key=lambda k: ensemble_metrics[k].get("auc_roc", 0) if k in ensemble_metrics else 0)
                 
                 summary["best_ensemble_method"] = {
                     "method": best_method,
@@ -931,12 +959,12 @@ class RewardModelAnalyzer:
             json.dump(summary, f, indent=2)
         
         # Create summary plots
-        if "model_comparison" in summary:
+        if "model_comparison" in summary and summary["model_comparison"]:
             # Create bar chart of key metrics
             metrics = ["auc_roc", "auc_pr", "accuracy", "f1_score", "mean_diff"]
             for metric in metrics:
                 plt.figure(figsize=(12, 8))
-                values = [summary["model_comparison"][model_id][metric] for model_id in summary["model_comparison"]]
+                values = [summary["model_comparison"][model_id].get(metric, 0) for model_id in summary["model_comparison"]]
                 plt.bar(list(summary["model_comparison"].keys()), values)
                 plt.title(f"{metric.upper()} by Model")
                 plt.xlabel("Model")
@@ -947,23 +975,25 @@ class RewardModelAnalyzer:
                 plt.close()
         
         # Create ensemble comparison plot if available
-        if "ensemble_comparison" in summary:
+        if "ensemble_comparison" in summary and summary["ensemble_comparison"]:
             metrics = ["auc_roc", "auc_pr", "accuracy", "f1_score"]
             for metric in metrics:
                 plt.figure(figsize=(12, 8))
-                values = [summary["ensemble_comparison"][method][metric] 
+                values = [summary["ensemble_comparison"][method].get(metric, 0) 
                          for method in summary["ensemble_comparison"]
                          if metric in summary["ensemble_comparison"][method]]
                 methods = [method for method in summary["ensemble_comparison"] 
                           if metric in summary["ensemble_comparison"][method]]
-                plt.bar(methods, values)
-                plt.title(f"{metric.upper()} by Ensemble Method")
-                plt.xlabel("Ensemble Method")
-                plt.ylabel(metric.upper())
-                plt.xticks(rotation=45)
-                plt.tight_layout()
-                plt.savefig(os.path.join(report_dir, f"ensemble_{metric}_comparison.png"), dpi=300)
-                plt.close()
+                
+                if methods:  # Only create plot if we have data
+                    plt.bar(methods, values)
+                    plt.title(f"{metric.upper()} by Ensemble Method")
+                    plt.xlabel("Ensemble Method")
+                    plt.ylabel(metric.upper())
+                    plt.xticks(rotation=45)
+                    plt.tight_layout()
+                    plt.savefig(os.path.join(report_dir, f"ensemble_{metric}_comparison.png"), dpi=300)
+                    plt.close()
         
         print(f"Summary report saved to {report_dir}")
         
