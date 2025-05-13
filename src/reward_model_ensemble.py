@@ -62,6 +62,8 @@ class RewardModelAnalyzer:
     def load_models(self):
         """Load all reward models based on specifications."""
         print("Loading reward models...")
+        successful_loads = 0
+        
         for spec in tqdm(self.model_specs):
             model_id = f"pythia-{spec['size']}-seed-{spec['seed']}"
             hub_id = spec.get('hub_id', f"ajagota71/toxicity-reward-model-v-head-max-margin-seed-{spec['seed']}-pythia-{spec['size']}-checkpoint-{spec['checkpoint']}")
@@ -74,14 +76,45 @@ class RewardModelAnalyzer:
                 
                 # Load model
                 print(f"Loading model from {hub_id}")
-                self.models[model_id] = RewardModel.load(
-                    os.path.join(hub_id, "v_head.pt"),
-                    device=self.device
-                )
-                print(f"Successfully loaded {model_id}")
+                
+                # Try different paths for v_head.pt
+                v_head_paths = [
+                    os.path.join(hub_id, "v_head.pt"),  # Direct path
+                    f"https://huggingface.co/{hub_id}/resolve/main/v_head.pt",  # URL path
+                    os.path.join("models", hub_id, "v_head.pt")  # Local models directory
+                ]
+                
+                model_loaded = False
+                for path in v_head_paths:
+                    try:
+                        print(f"Trying to load from: {path}")
+                        self.models[model_id] = RewardModel.load(path, device=self.device)
+                        model_loaded = True
+                        successful_loads += 1
+                        print(f"Successfully loaded {model_id}")
+                        break
+                    except Exception as e:
+                        print(f"Failed to load from {path}: {e}")
+                
+                if not model_loaded:
+                    print(f"Could not load model {model_id} from any path")
+                
             except Exception as e:
                 print(f"Error loading model {model_id}: {e}")
                 continue
+        
+        if successful_loads == 0:
+            print("\n" + "="*80)
+            print("ERROR: No models were successfully loaded!")
+            print("Please check the following:")
+            print("1. Verify that the model paths are correct")
+            print("2. Ensure you have access to the HuggingFace models")
+            print("3. Try downloading the models locally first using:")
+            print("   from huggingface_hub import snapshot_download")
+            print("   snapshot_download(repo_id='ajagota71/toxicity-reward-model-v-head-max-margin-seed-42-pythia-70m-checkpoint-30')")
+            print("="*80 + "\n")
+        else:
+            print(f"Successfully loaded {successful_loads} models")
     
     def extract_value_head_weights(self):
         """Extract value head weights from all models for analysis."""
@@ -95,6 +128,11 @@ class RewardModelAnalyzer:
         """Analyze the value head weights across models."""
         print("Analyzing value head weights...")
         
+        # Check if we have any models
+        if not self.value_head_weights:
+            print("No value head weights available for analysis. Skipping.")
+            return None
+        
         # Create a directory for value head analysis
         value_head_dir = os.path.join(self.output_dir, "value_head_analysis")
         os.makedirs(value_head_dir, exist_ok=True)
@@ -102,6 +140,11 @@ class RewardModelAnalyzer:
         # Calculate pairwise cosine similarities between value heads
         model_ids = list(self.value_head_weights.keys())
         n_models = len(model_ids)
+        
+        if n_models < 2:
+            print("Need at least 2 models for similarity analysis. Skipping.")
+            return None
+        
         similarity_matrix = np.zeros((n_models, n_models))
         
         for i, model_id1 in enumerate(model_ids):
@@ -1030,6 +1073,30 @@ class RewardModelEnsemble:
         )
 
 
+def download_models(model_specs):
+    """
+    Download models from HuggingFace Hub.
+    
+    Args:
+        model_specs: List of dictionaries with model specifications
+    """
+    try:
+        from huggingface_hub import snapshot_download
+        
+        print("Downloading models from HuggingFace Hub...")
+        for spec in tqdm(model_specs):
+            hub_id = spec.get('hub_id', f"ajagota71/toxicity-reward-model-v-head-max-margin-seed-{spec['seed']}-pythia-{spec['size']}-checkpoint-{spec['checkpoint']}")
+            
+            try:
+                print(f"Downloading {hub_id}...")
+                snapshot_download(repo_id=hub_id, local_dir=f"models/{hub_id}")
+                print(f"Successfully downloaded {hub_id}")
+            except Exception as e:
+                print(f"Error downloading {hub_id}: {e}")
+    except ImportError:
+        print("huggingface_hub not installed. Please install with: pip install huggingface_hub")
+
+
 def main():
     """Main function to run the analysis."""
     parser = argparse.ArgumentParser(description="Analyze and ensemble reward models")
@@ -1062,6 +1129,8 @@ def main():
     parser.add_argument("--ensemble_method", default="weighted_mean",
                         choices=["mean", "median", "max", "min", "weighted_mean"],
                         help="Method to use for ensemble")
+    parser.add_argument("--download_models", action="store_true",
+                        help="Download models from HuggingFace Hub before analysis")
     
     args = parser.parse_args()
     
@@ -1136,6 +1205,10 @@ def main():
         ensemble.save(ensemble_dir)
         
         print(f"Ensemble created and saved to {ensemble_dir}")
+
+    # Download models if requested
+    if args.download_models:
+        download_models(model_specs)
 
 
 if __name__ == "__main__":
