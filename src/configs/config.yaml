@@ -123,6 +123,7 @@ irl:
     temperature: 0.1  # For max_entropy
     adam_epsilon: 1e-8
     seed: ${seed}
+    include_prompt: true
   
   # Evaluation settings
   evaluation:

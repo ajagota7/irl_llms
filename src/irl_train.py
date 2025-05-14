@@ -115,6 +115,9 @@ class IRLTrainer:
         indices = np.arange(len(original_data))
         np.random.shuffle(indices)
         
+        # Whether to include prompt with output or just use output
+        use_prompt = self.config.training.get('include_prompt', False)
+        
         for i in range(0, len(indices), batch_size):
             batch_indices = indices[i:i+batch_size]
             batch_original = [original_data[idx] for idx in batch_indices]
@@ -136,11 +139,20 @@ class IRLTrainer:
         # Process in batches
         batch_size = self.config.training.batch_size
         
+        # Determine whether to use prompt+output or just output based on config
+        use_prompt = self.config.training.get('include_prompt', False)
+        
         with torch.no_grad():
             # Process original (toxic) examples in batches
             for i in range(0, len(data['original']), batch_size):
                 batch = data['original'][i:i+batch_size]
-                texts = [item['output'] for item in batch]
+                
+                # Get text based on config choice
+                if use_prompt and 'prompt' in batch[0]:
+                    texts = [item['prompt'] + item['output'] for item in batch]
+                else:
+                    texts = [item['output'] for item in batch]
+                
                 all_texts.extend(texts)
                 
                 # Tokenize
@@ -172,7 +184,13 @@ class IRLTrainer:
             # Process detoxified examples in batches
             for i in range(0, len(data['detoxified']), batch_size):
                 batch = data['detoxified'][i:i+batch_size]
-                texts = [item['output'] for item in batch]
+                
+                # Get text based on config choice
+                if use_prompt and 'prompt' in batch[0]:
+                    texts = [item['prompt'] + item['output'] for item in batch]
+                else:
+                    texts = [item['output'] for item in batch]
+                
                 all_texts.extend(texts)
                 
                 # Tokenize
