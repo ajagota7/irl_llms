@@ -295,6 +295,11 @@ class IRLTrainer:
     
     def train(self, train_data, test_data):
         """Train the reward model."""
+        # Initialize or reset wandb step counter right at the beginning
+        if self.config.logging.use_wandb and wandb.run is not None:
+            # This ensures we're starting fresh with the step counter
+            wandb.run._step = 0
+        
         # Record model names for tracking
         original_model = self.config.dataset.original_model_name
         detoxified_model = self.config.dataset.detoxified_model_name
@@ -338,9 +343,9 @@ class IRLTrainer:
             if isinstance(v, (int, float)):
                 print(f"  {k}: {v:.4f}")
         
-        # Log metrics to wandb
+        # Log metrics to wandb - ENSURE this is the first wandb.log call
         if self.config.logging.use_wandb and wandb.run is not None:
-            wandb.log(metrics, step=0)
+            wandb.log(metrics, step=0)  # Explicitly use step=0
         
         # Training loop
         print(f"Starting training with {self.config.training.irl_method} IRL...")
@@ -441,7 +446,7 @@ class IRLTrainer:
                     if isinstance(v, (int, float)):
                         print(f"  {k}: {v:.4f}")
                 
-                # Log metrics to wandb with step=epoch+1 to ensure proper tracking
+                # Log metrics to wandb
                 if self.config.logging.use_wandb and wandb.run is not None:
                     wandb.log(metrics, step=epoch+1)
                 
