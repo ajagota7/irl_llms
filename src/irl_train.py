@@ -295,11 +295,6 @@ class IRLTrainer:
     
     def train(self, train_data, test_data):
         """Train the reward model."""
-        # Initialize or reset wandb step counter right at the beginning
-        if self.config.logging.use_wandb and wandb.run is not None:
-            # This ensures we're starting fresh with the step counter
-            wandb.run._step = 0
-        
         # Record model names for tracking
         original_model = self.config.dataset.original_model_name
         detoxified_model = self.config.dataset.detoxified_model_name
@@ -326,7 +321,12 @@ class IRLTrainer:
             eps=self.config.training.adam_epsilon
         )
         
-        # Evaluate at epoch 0 (before training)
+        # Initialize wandb if needed - do this first before any logging
+        if self.config.logging.use_wandb and wandb.run is not None:
+            # Initialize but don't log anything yet
+            pass
+        
+        # Evaluate at epoch 0 (before training) and log it as the first thing
         print("Evaluating at epoch 0 (before training)...")
         train_metrics = self.evaluate(train_data, split="train")
         test_metrics = self.evaluate(test_data, split="test")
@@ -343,25 +343,27 @@ class IRLTrainer:
             if isinstance(v, (int, float)):
                 print(f"  {k}: {v:.4f}")
         
-        # Log metrics to wandb - ENSURE this is the first wandb.log call
+        # Log metrics to wandb as the very first thing
         if self.config.logging.use_wandb and wandb.run is not None:
-            wandb.log(metrics, step=0)  # Explicitly use step=0
+            # Force the step counter to 0 and log
+            wandb.define_metric("*", step_metric="epoch")
+            wandb.log({"epoch": 0, **metrics})
         
-        # Training loop
+        # Training loop - now starting at epoch 1
         print(f"Starting training with {self.config.training.irl_method} IRL...")
         
-        for epoch in range(self.config.training.epochs):
+        for epoch in range(1, self.config.training.epochs + 1):  # Changed to start at 1 and go to epochs+1
             self.reward_model.train()
             epoch_losses = []
             
-            # Progress bar for batches
+            # Progress bar for batches - updated to show correct epoch
             progress_bar = tqdm(
                 self.data_loader(
                     train_data['original'],
                     train_data['detoxified'],
                     self.config.training.batch_size
                 ),
-                desc=f"Epoch {epoch+1}/{self.config.training.epochs}"
+                desc=f"Epoch {epoch}/{self.config.training.epochs}"  # This now shows 1/30 instead of 1/30
             )
             
             # Process batches
@@ -426,37 +428,37 @@ class IRLTrainer:
             
             # Calculate average loss for epoch
             avg_loss = sum(epoch_losses) / len(epoch_losses) if epoch_losses else float('nan')
-            print(f"Epoch {epoch+1}/{self.config.training.epochs}, Loss: {avg_loss:.4f}")
+            print(f"Epoch {epoch}/{self.config.training.epochs}, Loss: {avg_loss:.4f}")
             
             # Evaluate periodically
-            if (epoch + 1) % self.config.training.eval_interval == 0 or epoch == self.config.training.epochs - 1:
-                print(f"Evaluating at epoch {epoch+1}...")
+            if (epoch + 1) % self.config.training.eval_interval == 0 or epoch == self.config.training.epochs:
+                print(f"Evaluating at epoch {epoch}...")
                 train_metrics = self.evaluate(train_data, split="train")
                 test_metrics = self.evaluate(test_data, split="test")
                 
                 # Combine metrics
                 metrics = {**train_metrics, **test_metrics}
-                metrics['epoch'] = epoch + 1
+                metrics['epoch'] = epoch
                 metrics['loss'] = avg_loss
                 self.metrics_history.append(metrics)
                 
                 # Print metrics
-                print(f"Metrics at epoch {epoch+1}:")
+                print(f"Metrics at epoch {epoch}:")
                 for k, v in metrics.items():
                     if isinstance(v, (int, float)):
                         print(f"  {k}: {v:.4f}")
                 
                 # Log metrics to wandb
                 if self.config.logging.use_wandb and wandb.run is not None:
-                    wandb.log(metrics, step=epoch+1)
+                    wandb.log({"epoch": epoch, **metrics})
                 
                 # Save checkpoint if configured
                 if self.config.output.save_checkpoints:
-                    self.save_checkpoint(epoch + 1)
+                    self.save_checkpoint(epoch)
             else:
                 # Log just the loss for non-evaluation epochs
                 if self.config.logging.use_wandb and wandb.run is not None:
-                    wandb.log({"loss": avg_loss}, step=epoch+1)
+                    wandb.log({"loss": avg_loss}, step=epoch)
         
         # Save the final model
         self.save_model()
