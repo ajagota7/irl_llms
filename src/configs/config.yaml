@@ -26,7 +26,7 @@ model:
   forward_batch_size: 8
   gradient_accumulation_steps: 8
   reward_model: null
-  use_raw_logits: false
+  use_raw_logits: true
   
   # PPO specific settings
   ppo_epochs: 4
