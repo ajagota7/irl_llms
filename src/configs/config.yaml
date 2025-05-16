@@ -66,8 +66,11 @@ dataset:
 # Output settings
 output:
   push_to_hub: true
+  push_checkpoints_to_hub: true  # Whether to push checkpoints during training
+  checkpoint_push_freq: 20  # How often to push checkpoints (in epochs)
   organization: null
   repository_name: null
+  private: false  # Whether repositories should be private
 
 # WandB settings
 wandb:
