@@ -338,51 +338,71 @@ def train_rlhf(cfg: DictConfig) -> None:
                 # Save reward stats
                 reward_df = pd.DataFrame(reward_stats)
                 reward_df.to_csv(os.path.join(output_dir, "reward_stats.csv"), index=False)
+        
+        # Push checkpoint to Hub if enabled (separate from local saving)
+        if cfg.output.push_to_hub and cfg.output.push_checkpoints_to_hub and (epoch + 1) % cfg.output.checkpoint_push_freq == 0:
+            try:
+                # Create a temporary checkpoint path if we didn't just save one
+                if (epoch + 1) % cfg.training.save_freq != 0:
+                    temp_checkpoint_path = os.path.join(checkpoint_dir, f"temp-checkpoint-epoch-{epoch+1}")
+                    print(f"Creating temporary checkpoint for Hub push at {temp_checkpoint_path}")
+                    
+                    if ppo_trainer.accelerator.is_main_process:
+                        # Save the model to the temporary path
+                        ppo_trainer.save_pretrained(temp_checkpoint_path)
+                        checkpoint_path = temp_checkpoint_path
+                else:
+                    # Use the already saved checkpoint
+                    checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint-epoch-{epoch+1}")
                 
-                # Push checkpoint to Hub if enabled
-                if cfg.output.push_to_hub and cfg.output.push_checkpoints_to_hub:
-                    try:
-                        # Determine repository name
-                        if cfg.output.repository_name:
-                            repo_name = cfg.output.repository_name
-                        else:
-                            model_short_name = cfg.model.name.split('/')[-1]
-                            repo_name = f"{model_short_name}-detox"
-                        
-                        # Prepare repository ID
-                        repo_id = f"{cfg.output.organization}/{repo_name}" if cfg.output.organization else repo_name
-                        
-                        # Add epoch information to the checkpoint folder
-                        checkpoint_repo_name = f"{repo_name}-checkpoint-epoch-{epoch+1}"
-                        checkpoint_repo_id = f"{cfg.output.organization}/{checkpoint_repo_name}" if cfg.output.organization else checkpoint_repo_name
-                        
-                        print(f"Pushing checkpoint to Hugging Face Hub: {checkpoint_repo_id}")
-                        
-                        # Save model and tokenizer to the checkpoint path
-                        model.save_pretrained(checkpoint_path)
-                        tokenizer.save_pretrained(checkpoint_path)
-                        
-                        # Save config file
-                        with open(os.path.join(checkpoint_path, "rlhf_config.yaml"), "w") as f:
-                            f.write(OmegaConf.to_yaml(cfg))
-                        
-                        # Push to Hub
-                        api = HfApi()
-                        
-                        # Check if the repository exists, create it if it doesn't
-                        if not api.repo_exists(repo_id=checkpoint_repo_id):
-                            api.create_repo(repo_id=checkpoint_repo_id, private=cfg.output.private)
-                        
-                        # Upload the folder
-                        api.upload_folder(
-                            folder_path=checkpoint_path,
-                            repo_id=checkpoint_repo_id,
-                            commit_message=f"Checkpoint after epoch {epoch+1}"
-                        )
-                        print(f"Successfully pushed checkpoint to {checkpoint_repo_id}")
-                    except Exception as e:
-                        print(f"Error pushing checkpoint to Hugging Face Hub: {str(e)}")
-                        print("Continuing training without pushing checkpoint.")
+                # Determine repository name
+                if cfg.output.repository_name:
+                    repo_name = cfg.output.repository_name
+                else:
+                    model_short_name = cfg.model.name.split('/')[-1]
+                    repo_name = f"{model_short_name}-detox"
+                
+                # Prepare repository ID
+                repo_id = f"{cfg.output.organization}/{repo_name}" if cfg.output.organization else repo_name
+                
+                # Add epoch information to the checkpoint folder
+                checkpoint_repo_name = f"{repo_name}-checkpoint-epoch-{epoch+1}"
+                checkpoint_repo_id = f"{cfg.output.organization}/{checkpoint_repo_name}" if cfg.output.organization else checkpoint_repo_name
+                
+                print(f"Pushing checkpoint to Hugging Face Hub: {checkpoint_repo_id}")
+                
+                # Save model and tokenizer to the checkpoint path
+                model.save_pretrained(checkpoint_path)
+                tokenizer.save_pretrained(checkpoint_path)
+                
+                # Save config file
+                with open(os.path.join(checkpoint_path, "rlhf_config.yaml"), "w") as f:
+                    f.write(OmegaConf.to_yaml(cfg))
+                
+                # Push to Hub
+                api = HfApi()
+                
+                # Check if the repository exists, create it if it doesn't
+                if not api.repo_exists(repo_id=checkpoint_repo_id):
+                    api.create_repo(repo_id=checkpoint_repo_id, private=cfg.output.private)
+                
+                # Upload the folder
+                api.upload_folder(
+                    folder_path=checkpoint_path,
+                    repo_id=checkpoint_repo_id,
+                    commit_message=f"Checkpoint after epoch {epoch+1}"
+                )
+                print(f"Successfully pushed checkpoint to {checkpoint_repo_id}")
+                
+                # Clean up temporary checkpoint if created
+                if (epoch + 1) % cfg.training.save_freq != 0 and os.path.exists(temp_checkpoint_path):
+                    import shutil
+                    shutil.rmtree(temp_checkpoint_path)
+                    print(f"Removed temporary checkpoint directory {temp_checkpoint_path}")
+                    
+            except Exception as e:
+                print(f"Error pushing checkpoint to Hugging Face Hub: {str(e)}")
+                print("Continuing training without pushing checkpoint.")
         
         # Run evaluation
         if (epoch + 1) % cfg.training.eval_freq == 0:
