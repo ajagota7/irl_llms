@@ -1,0 +1,68 @@
+# IRL-RLHF configuration for Pythia 70M
+# This config uses IRL-trained reward models instead of ground truth models
+
+# Model settings
+model:
+  name: "EleutherAI/pythia-70M"
+  learning_rate: 1e-5
+  batch_size: 128
+  mini_batch_size: 8
+  forward_batch_size: 8
+  gradient_accumulation_steps: 8
+  
+  # IRL reward model (replace with your trained IRL model)
+  reward_model: "ajagota71/irl-reward-model-pythia-70m"  # Your IRL model from HuggingFace
+  
+  # IRL-specific settings
+  use_raw_logits: false  # Use normalized scores from IRL model
+  invert_irl_rewards: true  # Invert IRL scores (higher IRL score = less toxic = higher reward)
+  
+  # PPO specific settings
+  ppo_epochs: 4
+  init_kl_coef: 0.2
+  target: 6
+  cliprange: 0.2
+  cliprange_value: 0.2
+  vf_coef: 0.1
+  adap_kl_ctrl: true
+  use_score_norm: true  # Normalize rewards within each batch
+  ratio_threshold: 10.0
+  
+  # Generation parameters
+  generation:
+    min_length: 5
+    output_min_length: 15
+    output_max_length: 20
+    do_sample: true
+    top_k: 0.0
+    top_p: 1.0
+
+# Dataset settings (same as regular RLHF)
+dataset:
+  name: "allenai/real-toxicity-prompts"
+  toxicity_threshold: 0.3
+  input_min_text_length: 15
+  input_max_text_length: 20
+  test_size: 0.1
+
+# Training parameters
+training:
+  num_train_epochs: 100
+  save_freq: 20
+  eval_freq: 20
+  seed: 42
+
+# Output settings
+output:
+  push_to_hub: true
+  push_checkpoints_to_hub: true
+  checkpoint_push_freq: 20
+  organization: "ajagota71"  # Your HuggingFace organization
+  repository_name: null  # Will auto-generate name with "-irl" suffix
+  private: false
+
+# WandB settings
+wandb:
+  project: "irl_rlhf"
+  entity: null
+  name: null  # Will auto-generate 
