@@ -572,7 +572,7 @@ def train_irl_rlhf(cfg: DictConfig) -> None:
             reward_model, 
             reward_inputs, 
             ppo_trainer.accelerator.device,
-            normalize_rewards=cfg.model.get('use_score_norm', True)
+            normalize_rewards=False
         )
         
         # Convert to rewards (invert if needed - IRL models typically give higher scores for better content)
