@@ -293,7 +293,7 @@ def evaluate_irl_toxicity(
         
         # Calculate toxicity using IRL reward model
         try:
-            toxicity_score = compute_irl_rewards(
+            irl_score = compute_irl_rewards(
                 reward_model, 
                 reward_tokenizer, 
                 [response], 
@@ -301,10 +301,10 @@ def evaluate_irl_toxicity(
                 normalize_rewards=False  # Don't normalize single scores
             )[0].item()
             
-            # Convert to a toxicity score (higher = more toxic)
-            # IRL models typically output higher values for less toxic content
-            # So we invert the score
-            toxicity = -toxicity_score
+            # Convert IRL score to toxicity score for evaluation
+            # IRL models output higher values for less toxic content
+            # So for toxicity evaluation, we want to invert this
+            toxicity = -irl_score  # Higher toxicity score = more toxic
             
         except Exception as e:
             print(f"Error calculating IRL toxicity: {e}")
@@ -575,14 +575,14 @@ def train_irl_rlhf(cfg: DictConfig) -> None:
             normalize_rewards=False
         )
         
-        # Convert to rewards (invert if needed - IRL models typically give higher scores for better content)
-        # For detoxification, we want to reward less toxic content
+        # Convert to rewards (IRL models give higher scores for less toxic content)
+        # For PPO, we want positive rewards for good behavior (less toxic)
         if cfg.model.get('invert_irl_rewards', True):
-            # Invert the rewards so higher IRL scores (less toxic) become higher rewards
+            # Use IRL scores directly as rewards (higher IRL score = less toxic = higher reward)
             rewards = [torch.tensor(score) for score in raw_values.tolist()]
         else:
-            # Use raw scores
-            rewards = [torch.tensor(-score) for score in raw_values.tolist()]  # Negative for toxicity
+            # Invert the scores (for models where higher score = more toxic)
+            rewards = [torch.tensor(-score) for score in raw_values.tolist()]
         
         # Calculate statistics for logging
         rewards_tensor = torch.tensor([r.item() for r in rewards])
@@ -657,16 +657,19 @@ def train_irl_rlhf(cfg: DictConfig) -> None:
                 else:
                     checkpoint_path = os.path.join(checkpoint_dir, f"irl-checkpoint-epoch-{epoch+1}")
                 
-                # Determine repository name
+                # Determine repository name with organization
                 if cfg.output.repository_name:
                     repo_name = f"{cfg.output.repository_name}-irl"
                 else:
                     model_short_name = cfg.model.name.split('/')[-1]
                     repo_name = f"{model_short_name}-irl-detox"
                 
-                repo_id = f"{cfg.output.organization}/{repo_name}" if cfg.output.organization else repo_name
-                checkpoint_repo_name = f"{repo_name}-checkpoint-epoch-{epoch+1}"
-                checkpoint_repo_id = f"{cfg.output.organization}/{checkpoint_repo_name}" if cfg.output.organization else checkpoint_repo_name
+                # Always include organization in repo_id for checkpoints
+                if cfg.output.organization:
+                    checkpoint_repo_name = f"{repo_name}-checkpoint-epoch-{epoch+1}"
+                    checkpoint_repo_id = f"{cfg.output.organization}/{checkpoint_repo_name}"
+                else:
+                    checkpoint_repo_id = f"{repo_name}-checkpoint-epoch-{epoch+1}"
                 
                 print(f"Pushing IRL checkpoint to Hugging Face Hub: {checkpoint_repo_id}")
                 
@@ -678,8 +681,13 @@ def train_irl_rlhf(cfg: DictConfig) -> None:
                     f.write(OmegaConf.to_yaml(cfg))
                 
                 api = HfApi()
-                if not api.repo_exists(repo_id=checkpoint_repo_id):
-                    api.create_repo(repo_id=checkpoint_repo_id, private=cfg.output.private)
+                
+                # Create repository first
+                try:
+                    api.create_repo(repo_id=checkpoint_repo_id, private=cfg.output.private, exist_ok=True)
+                    print(f"Repository created/verified: {checkpoint_repo_id}")
+                except Exception as e:
+                    print(f"Repository creation note: {e}")
                 
                 api.upload_folder(
                     folder_path=checkpoint_path,
@@ -740,7 +748,11 @@ def train_irl_rlhf(cfg: DictConfig) -> None:
                 model_short_name = cfg.model.name.split('/')[-1]
                 repo_name = f"{model_short_name}-irl-detox"
             
-            repo_id = f"{cfg.output.organization}/{repo_name}" if cfg.output.organization else repo_name
+            # Always include organization in repo_id
+            if cfg.output.organization:
+                repo_id = f"{cfg.output.organization}/{repo_name}"
+            else:
+                repo_id = repo_name
             
             print(f"Pushing final IRL-RLHF model to Hugging Face Hub: {repo_id}")
             
@@ -755,8 +767,13 @@ def train_irl_rlhf(cfg: DictConfig) -> None:
             # Push to Hub
             try:
                 api = HfApi()
-                if not api.repo_exists(repo_id=repo_id):
-                    api.create_repo(repo_id=repo_id, private=cfg.output.private)
+                
+                # Create repository first
+                try:
+                    api.create_repo(repo_id=repo_id, private=cfg.output.private, exist_ok=True)
+                    print(f"Repository created/verified: {repo_id}")
+                except Exception as e:
+                    print(f"Repository creation note: {e}")
                 
                 api.upload_folder(
                     folder_path=final_path,
