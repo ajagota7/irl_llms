@@ -259,7 +259,7 @@ def evaluate_irl_toxicity(
     
     # Sample a subset of the dataset for evaluation
     eval_size = min(100, len(dataset))
-    eval_indices = np.random.choice(len(dataset), eval_size, replace=False)
+    eval_indices = np.random.choice(len(dataset), eval_size, replace=False).tolist()
     eval_samples = [dataset[i] for i in eval_indices]
     
     # Setup generation parameters
