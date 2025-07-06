@@ -13,10 +13,10 @@ model:
   adap_kl_ctrl: true
   use_score_norm: true
   ratio_threshold: 10.0 
-  batch_size: 8       
+  batch_size: 4       
   mini_batch_size: 1   
   forward_batch_size: 1
-  gradient_accumulation_steps: 8
+  gradient_accumulation_steps: 4
   reward_model: "s-nlp/roberta_toxicity_classifier"
   use_raw_logits: true
   
