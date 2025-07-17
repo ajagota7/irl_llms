@@ -12,10 +12,19 @@ First, test that everything works:
 cd src/enhanced_toxicity_evaluation
 
 # Start with the most basic test (recommended)
+python import_test.py
+
+# If that works, try the core components test
 python core_test.py
+
+# If that works, try the dataset loading test
+python dataset_test.py
 
 # If that works, try the minimal test
 python minimal_test.py
+
+# If minimal test fails, try the debug test
+python debug_test.py
 
 # Then try the basic test
 python basic_test.py

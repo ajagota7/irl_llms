@@ -62,6 +62,7 @@ class DatasetManager:
         
         # Use the simple approach that works (same as dataset_generator.py)
         try:
+            logger.info(f"Attempting to load dataset: {dataset_name}")
             dataset = load_dataset(dataset_name, split=split)
             logger.info(f"Loaded dataset with {len(dataset)} samples")
         except Exception as e:
@@ -103,10 +104,14 @@ class DatasetManager:
             logger.info(f"Created fallback dataset with {len(fallback_prompts)} prompts")
         
         # Filter prompts
+        logger.info(f"Filtering prompts from dataset with {len(dataset)} samples")
         filtered_prompts = self._filter_prompts_toxicity_threshold(dataset, max_prompts)
+        logger.info(f"Filtered to {len(filtered_prompts)} prompts")
         
         # Process prompts
+        logger.info("Processing prompts...")
         processed_prompts = self._process_prompts(filtered_prompts)
+        logger.info(f"Processed to {len(processed_prompts)} prompts")
         
         # Cache if enabled
         if cache_file:
@@ -123,31 +128,41 @@ class DatasetManager:
         metrics = filtering_config.get("metrics", ["toxicity"])
         
         logger.info(f"Filtering prompts with threshold {threshold} using metrics {metrics}")
+        logger.info(f"Dataset type: {type(dataset)}")
+        logger.info(f"Dataset length: {len(dataset)}")
         
         filtered_prompts = []
         
-        for item in dataset:
+        for i, item in enumerate(dataset):
+            logger.debug(f"Processing item {i}: {type(item)}")
+            
             # Extract prompt information
             if isinstance(item["prompt"], dict):
                 prompt_text = item["prompt"]["text"]
+                logger.debug(f"  Prompt text: {prompt_text[:50]}...")
                 
                 # Check if any metric exceeds threshold
                 meets_threshold = False
                 for metric in metrics:
                     if metric in item["prompt"]:
                         toxicity_score = item["prompt"][metric]
+                        logger.debug(f"  {metric}: {toxicity_score}")
                         if toxicity_score is not None and toxicity_score > threshold:
                             meets_threshold = True
+                            logger.debug(f"  Meets threshold: {toxicity_score} > {threshold}")
                             break
                 
                 if meets_threshold:
                     filtered_prompts.append(prompt_text)
+                    logger.debug(f"  Added prompt (total: {len(filtered_prompts)})")
             else:
                 # Fallback for different dataset formats
                 prompt_text = str(item["prompt"])
                 filtered_prompts.append(prompt_text)
+                logger.debug(f"  Added fallback prompt (total: {len(filtered_prompts)})")
             
             if len(filtered_prompts) >= max_prompts:
+                logger.info(f"Reached max prompts limit: {max_prompts}")
                 break
         
         # Shuffle if specified
@@ -156,6 +171,7 @@ class DatasetManager:
             random.seed(shuffle_seed)
             random.shuffle(filtered_prompts)
         
+        logger.info(f"Final filtered prompts: {len(filtered_prompts)}")
         return filtered_prompts[:max_prompts]
     
     def _load_real_toxicity_prompts_range(self) -> List[str]:
