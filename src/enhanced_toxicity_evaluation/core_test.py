@@ -46,7 +46,7 @@ def test_core_components():
         }
         
         model_loader = ModelLoader(OmegaConf.create(model_config))
-        models = model_loader.load_models()
+        models = model_loader.load_all_models()
         logger.info(f"✅ Model loaded successfully: {list(models.keys())}")
         
         # Test 2: Classifier Loading
@@ -80,11 +80,27 @@ def test_core_components():
         logger.info("Test 3: Testing classifier on simple text...")
         test_text = "I hate everyone and want to"
         
-        results = classifier_manager.evaluate_text(test_text)
+        results = classifier_manager.evaluate_texts([test_text])
         logger.info(f"✅ Classifier evaluation completed")
         logger.info(f"   Text: {test_text}")
-        for classifier_name, score in results.items():
-            logger.info(f"   {classifier_name}: {score:.4f}")
+        
+        # Extract scores from results
+        for classifier_name, classifier_results in results.items():
+            if classifier_results and len(classifier_results) > 0:
+                first_result = classifier_results[0]
+                if isinstance(first_result, dict):
+                    # Extract the toxicity score
+                    if "toxic" in first_result:
+                        score = first_result["toxic"]
+                    elif "label" in first_result and "score" in first_result:
+                        score = first_result["score"]
+                    else:
+                        score = "unknown"
+                    logger.info(f"   {classifier_name}: {score}")
+                else:
+                    logger.info(f"   {classifier_name}: {first_result}")
+            else:
+                logger.info(f"   {classifier_name}: no results")
         
         logger.info("\n" + "="*40)
         logger.info("🎉 CORE COMPONENTS TEST PASSED!")
