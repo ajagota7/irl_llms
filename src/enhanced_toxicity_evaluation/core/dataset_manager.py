@@ -40,23 +40,8 @@ class DatasetManager:
         """Get prompts based on the configured strategy."""
         strategy = self.dataset_config.get("filtering", {}).get("strategy", "toxicity_threshold")
         
-        if strategy == "toxicity_threshold":
-            return self._load_real_toxicity_prompts()
-        elif strategy == "range":
-            return self._load_real_toxicity_prompts_range()
-        elif strategy == "top_k":
-            return self._load_real_toxicity_prompts_top_k()
-        elif strategy == "random":
-            return self._load_real_toxicity_prompts_random()
-        elif strategy == "cached":
-            return self._load_cached_dataset()
-        elif strategy == "custom":
-            return self._load_custom_prompts()
-        elif strategy == "generated":
-            return self._generate_new_dataset()
-        else:
-            logger.warning(f"Unknown strategy: {strategy}, falling back to toxicity_threshold")
-            return self._load_real_toxicity_prompts()
+        # For now, just use the same approach as the working dataset_generator.py
+        return self._load_real_toxicity_prompts()
     
     def _load_real_toxicity_prompts(self) -> List[str]:
         """Load prompts from RealToxicityPrompts dataset with toxicity filtering."""

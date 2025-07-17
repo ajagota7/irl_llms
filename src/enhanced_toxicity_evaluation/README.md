@@ -12,9 +12,12 @@ First, test that everything works:
 cd src/enhanced_toxicity_evaluation
 
 # Start with the most basic test (recommended)
+python core_test.py
+
+# If that works, try the minimal test
 python minimal_test.py
 
-# If that works, try the basic test
+# Then try the basic test
 python basic_test.py
 
 # Then try the simple test

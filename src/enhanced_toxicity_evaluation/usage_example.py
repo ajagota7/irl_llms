@@ -25,7 +25,7 @@ def create_simple_config():
     config = {
         "experiment": {
             "name": "simple_test",
-            "seed": 42,
+        "seed": 42,
             "device": "auto"
         },
         "models": {
