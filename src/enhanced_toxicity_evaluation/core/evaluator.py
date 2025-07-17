@@ -184,7 +184,7 @@ class ToxicityEvaluator:
             logger.info("Evaluating output toxicity...")
             for model_name, model_outputs in completions.items():
                 output_toxicity = self.classifier_manager.evaluate_texts(model_outputs, f"output_{model_name}")
-                toxicity_results[f"output_{model_name}"] = self.classifier_manager.extract_detailed_scores(output_toxicity)
+                toxicity_results[model_name] = self.classifier_manager.extract_detailed_scores(output_toxicity)
         
         # Evaluate full text toxicity for each model
         if evaluation_types.get("full_text", True):
@@ -215,7 +215,16 @@ class ToxicityEvaluator:
         # Add toxicity scores
         for text_type, classifier_scores in toxicity_results.items():
             for classifier_name, scores in classifier_scores.items():
-                column_name = f"{text_type}_{classifier_name}_score"
+                if text_type == "prompt":
+                    column_name = f"prompt_{classifier_name}_score"
+                elif text_type.startswith("output_"):
+                    model_name = text_type.replace("output_", "")
+                    column_name = f"output_{model_name}_{classifier_name}_score"
+                elif text_type.startswith("full_"):
+                    model_name = text_type.replace("full_", "")
+                    column_name = f"full_{model_name}_{classifier_name}_score"
+                else:
+                    column_name = f"{text_type}_{classifier_name}_score"
                 data[column_name] = scores
         
         # Create DataFrame
@@ -237,12 +246,11 @@ class ToxicityEvaluator:
             classifier_name = col.replace(f"output_{baseline_model}_", "").replace("_score", "")
             
             # Find corresponding columns for other models
-            for model_name in [m for m in toxicity_results.keys() if m.startswith("output_") and m != f"output_{baseline_model}"]:
-                model_short_name = model_name.replace("output_", "")
-                other_col = f"output_{model_short_name}_{classifier_name}_score"
+            for model_name in [m for m in toxicity_results.keys() if m != baseline_model and not m.startswith("prompt")]:
+                other_col = f"output_{model_name}_{classifier_name}_score"
                 
                 if other_col in df.columns:
-                    delta_col = f"delta_{model_short_name}_vs_{baseline_model}_{classifier_name}_score"
+                    delta_col = f"delta_{model_name}_vs_{baseline_model}_{classifier_name}_score"
                     df[delta_col] = df[col] - df[other_col]
     
     def _save_results(self, results_df: pd.DataFrame, metrics: Dict[str, Any], 
