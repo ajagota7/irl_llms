@@ -17,26 +17,20 @@ python import_test.py
 # If that works, try the core components test
 python core_test.py
 
-# If that works, try the dataset loading test
-python dataset_test.py
+# If that works, try the simple dataset test
+python simple_dataset_test.py
+
+# If that works, try the working approach test
+python working_test.py
 
 # If that works, try the minimal test
 python minimal_test.py
 
-# If minimal test fails, try the debug test
+# If minimal test fails, try the bypass test
+python bypass_test.py
+
+# If you encounter dataset issues, try the debug test
 python debug_test.py
-
-# Then try the basic test
-python basic_test.py
-
-# Then try the simple test
-python simple_test.py
-
-# Or try the standard test
-python test_pipeline.py
-
-# If you encounter dataset issues, try the offline test
-python offline_test.py
 ```
 
 These will run minimal evaluations with a small model and dataset to verify the pipeline works correctly.
