@@ -48,7 +48,7 @@ def create_test_config():
             "dataset": {
                 "name": "allenai/real-toxicity-prompts",
                 "split": "train",
-                "max_prompts": 10,  # Very small for testing
+                "max_prompts": 5,  # Very small for testing
                 "shuffle_seed": 42
             },
             "filtering": {
@@ -97,7 +97,7 @@ def create_test_config():
                 "thresholds": ["high_toxicity_rate"]
             },
             "comparison": {
-                "baseline_model": "base"
+                "baseline_model": "test_model"  # Match the model name defined above
             }
         },
         "generation": {

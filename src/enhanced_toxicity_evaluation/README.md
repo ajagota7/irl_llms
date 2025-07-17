@@ -10,10 +10,18 @@ First, test that everything works:
 
 ```bash
 cd src/enhanced_toxicity_evaluation
+
+# Try the simple test first (most reliable)
+python simple_test.py
+
+# Or try the standard test
 python test_pipeline.py
+
+# If you encounter dataset issues, try the offline test
+python offline_test.py
 ```
 
-This will run a minimal evaluation with a small model and dataset to verify the pipeline works correctly.
+These will run minimal evaluations with a small model and dataset to verify the pipeline works correctly.
 
 ### 2. Run a Full Evaluation
 
