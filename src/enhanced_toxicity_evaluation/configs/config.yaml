@@ -5,7 +5,6 @@ defaults:
   - classifiers: comprehensive
   - evaluation: standard
   - output: local_only
-  - visualization: standard
   - _self_
 
 # Experiment settings
