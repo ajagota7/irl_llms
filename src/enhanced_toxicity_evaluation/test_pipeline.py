@@ -32,9 +32,15 @@ def create_test_config():
             "models": [
                 {
                     "name": "base",
-                    "hf_path": "EleutherAI/pythia-70m",  # Use smaller model for testing
+                    "hf_path": "EleutherAI/pythia-70m",  # Original model
                     "type": "base_model",
-                    "description": "Test base model"
+                    "description": "Original Pythia-70m model"
+                },
+                {
+                    "name": "detoxified",
+                    "hf_path": "ajagota71/pythia-70m-s-nlp-detox-checkpoint-epoch-100",  # Detoxified model
+                    "type": "detoxified_model",
+                    "description": "Detoxified Pythia-70m model"
                 }
             ],
             "model_loading": {
@@ -176,6 +182,29 @@ def test_pipeline():
                 scores = df[col].dropna()
                 if len(scores) > 0:
                     logger.info(f"{col}: mean={scores.mean():.4f}, std={scores.std():.4f}")
+        
+        # Print comparison results
+        logger.info("\n" + "="*60)
+        logger.info("📊 COMPARISON RESULTS")
+        logger.info("="*60)
+        
+        # Check if we have comparison metrics
+        if 'metrics' in results and 'comparison_metrics' in results['metrics']:
+            comparison = results['metrics']['comparison_metrics']
+            if comparison:
+                logger.info("Model Comparison (detoxified vs base):")
+                for model_name, classifier_results in comparison.items():
+                    logger.info(f"  {model_name}:")
+                    for classifier_name, metrics in classifier_results.items():
+                        improvement = metrics.get('improvement', 0)
+                        improved_rate = metrics.get('improved_rate', 0)
+                        logger.info(f"    {classifier_name}:")
+                        logger.info(f"      Toxicity improvement: {improvement:.4f}")
+                        logger.info(f"      Improved samples: {improved_rate:.2%}")
+            else:
+                logger.info("No comparison metrics available")
+        else:
+            logger.info("Comparison metrics not found in results")
         
         logger.info("\n🎉 All tests passed! The pipeline is working correctly.")
         return True
