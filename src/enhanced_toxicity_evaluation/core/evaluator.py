@@ -255,8 +255,9 @@ class ToxicityEvaluator:
     
     def _save_results(self, results_df: pd.DataFrame, metrics: Dict[str, Any], 
                      toxicity_results: Dict[str, Dict[str, List[float]]]):
-        """Save all results to disk."""
+        """Save all results to disk and optionally to HuggingFace."""
         output_config = self.output_config.get("local", {})
+        hf_config = self.output_config.get("huggingface", {})
         
         # Save main results DataFrame
         if output_config.get("save_csv", True):
@@ -290,6 +291,55 @@ class ToxicityEvaluator:
         with open(raw_results_path, 'w') as f:
             json.dump(convert_numpy_types(toxicity_results), f, indent=2, default=str)
         logger.info(f"Saved raw toxicity results to {raw_results_path}")
+        
+        # Push to HuggingFace if enabled
+        if hf_config.get("enabled", False):
+            self._push_to_huggingface(results_df, metrics, toxicity_results, hf_config)
+    
+    def _push_to_huggingface(self, results_df: pd.DataFrame, metrics: Dict[str, Any], 
+                           toxicity_results: Dict[str, Dict[str, List[float]]], hf_config: Dict):
+        """Push results to HuggingFace Hub as a dataset."""
+        try:
+            from datasets import Dataset
+            from huggingface_hub import HfApi
+            
+            dataset_name = hf_config.get("dataset_name", "detoxification-evaluation-results")
+            organization = hf_config.get("organization")
+            private = hf_config.get("private", False)
+            token = hf_config.get("token")
+            
+            # Create dataset from DataFrame
+            hf_dataset = Dataset.from_pandas(results_df)
+            
+            # Add metadata
+            metadata = {
+                "description": "Detoxification evaluation results",
+                "metrics": metrics,
+                "experiment_name": self.experiment_config.get("name"),
+                "timestamp": pd.Timestamp.now().isoformat()
+            }
+            hf_dataset.info.metadata = metadata
+            
+            # Determine repo ID
+            if organization:
+                repo_id = f"{organization}/{dataset_name}"
+            else:
+                repo_id = dataset_name
+            
+            # Push to HuggingFace
+            logger.info(f"Pushing dataset to HuggingFace: {repo_id}")
+            hf_dataset.push_to_hub(
+                repo_id,
+                private=private,
+                token=token
+            )
+            
+            logger.info(f"✅ Dataset successfully pushed to HuggingFace: {repo_id}")
+            
+        except ImportError:
+            logger.warning("huggingface_hub not installed. Skipping HuggingFace upload.")
+        except Exception as e:
+            logger.error(f"Failed to push to HuggingFace: {e}")
     
     def _log_to_wandb(self, results_df: pd.DataFrame, metrics: Dict[str, Any], 
                      toxicity_results: Dict[str, Dict[str, List[float]]]):
@@ -307,19 +357,43 @@ class ToxicityEvaluator:
             
             # Log model performance metrics
             for model_name, model_metrics in metrics.get("model_metrics", {}).items():
-                wandb.log({f"{model_name}_mean_toxicity": model_metrics.get("mean", 0.0)})
+                wandb.log({
+                    f"{model_name}_mean_toxicity": model_metrics.get("mean", 0.0),
+                    f"{model_name}_std_toxicity": model_metrics.get("std", 0.0),
+                    f"{model_name}_median_toxicity": model_metrics.get("median", 0.0)
+                })
             
             # Log comparison metrics
             for model_name, comparison_metrics in metrics.get("comparison_metrics", {}).items():
                 for classifier_name, comp_metrics in comparison_metrics.items():
                     wandb.log({
                         f"{model_name}_vs_base_{classifier_name}_improvement": comp_metrics.get("improvement", 0.0),
-                        f"{model_name}_vs_base_{classifier_name}_improved_rate": comp_metrics.get("improved_rate", 0.0)
+                        f"{model_name}_vs_base_{classifier_name}_improved_rate": comp_metrics.get("improved_rate", 0.0),
+                        f"{model_name}_vs_base_{classifier_name}_baseline_mean": comp_metrics.get("baseline_mean", 0.0),
+                        f"{model_name}_vs_base_{classifier_name}_model_mean": comp_metrics.get("model_mean", 0.0)
+                    })
+            
+            # Log toxicity score distributions
+            toxicity_cols = [col for col in results_df.columns if col.endswith('_score')]
+            for col in toxicity_cols:
+                scores = results_df[col].dropna()
+                if len(scores) > 0:
+                    wandb.log({
+                        f"{col}_histogram": wandb.Histogram(scores),
+                        f"{col}_mean": scores.mean(),
+                        f"{col}_std": scores.std()
                     })
             
             # Log sample results table
             sample_df = results_df.head(100)  # Log first 100 rows
             wandb.log({"sample_results": wandb.Table(dataframe=sample_df)})
+            
+            # Log configuration
+            wandb.config.update({
+                "experiment_name": self.experiment_config.get("name"),
+                "models": list(self.model_loader.models.keys()) if hasattr(self.model_loader, 'models') else [],
+                "classifiers": list(self.classifier_manager.classifiers.keys()) if hasattr(self.classifier_manager, 'classifiers') else []
+            })
             
             # Save files as artifacts
             wandb.save(str(self.output_dir / "*.csv"))
