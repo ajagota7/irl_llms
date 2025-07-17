@@ -18,6 +18,7 @@ from .dataset_manager import DatasetManager
 from .classifier_manager import ClassifierManager
 from .generation_engine import GenerationEngine
 from .metrics_calculator import MetricsCalculator
+from .visualizer import ToxicityVisualizer
 
 logger = logging.getLogger(__name__)
 
@@ -32,15 +33,16 @@ class ToxicityEvaluator:
         self.logging_config = config.get("logging", {})
         self.output_config = config.get("output", {})
         
+        # Setup output directory first
+        self.output_dir = self._setup_output_directory()
+        
         # Initialize components
         self.model_loader = ModelLoader(config.get("models", {}))
         self.dataset_manager = DatasetManager(config.get("dataset", {}))
         self.classifier_manager = ClassifierManager(config.get("classifiers", {}))
         self.generation_engine = GenerationEngine(config)
         self.metrics_calculator = MetricsCalculator(config.get("evaluation", {}))
-        
-        # Setup output directory
-        self.output_dir = self._setup_output_directory()
+        self.visualizer = ToxicityVisualizer(self.output_dir, config.get("visualization", {}))
         
         # Setup logging
         self._setup_logging()
@@ -142,10 +144,14 @@ class ToxicityEvaluator:
             logger.info("💾 Saving results...")
             self._save_results(results_df, metrics, toxicity_results)
             
-            # Step 10: Log to WandB
+            # Step 10: Create visualizations
+            logger.info("📊 Creating visualizations...")
+            plot_paths = self._create_visualizations(results_df)
+            
+            # Step 11: Log to WandB
             if self.wandb_run:
                 logger.info("📈 Logging to WandB...")
-                self._log_to_wandb(results_df, metrics, toxicity_results)
+                self._log_to_wandb(results_df, metrics, toxicity_results, plot_paths)
             
             duration = time.time() - start_time
             logger.info(f"✅ Evaluation completed in {duration:.2f} seconds")
@@ -194,6 +200,17 @@ class ToxicityEvaluator:
                 toxicity_results[f"full_{model_name}"] = self.classifier_manager.extract_detailed_scores(full_toxicity)
         
         return toxicity_results
+    
+    def _create_visualizations(self, results_df: pd.DataFrame) -> Dict[str, str]:
+        """Create comprehensive visualizations for the evaluation results."""
+        try:
+            baseline_model = self.config.get("evaluation", {}).get("comparison", {}).get("baseline_model", "base")
+            plot_paths = self.visualizer.create_all_plots(results_df, baseline_model)
+            logger.info(f"Created {len(plot_paths)} visualization plots")
+            return plot_paths
+        except Exception as e:
+            logger.error(f"Error creating visualizations: {e}")
+            return {}
     
     def _create_results_dataframe(self, prompts: List[str], completions: Dict[str, List[str]], 
                                  full_texts: Dict[str, List[str]], 
@@ -292,6 +309,9 @@ class ToxicityEvaluator:
             json.dump(convert_numpy_types(toxicity_results), f, indent=2, default=str)
         logger.info(f"Saved raw toxicity results to {raw_results_path}")
         
+        # Save comprehensive dataset export
+        self._save_comprehensive_dataset(results_df, metrics, toxicity_results)
+        
         # Push to HuggingFace if enabled
         if hf_config.get("enabled", False):
             self._push_to_huggingface(results_df, metrics, toxicity_results, hf_config)
@@ -334,15 +354,121 @@ class ToxicityEvaluator:
                 token=token
             )
             
-            logger.info(f"✅ Dataset successfully pushed to HuggingFace: {repo_id}")
+                    logger.info(f"✅ Dataset successfully pushed to HuggingFace: {repo_id}")
+        
+    except ImportError:
+        logger.warning("huggingface_hub not installed. Skipping HuggingFace upload.")
+    except Exception as e:
+        logger.error(f"Failed to push to HuggingFace: {e}")
+    
+    def _save_comprehensive_dataset(self, results_df: pd.DataFrame, metrics: Dict[str, Any], 
+                                  toxicity_results: Dict[str, Dict[str, List[float]]]):
+        """Save comprehensive dataset exports in multiple formats."""
+        try:
+            # Create dataset directory
+            dataset_dir = self.output_dir / "dataset_exports"
+            dataset_dir.mkdir(exist_ok=True)
             
-        except ImportError:
-            logger.warning("huggingface_hub not installed. Skipping HuggingFace upload.")
+            # Save main results in multiple formats
+            results_df.to_csv(dataset_dir / "toxicity_evaluation_results.csv", index=False)
+            results_df.to_parquet(dataset_dir / "toxicity_evaluation_results.parquet", index=False)
+            results_df.to_json(dataset_dir / "toxicity_evaluation_results.json", orient='records', indent=2)
+            
+            # Save summary statistics
+            summary_stats = {}
+            for col in results_df.columns:
+                if col.endswith('_score'):
+                    scores = results_df[col].dropna()
+                    if len(scores) > 0:
+                        summary_stats[col] = {
+                            'count': len(scores),
+                            'mean': float(scores.mean()),
+                            'std': float(scores.std()),
+                            'min': float(scores.min()),
+                            'max': float(scores.max()),
+                            'median': float(scores.median()),
+                            'q25': float(scores.quantile(0.25)),
+                            'q75': float(scores.quantile(0.75))
+                        }
+            
+            with open(dataset_dir / "summary_statistics.json", 'w') as f:
+                json.dump(summary_stats, f, indent=2)
+            
+            # Save model comparison data
+            delta_cols = [col for col in results_df.columns if col.startswith('delta_')]
+            if delta_cols:
+                comparison_df = results_df[['prompt'] + delta_cols].copy()
+                comparison_df.to_csv(dataset_dir / "model_comparisons.csv", index=False)
+                comparison_df.to_json(dataset_dir / "model_comparisons.json", orient='records', indent=2)
+            
+            # Save prompt analysis
+            prompt_analysis = {
+                'total_prompts': len(results_df),
+                'prompt_lengths': [len(p) for p in results_df['prompt']],
+                'unique_prompts': len(results_df['prompt'].unique()),
+                'prompt_samples': results_df['prompt'].head(100).tolist()
+            }
+            
+            with open(dataset_dir / "prompt_analysis.json", 'w') as f:
+                json.dump(prompt_analysis, f, indent=2)
+            
+            # Save configuration snapshot
+            config_snapshot = {
+                'experiment_name': self.experiment_config.get("name"),
+                'models': list(self.model_loader.models.keys()) if hasattr(self.model_loader, 'models') else [],
+                'classifiers': list(self.classifier_manager.classifiers.keys()) if hasattr(self.classifier_manager, 'classifiers') else [],
+                'generation_params': self.generation_engine.get_generation_info(),
+                'dataset_info': self.dataset_manager.get_dataset_info(),
+                'evaluation_config': self.config.get("evaluation", {}),
+                'timestamp': pd.Timestamp.now().isoformat()
+            }
+            
+            with open(dataset_dir / "experiment_config.json", 'w') as f:
+                json.dump(config_snapshot, f, indent=2)
+            
+            # Create README for the dataset
+            readme_content = f"""# Toxicity Evaluation Dataset
+
+## Overview
+This dataset contains comprehensive toxicity evaluation results for multiple language models.
+
+## Files
+- `toxicity_evaluation_results.csv` - Main results with all scores and comparisons
+- `toxicity_evaluation_results.parquet` - Same data in Parquet format (more efficient)
+- `toxicity_evaluation_results.json` - Same data in JSON format
+- `summary_statistics.json` - Statistical summary of all toxicity scores
+- `model_comparisons.csv` - Direct model comparison data
+- `prompt_analysis.json` - Analysis of the prompts used
+- `experiment_config.json` - Complete experiment configuration
+
+## Experiment Details
+- **Experiment Name**: {self.experiment_config.get("name")}
+- **Total Prompts**: {len(results_df)}
+- **Models Evaluated**: {len([col for col in results_df.columns if col.startswith('output_') and not col.endswith('_score')])}
+- **Classifiers Used**: {len(set([col.split('_')[-2] for col in results_df.columns if col.endswith('_score') and 'prompt_' not in col]))}
+
+## Usage
+Load the main results:
+```python
+import pandas as pd
+df = pd.read_csv('toxicity_evaluation_results.csv')
+```
+
+## Citation
+If you use this dataset, please cite the original RealToxicityPrompts paper and this evaluation framework.
+"""
+            
+            with open(dataset_dir / "README.md", 'w') as f:
+                f.write(readme_content)
+            
+            logger.info(f"Saved comprehensive dataset exports to {dataset_dir}")
+            
         except Exception as e:
-            logger.error(f"Failed to push to HuggingFace: {e}")
+            logger.error(f"Error saving comprehensive dataset: {e}")
     
     def _log_to_wandb(self, results_df: pd.DataFrame, metrics: Dict[str, Any], 
-                     toxicity_results: Dict[str, Dict[str, List[float]]]):
+                     toxicity_results: Dict[str, Dict[str, List[float]]], 
+                     plot_paths: Dict[str, str] = None):
         """Log results to Weights & Biases."""
         if not self.wandb_run:
             return
@@ -398,6 +524,12 @@ class ToxicityEvaluator:
             # Save files as artifacts
             wandb.save(str(self.output_dir / "*.csv"))
             wandb.save(str(self.output_dir / "*.json"))
+            
+            # Log plots if available
+            if plot_paths:
+                for plot_name, plot_path in plot_paths.items():
+                    if plot_path.endswith('.png'):
+                        wandb.log({f"plots/{plot_name}": wandb.Image(plot_path)})
             
         except Exception as e:
             logger.warning(f"Failed to log to WandB: {e}")

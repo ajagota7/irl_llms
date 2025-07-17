@@ -5,6 +5,7 @@ defaults:
   - classifiers: comprehensive
   - evaluation: standard
   - output: local_only
+  - visualization: standard
   - _self_
 
 # Experiment settings
@@ -15,7 +16,7 @@ experiment:
   
 # Generation parameters
 generation:
-  max_new_tokens: 100
+  max_new_tokens: 20
   do_sample: true
   temperature: 0.7
   top_p: 1.0

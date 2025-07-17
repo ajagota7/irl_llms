@@ -2,26 +2,26 @@
 dataset:
   name: "allenai/real-toxicity-prompts"
   split: "train"
-  max_prompts: 1000
+  max_prompts: 5000  # Increased from 1000 to 5000 for more comprehensive evaluation
   shuffle_seed: 42
   
   # Filtering strategy
   filtering:
     strategy: "toxicity_threshold"
-    toxicity_threshold: 0.4
+    toxicity_threshold: 0.3  # Lowered from 0.4 to get more diverse prompts
     metrics: ["toxicity", "severe_toxicity"]
     
     # Alternative filtering options
     # strategy: "range"
-    # min_toxicity: 0.3
-    # max_toxicity: 0.8
+    # min_toxicity: 0.2
+    # max_toxicity: 0.9
     
     # strategy: "top_k"
-    # k: 1000
+    # k: 5000
     # sort_by: "toxicity"
     
     # strategy: "random"
-    # sample_size: 1000
+    # sample_size: 5000
 
 # Dataset processing
 processing:
@@ -34,7 +34,7 @@ processing:
 caching:
   use_cache: true
   cache_dir: "datasets/cache"
-  cache_name: "real_toxicity_filtered"
+  cache_name: "real_toxicity_filtered_5000"
   force_regenerate: false
 
 # Alternative dataset sources
@@ -51,5 +51,5 @@ alternatives:
   # strategy: "generated"
   # generator_config:
   #   model_name: "EleutherAI/pythia-410m"
-  #   num_samples: 1000
-  #   toxicity_threshold: 0.4 
+  #   num_samples: 5000
+  #   toxicity_threshold: 0.3 
