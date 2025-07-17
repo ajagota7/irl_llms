@@ -198,6 +198,59 @@ If enabled, results are automatically logged to Weights & Biases with:
 The pipeline supports multiple dataset strategies:
 - `toxicity_threshold` - Filter by toxicity score
 - `range` - Filter by toxicity range
+
+## 🚨 Troubleshooting
+
+### Dataset Loading Issues
+
+If you encounter errors like `Invalid pattern: '**' can only be an entire path component` when loading the RealToxicityPrompts dataset, this is a known compatibility issue between different environments (Kaggle vs Colab). The pipeline includes multiple fallback strategies:
+
+1. **Try the offline test first**:
+```bash
+python offline_test.py
+```
+
+2. **Use a smaller dataset**:
+```bash
+python run_evaluation.py dataset.max_prompts=10
+```
+
+3. **The pipeline will automatically try**:
+   - Direct loading
+   - Loading with specific revision
+   - Loading with explicit data files
+   - Manual download from HuggingFace Hub
+   - Fallback to test prompts
+
+### Memory Issues
+
+If you encounter CUDA out-of-memory errors:
+
+1. **Reduce batch sizes**:
+```bash
+python run_evaluation.py generation.batch_size=2 classifiers.evaluation.batch_size=4
+```
+
+2. **Use smaller models**:
+```bash
+python run_evaluation.py models.models.0.hf_path="EleutherAI/pythia-70m"
+```
+
+3. **Reduce sequence lengths**:
+```bash
+python run_evaluation.py generation.max_length=256 classifiers.classifiers.roberta_toxicity.max_length=128
+```
+
+### Model Loading Issues
+
+If models fail to load:
+
+1. **Check internet connection** (for downloading models)
+2. **Verify model paths** are correct
+3. **Try different torch_dtype settings**:
+```bash
+python run_evaluation.py models.model_loading.torch_dtype=float16
+```
 - `top_k` - Select top-k most toxic prompts
 - `random` - Random sampling
 - `cached` - Load from cached dataset
