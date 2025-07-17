@@ -97,7 +97,7 @@ def create_test_config():
                 "thresholds": ["high_toxicity_rate"]
             },
             "comparison": {
-                "baseline_model": "test_model"  # Match the model name defined above
+                "baseline_model": "base"  # Match the model name defined above
             }
         },
         "generation": {
