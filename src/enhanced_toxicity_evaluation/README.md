@@ -11,7 +11,13 @@ First, test that everything works:
 ```bash
 cd src/enhanced_toxicity_evaluation
 
-# Try the simple test first (most reliable)
+# Start with the most basic test (recommended)
+python minimal_test.py
+
+# If that works, try the basic test
+python basic_test.py
+
+# Then try the simple test
 python simple_test.py
 
 # Or try the standard test
