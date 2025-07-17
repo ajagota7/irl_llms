@@ -354,7 +354,7 @@ class ToxicityEvaluator:
                 token=token
             )
             
-                    logger.info(f"✅ Dataset successfully pushed to HuggingFace: {repo_id}")
+            logger.info(f"✅ Dataset successfully pushed to HuggingFace: {repo_id}")
         
     except ImportError:
         logger.warning("huggingface_hub not installed. Skipping HuggingFace upload.")
