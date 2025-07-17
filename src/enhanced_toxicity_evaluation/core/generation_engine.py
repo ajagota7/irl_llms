@@ -140,12 +140,16 @@ class GenerationEngine:
         
         return batch_outputs
     
-    def generate_full_texts(self, models: Dict[str, Any], prompts: List[str]) -> Dict[str, List[str]]:
+    def generate_full_texts(self, models: Dict[str, Any], prompts: List[str], 
+                           existing_completions: Optional[Dict[str, List[str]]] = None) -> Dict[str, List[str]]:
         """Generate full texts (prompt + completion) for all models."""
         logger.info("Generating full texts for all models")
         
-        # First generate completions
-        completions = self.generate_all(models, prompts)
+        # Use existing completions if provided, otherwise generate new ones
+        if existing_completions is None:
+            completions = self.generate_all(models, prompts)
+        else:
+            completions = existing_completions
         
         # Combine prompts with completions
         full_texts = {}

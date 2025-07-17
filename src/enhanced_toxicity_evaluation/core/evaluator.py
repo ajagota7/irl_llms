@@ -124,7 +124,7 @@ class ToxicityEvaluator:
             
             # Step 5: Generate full texts
             logger.info("📝 Generating full texts...")
-            full_texts = self.generation_engine.generate_full_texts(models, prompts)
+            full_texts = self.generation_engine.generate_full_texts(models, prompts, completions)
             
             # Step 6: Evaluate toxicity
             logger.info("🔍 Evaluating toxicity...")

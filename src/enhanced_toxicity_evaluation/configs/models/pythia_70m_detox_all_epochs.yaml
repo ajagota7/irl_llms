@@ -1,0 +1,48 @@
+# Pythia-70m detoxification progression configuration
+# All checkpoints from epochs 20, 40, 60, 80, 100
+
+models:
+  - name: "base"
+    hf_path: "EleutherAI/pythia-70m"
+    type: "base_model"
+    description: "Original Pythia-70m model"
+    
+  - name: "detox_epoch_20"
+    hf_path: "ajagota71/pythia-70m-s-nlp-detox-checkpoint-epoch-20"
+    type: "detoxified_model"
+    description: "Detoxified Pythia-70m model - Epoch 20"
+    
+  - name: "detox_epoch_40"
+    hf_path: "ajagota71/pythia-70m-s-nlp-detox-checkpoint-epoch-40"
+    type: "detoxified_model"
+    description: "Detoxified Pythia-70m model - Epoch 40"
+    
+  - name: "detox_epoch_60"
+    hf_path: "ajagota71/pythia-70m-s-nlp-detox-checkpoint-epoch-60"
+    type: "detoxified_model"
+    description: "Detoxified Pythia-70m model - Epoch 60"
+    
+  - name: "detox_epoch_80"
+    hf_path: "ajagota71/pythia-70m-s-nlp-detox-checkpoint-epoch-80"
+    type: "detoxified_model"
+    description: "Detoxified Pythia-70m model - Epoch 80"
+    
+  - name: "detox_epoch_100"
+    hf_path: "ajagota71/pythia-70m-s-nlp-detox-checkpoint-epoch-100"
+    type: "detoxified_model"
+    description: "Detoxified Pythia-70m model - Epoch 100"
+
+# Model loading settings optimized for Pythia-70m
+model_loading:
+  device_map: "auto"
+  torch_dtype: "float16"  # Efficient for 70m model
+  trust_remote_code: true
+  load_in_8bit: false     # Not needed for small model
+  load_in_4bit: false
+  low_cpu_mem_usage: true
+  
+# Fallback settings
+fallback_settings:
+  small_models:  # Pythia-70m fits here
+    torch_dtype: "float16"
+    load_in_8bit: false
