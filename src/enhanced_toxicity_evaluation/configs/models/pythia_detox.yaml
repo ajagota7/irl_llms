@@ -1,0 +1,52 @@
+# Pythia detoxification model configuration
+models:
+  - name: "base"
+    hf_path: "EleutherAI/pythia-410m"
+    type: "base_model"
+    description: "Original Pythia-410M model"
+    
+  - name: "epoch_20"
+    hf_path: "ajagota71/pythia-410m-s-nlp-detox-checkpoint-epoch-20"
+    type: "checkpoint"
+    description: "Detoxified model at epoch 20"
+    
+  - name: "epoch_40"
+    hf_path: "ajagota71/pythia-410m-s-nlp-detox-checkpoint-epoch-40"
+    type: "checkpoint"
+    description: "Detoxified model at epoch 40"
+    
+  - name: "epoch_60"
+    hf_path: "ajagota71/pythia-410m-s-nlp-detox-checkpoint-epoch-60"
+    type: "checkpoint"
+    description: "Detoxified model at epoch 60"
+    
+  - name: "epoch_80"
+    hf_path: "ajagota71/pythia-410m-s-nlp-detox-checkpoint-epoch-80"
+    type: "checkpoint"
+    description: "Detoxified model at epoch 80"
+    
+  - name: "epoch_100"
+    hf_path: "ajagota71/pythia-410m-s-nlp-detox-checkpoint-epoch-100"
+    type: "checkpoint"
+    description: "Detoxified model at epoch 100"
+
+# Model loading settings
+model_loading:
+  device_map: "auto"
+  torch_dtype: "auto"  # Will be determined based on model size
+  trust_remote_code: true
+  load_in_8bit: false
+  load_in_4bit: false
+  low_cpu_mem_usage: true
+  
+# Fallback settings for different model sizes
+fallback_settings:
+  large_models:  # Models > 1B parameters
+    torch_dtype: "bfloat16"
+    load_in_8bit: true
+  medium_models:  # Models 100M-1B parameters
+    torch_dtype: "float16"
+    load_in_8bit: false
+  small_models:  # Models < 100M parameters
+    torch_dtype: "float32"
+    load_in_8bit: false 

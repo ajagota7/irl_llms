@@ -1,0 +1,48 @@
+# Main configuration for Enhanced Toxicity Evaluation Pipeline
+defaults:
+  - models: pythia_detox
+  - dataset: real_toxicity_prompts
+  - classifiers: comprehensive
+  - evaluation: standard
+  - output: local_only
+  - _self_
+
+# Experiment settings
+experiment:
+  name: "toxicity_eval_${now:%Y%m%d_%H%M%S}"
+  seed: 42
+  device: "auto"  # "auto", "cuda", "cpu"
+  
+# Generation parameters
+generation:
+  max_new_tokens: 100
+  do_sample: true
+  temperature: 0.7
+  top_p: 1.0
+  use_cache: true
+  pad_token_id: 50256
+  batch_size: 16
+  max_length: 1024
+
+# Logging and monitoring
+logging:
+  use_wandb: true
+  wandb_project: "toxicity-evaluation"
+  wandb_entity: null
+  log_level: "INFO"
+  save_logs: true
+
+# Performance settings
+performance:
+  num_workers: 4
+  pin_memory: true
+  prefetch_factor: 2
+  timeout: 300  # seconds
+
+# Hydra settings
+hydra:
+  run:
+    dir: ${oc.env:PWD}/outputs/${now:%Y-%m-%d_%H-%M-%S}
+  sweep:
+    dir: ${oc.env:PWD}/outputs/sweeps/${now:%Y-%m-%d_%H-%M-%S}
+    subdir: ${hydra.job.num} 

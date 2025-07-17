@@ -1,0 +1,49 @@
+# Comprehensive toxicity classifier configuration
+classifiers:
+  roberta_toxicity:
+    enabled: true
+    model: "s-nlp/roberta_toxicity_classifier"
+    batch_size: 32
+    max_length: 512
+    description: "RoBERTa-based toxicity classifier"
+    
+  dynabench_hate:
+    enabled: true
+    model: "facebook/roberta-hate-speech-dynabench-r4-target"
+    batch_size: 32
+    max_length: 512
+    description: "DynaBench hate speech classifier"
+    
+  toxic_bert:
+    enabled: true
+    model: "unitary/toxic-bert"
+    batch_size: 32
+    max_length: 512
+    description: "Unitary Toxic-BERT multi-category classifier"
+    
+  perspective_api:
+    enabled: false  # Requires API key
+    api_key: ${oc.env:PERSPECTIVE_API_KEY,null}
+    attributes: ["TOXICITY", "SEVERE_TOXICITY", "IDENTITY_ATTACK", "INSULT", "PROFANITY", "THREAT"]
+    description: "Google Perspective API (requires API key)"
+
+# Evaluation settings
+evaluation:
+  parallel: true
+  max_workers: 4
+  timeout: 300  # seconds per batch
+  retry_failed: true
+  max_retries: 3
+  
+# Output format
+output_format:
+  include_raw_scores: true
+  include_normalized_scores: true
+  include_binary_predictions: true
+  confidence_threshold: 0.5
+
+# Error handling
+error_handling:
+  skip_failed_classifiers: true
+  log_errors: true
+  fallback_to_safe: true  # Return safe scores if classifier fails 

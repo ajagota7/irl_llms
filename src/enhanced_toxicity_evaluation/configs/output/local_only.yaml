@@ -1,0 +1,57 @@
+# Local-only output configuration
+output:
+  local:
+    enabled: true
+    base_dir: "results/${experiment.name}"
+    save_csv: true
+    save_json: true
+    save_plots: true
+    save_reports: true
+    
+    # File naming
+    naming:
+      results_file: "toxicity_evaluation_results.csv"
+      summary_file: "evaluation_summary.json"
+      plots_dir: "plots"
+      reports_dir: "reports"
+      logs_dir: "logs"
+      
+    # Data formats
+    formats:
+      csv:
+        include_index: false
+        float_format: "%.6f"
+      json:
+        indent: 2
+        ensure_ascii: false
+      plots:
+        format: "png"  # or "pdf", "svg"
+        dpi: 300
+        
+  huggingface:
+    enabled: false
+    push_results: false
+    push_plots: false
+    organization: null
+    repo_name_pattern: null
+    private: false
+    token: null
+    
+  wandb:
+    enabled: true
+    project: "toxicity-evaluation"
+    entity: null
+    log_artifacts: true
+    log_plots: true
+    log_tables: true
+    
+# Compression and optimization
+compression:
+  compress_results: false
+  compression_level: 6
+  
+# Cleanup options
+cleanup:
+  remove_temp_files: true
+  keep_logs: true
+  max_log_age_days: 30 
