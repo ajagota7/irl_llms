@@ -1,0 +1,148 @@
+# Comprehensive visualization configuration for Enhanced Toxicity Evaluation Pipeline
+visualization:
+  # General settings
+  enabled: true
+  save_plots_locally: true
+  save_plots_format: "png"  # png, pdf, svg, html
+  plot_dpi: 300
+  plot_height: 600
+  plot_width: 800
+  
+  # Interactive plots settings
+  interactive:
+    enabled: true
+    use_plotly: true
+    hover_mode: "closest"
+    show_legend: true
+    legend_position: "top-right"
+    
+  # Scatter plots configuration
+  scatter_plots:
+    enabled: true
+    marker_size: 4
+    marker_opacity: 0.6
+    show_diagonal_line: true
+    diagonal_line_color: "red"
+    diagonal_line_style: "dash"
+    
+  # Delta/improvement plots configuration
+  delta_plots:
+    enabled: true
+    histogram_bins: 40
+    overlay_mode: true
+    show_zero_line: true
+    zero_line_color: "red"
+    zero_line_style: "dash"
+    
+  # Progression plots configuration
+  progression_plots:
+    enabled: true
+    show_error_bars: false
+    error_bar_type: "data"  # data, percent, constant
+    line_width: 3
+    marker_size: 8
+    show_zero_line: true
+    
+  # Model comparison plots configuration
+  comparison_plots:
+    enabled: true
+    heatmap_colorscale: "RdYlGn"
+    ranking_plot_type: "bar"  # bar, horizontal_bar
+    show_confidence_intervals: true
+    
+  # Individual prompt tracking configuration
+  prompt_tracking:
+    enabled: true
+    max_prompts_to_show: 50
+    trajectory_line_width: 1
+    trajectory_opacity: 0.7
+    show_average_trajectory: true
+    average_line_width: 4
+    average_line_color: "blue"
+    
+  # Statistical analysis configuration
+  statistical_analysis:
+    enabled: true
+    confidence_level: 0.95
+    significance_test: "t_test"  # t_test, mann_whitney, wilcoxon
+    show_p_values: true
+    multiple_comparison_correction: "bonferroni"  # bonferroni, fdr, none
+    
+  # Text type analysis configuration
+  text_type_analysis:
+    enabled: true
+    violin_plot_mode: "overlay"
+    show_distribution_stats: true
+    compare_prompt_output_full: true
+    
+  # Advanced dashboard configuration
+  advanced_dashboard:
+    enabled: true
+    enable_3d_plots: true
+    enable_animations: true
+    animation_duration: 1000
+    enable_custom_controls: true
+    
+  # Color schemes
+  colors:
+    models:
+      base: "#34495e"
+      epoch_20: "#3498db"
+      epoch_40: "#2ecc71"
+      epoch_60: "#f39c12"
+      epoch_80: "#e74c3c"
+      epoch_100: "#9b59b6"
+      
+    categories:
+      toxic: "#e74c3c"
+      severe_toxic: "#c0392b"
+      obscene: "#f39c12"
+      threat: "#e67e22"
+      insult: "#9b59b6"
+      identity_hate: "#8e44ad"
+      
+    classifiers:
+      roberta: "#3498db"
+      dynabench: "#2ecc71"
+      
+  # WandB integration
+  wandb:
+    log_plots: true
+    log_tables: true
+    log_artifacts: true
+    log_complete_csv: true
+    csv_preview_rows: 1000
+    artifact_name_pattern: "complete_results_{experiment_name}"
+    
+  # Export settings
+  export:
+    save_html: true
+    save_png: true
+    save_pdf: false
+    save_svg: false
+    include_metadata: true
+    metadata_format: "json"
+    
+  # Performance settings
+  performance:
+    max_data_points: 10000  # Limit for large datasets
+    subsample_large_datasets: true
+    subsample_method: "random"  # random, systematic, stratified
+    parallel_plotting: false  # Enable if matplotlib backend supports it
+    
+  # Customization
+  customization:
+    theme: "default"  # default, dark, light, custom
+    font_family: "Arial, sans-serif"
+    font_size: 12
+    title_font_size: 14
+    axis_font_size: 11
+    legend_font_size: 10
+    
+  # Quality settings
+  quality:
+    high_dpi: true
+    vector_graphics: false
+    anti_aliasing: true
+    compression: true
+    compression_quality: 90 

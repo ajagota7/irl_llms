@@ -1,0 +1,26 @@
+# Custom dataset configuration for 500 prompts with toxicity > 0.5
+dataset:
+  name: "allenai/real-toxicity-prompts"
+  split: "train"
+  max_prompts: 500
+  shuffle_seed: 42
+  
+# Filtering strategy
+filtering:
+  strategy: "toxicity_threshold"
+  toxicity_threshold: 0.5  # Higher toxicity threshold
+  metrics: ["toxicity", "severe_toxicity"]
+
+# Dataset processing
+processing:
+  min_prompt_length: 10
+  max_prompt_length: 200
+  remove_duplicates: true
+  normalize_whitespace: true
+  
+# Caching options
+caching:
+  use_cache: true
+  cache_dir: "datasets/cache"
+  cache_name: "real_toxicity_filtered_05_500"
+  force_regenerate: false

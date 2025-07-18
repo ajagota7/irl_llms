@@ -1,0 +1,17 @@
+# Comprehensive WandB logging configuration
+output:
+  local:
+    enabled: true
+    base_dir: "results/${experiment.name}"
+    save_csv: true
+    save_json: true
+    save_plots: true
+    save_reports: true
+    
+  wandb:
+    enabled: true
+    project: "pythia-detoxification-analysis"
+    entity: null  # Set to your wandb username if needed
+    log_artifacts: true
+    log_plots: true
+    log_tables: true

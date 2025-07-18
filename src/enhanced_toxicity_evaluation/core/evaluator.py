@@ -18,6 +18,7 @@ from .dataset_manager import DatasetManager
 from .classifier_manager import ClassifierManager
 from .generation_engine import GenerationEngine
 from .metrics_calculator import MetricsCalculator
+from .visualization_manager import VisualizationManager
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,7 @@ class ToxicityEvaluator:
         self.classifier_manager = ClassifierManager(config.get("classifiers", {}))
         self.generation_engine = GenerationEngine(config)
         self.metrics_calculator = MetricsCalculator(config.get("evaluation", {}))
+        self.visualization_manager = VisualizationManager(config, self.output_dir)
         
         # Setup output directory
         self.output_dir = self._setup_output_directory()
@@ -45,10 +47,8 @@ class ToxicityEvaluator:
         # Setup logging
         self._setup_logging()
         
-        # Initialize wandb if enabled
+        # Initialize wandb if enabled (now handled by visualization manager)
         self.wandb_run = None
-        if self.logging_config.get("use_wandb", True):
-            self._setup_wandb()
         
         logger.info(f"ToxicityEvaluator initialized with output_dir: {self.output_dir}")
     
@@ -82,19 +82,9 @@ class ToxicityEvaluator:
         )
     
     def _setup_wandb(self):
-        """Setup Weights & Biases logging."""
-        try:
-            self.wandb_run = wandb.init(
-                project=self.logging_config.get("wandb_project", "toxicity-evaluation"),
-                entity=self.logging_config.get("wandb_entity"),
-                name=self.experiment_config.get("name"),
-                config=OmegaConf.to_container(self.config, resolve=True),
-                tags=self.logging_config.get("wandb_tags", [])
-            )
-            logger.info(f"WandB initialized: {self.wandb_run.get_url()}")
-        except Exception as e:
-            logger.warning(f"Failed to initialize WandB: {e}")
-            self.wandb_run = None
+        """Setup Weights & Biases logging (deprecated - now handled by visualization manager)."""
+        logger.warning("_setup_wandb is deprecated. WandB is now handled by VisualizationManager.")
+        pass
     
     def run_evaluation(self) -> Dict[str, Any]:
         """Run the complete toxicity evaluation pipeline."""
@@ -142,10 +132,9 @@ class ToxicityEvaluator:
             logger.info("💾 Saving results...")
             self._save_results(results_df, metrics, toxicity_results)
             
-            # Step 10: Log to WandB
-            if self.wandb_run:
-                logger.info("📈 Logging to WandB...")
-                self._log_to_wandb(results_df, metrics, toxicity_results)
+            # Step 10: Create comprehensive visualizations and log to WandB
+            logger.info("📈 Creating visualizations and logging to WandB...")
+            self.visualization_manager.create_comprehensive_visualizations(results_df, metrics)
             
             duration = time.time() - start_time
             logger.info(f"✅ Evaluation completed in {duration:.2f} seconds")
@@ -343,64 +332,9 @@ class ToxicityEvaluator:
     
     def _log_to_wandb(self, results_df: pd.DataFrame, metrics: Dict[str, Any], 
                      toxicity_results: Dict[str, Dict[str, List[float]]]):
-        """Log results to Weights & Biases."""
-        if not self.wandb_run:
-            return
-        
-        try:
-            # Log basic metrics
-            wandb.log({
-                "total_prompts": len(results_df),
-                "total_models": len([col for col in results_df.columns if col.startswith("output_") and not col.endswith("_score")]),
-                "total_classifiers": len([col for col in results_df.columns if col.endswith("_score")])
-            })
-            
-            # Log model performance metrics
-            for model_name, model_metrics in metrics.get("model_metrics", {}).items():
-                wandb.log({
-                    f"{model_name}_mean_toxicity": model_metrics.get("mean", 0.0),
-                    f"{model_name}_std_toxicity": model_metrics.get("std", 0.0),
-                    f"{model_name}_median_toxicity": model_metrics.get("median", 0.0)
-                })
-            
-            # Log comparison metrics
-            for model_name, comparison_metrics in metrics.get("comparison_metrics", {}).items():
-                for classifier_name, comp_metrics in comparison_metrics.items():
-                    wandb.log({
-                        f"{model_name}_vs_base_{classifier_name}_improvement": comp_metrics.get("improvement", 0.0),
-                        f"{model_name}_vs_base_{classifier_name}_improved_rate": comp_metrics.get("improved_rate", 0.0),
-                        f"{model_name}_vs_base_{classifier_name}_baseline_mean": comp_metrics.get("baseline_mean", 0.0),
-                        f"{model_name}_vs_base_{classifier_name}_model_mean": comp_metrics.get("model_mean", 0.0)
-                    })
-            
-            # Log toxicity score distributions
-            toxicity_cols = [col for col in results_df.columns if col.endswith('_score')]
-            for col in toxicity_cols:
-                scores = results_df[col].dropna()
-                if len(scores) > 0:
-                    wandb.log({
-                        f"{col}_histogram": wandb.Histogram(scores),
-                        f"{col}_mean": scores.mean(),
-                        f"{col}_std": scores.std()
-                    })
-            
-            # Log sample results table
-            sample_df = results_df.head(100)  # Log first 100 rows
-            wandb.log({"sample_results": wandb.Table(dataframe=sample_df)})
-            
-            # Log configuration
-            wandb.config.update({
-                "experiment_name": self.experiment_config.get("name"),
-                "models": list(self.model_loader.models.keys()) if hasattr(self.model_loader, 'models') else [],
-                "classifiers": list(self.classifier_manager.classifiers.keys()) if hasattr(self.classifier_manager, 'classifiers') else []
-            })
-            
-            # Save files as artifacts
-            wandb.save(str(self.output_dir / "*.csv"))
-            wandb.save(str(self.output_dir / "*.json"))
-            
-        except Exception as e:
-            logger.warning(f"Failed to log to WandB: {e}")
+        """Log results to Weights & Biases (deprecated - now handled by visualization manager)."""
+        logger.warning("_log_to_wandb is deprecated. WandB logging is now handled by VisualizationManager.")
+        pass
     
     def _cleanup(self):
         """Clean up resources."""
@@ -412,9 +346,8 @@ class ToxicityEvaluator:
         # Cleanup classifiers
         self.classifier_manager.cleanup()
         
-        # Finish WandB run
-        if self.wandb_run:
-            wandb.finish()
+        # Cleanup visualization manager (includes WandB cleanup)
+        self.visualization_manager.cleanup()
         
         logger.info("Cleanup completed")
     
