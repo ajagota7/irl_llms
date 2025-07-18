@@ -33,6 +33,9 @@ class ToxicityEvaluator:
         self.logging_config = config.get("logging", {})
         self.output_config = config.get("output", {})
         
+        # Setup output directory first
+        self.output_dir = self._setup_output_directory()
+        
         # Initialize components
         self.model_loader = ModelLoader(config.get("models", {}))
         self.dataset_manager = DatasetManager(config.get("dataset", {}))
@@ -40,9 +43,6 @@ class ToxicityEvaluator:
         self.generation_engine = GenerationEngine(config)
         self.metrics_calculator = MetricsCalculator(config.get("evaluation", {}))
         self.visualization_manager = VisualizationManager(config, self.output_dir)
-        
-        # Setup output directory
-        self.output_dir = self._setup_output_directory()
         
         # Setup logging
         self._setup_logging()
