@@ -3,23 +3,27 @@ Comprehensive visualization manager for the Enhanced Toxicity Evaluation Pipelin
 Provides interactive plots, statistical analysis, and WandB integration.
 """
 
+import sys
+import logging
 import os
+from pathlib import Path
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-import plotly.express as px
 import plotly.graph_objects as go
+import plotly.express as px
 from plotly.subplots import make_subplots
+import plotly.offline as pyo
 import wandb
-from typing import Dict, List, Optional, Any, Tuple
-import warnings
-from pathlib import Path
-import logging
+from typing import Dict, List, Tuple, Any, Optional
+import json
+
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 warnings.filterwarnings('ignore')
-
-logger = logging.getLogger(__name__)
 
 
 class VisualizationManager:
@@ -196,41 +200,525 @@ class VisualizationManager:
         
         return df_copy
     
-    def create_comprehensive_visualizations(self, results_df: pd.DataFrame, metrics: Dict[str, Any]):
-        """Create all comprehensive visualizations and log to WandB."""
+    def create_comprehensive_visualizations(self, df: pd.DataFrame, metrics: Dict[str, Any]):
+        """Create comprehensive visualizations and log to WandB."""
         logger.info("🎨 Creating comprehensive visualizations...")
         
-        # Debug: Print column information
-        logger.info(f"📊 DataFrame shape: {results_df.shape}")
-        logger.info(f"📝 Columns: {list(results_df.columns)}")
+        # Create basic visualizations
+        self._create_basic_plots(df)
         
-        try:
-            # Log the full CSV to WandB
-            self._log_full_csv_to_wandb(results_df)
-            
-            # Create all visualization types
-            self.create_interactive_scatter_plots(results_df)
-            self.create_interactive_delta_plots(results_df)
-            self.create_interactive_progression_plots(results_df)
-            self.create_model_comparison_plots(results_df)
-            self.create_individual_prompt_tracking(results_df)
-            self.create_statistical_analysis(results_df)
-            self.create_text_type_analysis(results_df)
-            self.create_advanced_interactive_dashboard(results_df)
-            
-            # Create Toxic-BERT category visualizations
-            self.create_toxic_bert_category_analysis(results_df)
-            
-            # Log comprehensive metrics
-            self._log_comprehensive_metrics(results_df, metrics)
-            
-            logger.info("✅ All visualizations created and logged successfully!")
-            
-        except Exception as e:
-            logger.error(f"❌ Error during visualization creation: {e}")
-            import traceback
-            logger.error(f"Traceback: {traceback.format_exc()}")
-            raise
+        # Create advanced visualizations (if we have multiple models)
+        if self._has_multiple_models(df):
+            self._create_advanced_plots(df)
+        
+        # Log metrics to WandB
+        self._log_comprehensive_metrics(df, metrics)
+        
+        logger.info("✅ All visualizations created and logged to WandB")
+    
+    def _has_multiple_models(self, df: pd.DataFrame) -> bool:
+        """Check if we have multiple models for comparison."""
+        if 'model' in df.columns:
+            unique_models = df['model'].unique()
+            return len(unique_models) > 1
+        return False
+    
+    def _create_basic_plots(self, df: pd.DataFrame):
+        """Create basic plots for single model data."""
+        logger.info("📊 Creating basic plots...")
+        
+        models, classifiers, toxic_bert_categories = self._detect_models_and_classifiers(df)
+        
+        # Create distribution plots for each classifier
+        for classifier in classifiers:
+            for text_type in ['prompt', 'output', 'full_text']:
+                col_name = f'{text_type}_{classifier}_results'
+                
+                if col_name in df.columns:
+                    # Extract scores
+                    scores = []
+                    for result in df[col_name]:
+                        if isinstance(result, dict):
+                            if classifier == 'toxic_bert':
+                                score = result.get('toxic', 0.0)
+                            elif classifier == 'roberta_toxicity':
+                                score = result.get('toxic', 0.0)
+                            elif classifier == 'dynabench_hate':
+                                score = result.get('hate', 0.0)
+                            else:
+                                score = next(iter(result.values()), 0.0)
+                            scores.append(score)
+                    
+                    if scores:
+                        # Create histogram
+                        fig = go.Figure()
+                        fig.add_trace(go.Histogram(
+                            x=scores,
+                            nbinsx=20,
+                            name=f'{text_type} {classifier}',
+                            opacity=0.7
+                        ))
+                        
+                        fig.update_layout(
+                            title=f'Distribution of {classifier} Scores - {text_type}',
+                            xaxis_title='Toxicity Score',
+                            yaxis_title='Count',
+                            showlegend=True
+                        )
+                        
+                        # Log to WandB
+                        if self.wandb_run:
+                            wandb.log({f"{text_type}_{classifier}_distribution": fig})
+                        
+                        # Save locally
+                        plot_path = self.output_dir / f"{text_type}_{classifier}_distribution.html"
+                        fig.write_html(str(plot_path))
+                        logger.info(f"✅ Created {text_type}_{classifier}_distribution plot")
+    
+    def _create_advanced_plots(self, df: pd.DataFrame):
+        """Create advanced plots for multi-model comparison."""
+        logger.info("📊 Creating advanced multi-model plots...")
+        
+        # Group by model
+        model_groups = df.groupby('model')
+        models = list(model_groups.groups.keys())
+        
+        # Extract epoch numbers and create mapping
+        model_epochs = {}
+        for model_name in models:
+            if model_name == "base":
+                model_epochs[model_name] = 0
+            elif "epoch" in model_name:
+                try:
+                    epoch_num = int(model_name.split("_")[-1])
+                    model_epochs[model_name] = epoch_num
+                except ValueError:
+                    model_epochs[model_name] = 100
+            else:
+                model_epochs[model_name] = 100
+        
+        # Sort models by epoch
+        sorted_models = sorted(model_epochs.items(), key=lambda x: x[1])
+        model_names = [name for name, _ in sorted_models]
+        epochs = [epoch for _, epoch in sorted_models]
+        
+        # Create toxicity reduction plots
+        self._create_toxicity_reduction_plots(model_groups, model_names, epochs)
+        
+        # Create scatter plots
+        self._create_scatter_plots(model_groups, model_names, epochs)
+        
+        # Create distribution plots
+        self._create_improvement_distribution_plots(model_groups, model_names, epochs)
+        
+        # Create comprehensive dashboard
+        self._create_comprehensive_dashboard(model_groups, model_names, epochs)
+    
+    def _create_toxicity_reduction_plots(self, model_groups, model_names: List[str], epochs: List[int]):
+        """Create toxicity reduction plots across epochs."""
+        logger.info("📊 Creating toxicity reduction plots...")
+        
+        classifiers = ["toxic_bert", "roberta_toxicity", "dynabench_hate"]
+        text_types = ["output", "full_text"]
+        
+        for classifier in classifiers:
+            for text_type in text_types:
+                # Calculate mean scores for each model
+                mean_scores = []
+                for model_name in model_names:
+                    model_df = model_groups.get_group(model_name)
+                    col_name = f"{text_type}_{classifier}_results"
+                    
+                    if col_name in model_df.columns:
+                        scores = []
+                        for result in model_df[col_name]:
+                            if isinstance(result, dict):
+                                if classifier == "toxic_bert":
+                                    score = result.get('toxic', 0.0)
+                                elif classifier == "roberta_toxicity":
+                                    score = result.get('toxic', 0.0)
+                                elif classifier == "dynabench_hate":
+                                    score = result.get('hate', 0.0)
+                                else:
+                                    score = next(iter(result.values()), 0.0)
+                                scores.append(score)
+                        
+                        if scores:
+                            mean_scores.append(np.mean(scores))
+                        else:
+                            mean_scores.append(0.0)
+                    else:
+                        mean_scores.append(0.0)
+                
+                # Create plot
+                fig = go.Figure()
+                
+                # Add mean toxicity line
+                fig.add_trace(go.Scatter(
+                    x=epochs,
+                    y=mean_scores,
+                    mode='lines+markers',
+                    name='Mean Toxicity',
+                    line=dict(width=3),
+                    marker=dict(size=8)
+                ))
+                
+                # Add individual prompt scores as scatter
+                all_scores = []
+                all_epochs = []
+                all_prompts = []
+                
+                for i, model_name in enumerate(model_names):
+                    model_df = model_groups.get_group(model_name)
+                    col_name = f"{text_type}_{classifier}_results"
+                    
+                    if col_name in model_df.columns:
+                        for j, result in enumerate(model_df[col_name]):
+                            if isinstance(result, dict):
+                                if classifier == "toxic_bert":
+                                    score = result.get('toxic', 0.0)
+                                elif classifier == "roberta_toxicity":
+                                    score = result.get('toxic', 0.0)
+                                elif classifier == "dynabench_hate":
+                                    score = result.get('hate', 0.0)
+                                else:
+                                    score = next(iter(result.values()), 0.0)
+                                
+                                all_scores.append(score)
+                                all_epochs.append(epochs[i])
+                                all_prompts.append(j)
+                
+                # Add scatter plot
+                fig.add_trace(go.Scatter(
+                    x=all_epochs,
+                    y=all_scores,
+                    mode='markers',
+                    name='Individual Prompts',
+                    marker=dict(
+                        size=6,
+                        color=all_prompts,
+                        colorscale='viridis',
+                        opacity=0.6,
+                        showscale=True,
+                        colorbar=dict(title="Prompt Index")
+                    ),
+                    hovertemplate='<b>Prompt %{marker.color}</b><br>Epoch: %{x}<br>Toxicity: %{y:.3f}<extra></extra>'
+                ))
+                
+                # Add improvement annotation
+                if len(mean_scores) > 1:
+                    improvement = mean_scores[0] - mean_scores[-1]
+                    improvement_pct = (improvement / mean_scores[0]) * 100 if mean_scores[0] > 0 else 0
+                    
+                    fig.add_annotation(
+                        x=epochs[-1],
+                        y=mean_scores[-1],
+                        text=f'Total Reduction: {improvement:.3f} ({improvement_pct:.1f}%)',
+                        showarrow=True,
+                        arrowhead=2,
+                        arrowsize=1,
+                        arrowwidth=2,
+                        arrowcolor="red",
+                        ax=20,
+                        ay=-30
+                    )
+                
+                fig.update_layout(
+                    title=f'Toxicity Reduction: {classifier} - {text_type}',
+                    xaxis_title='Epoch',
+                    yaxis_title='Toxicity Score',
+                    showlegend=True
+                )
+                
+                # Log to WandB
+                if self.wandb_run:
+                    wandb.log({f"toxicity_reduction_{classifier}_{text_type}": fig})
+                
+                # Save locally
+                plot_path = self.output_dir / f"toxicity_reduction_{classifier}_{text_type}.html"
+                fig.write_html(str(plot_path))
+                logger.info(f"✅ Created toxicity reduction plot for {classifier} - {text_type}")
+    
+    def _create_scatter_plots(self, model_groups, model_names: List[str], epochs: List[int]):
+        """Create scatter plots comparing base vs detoxified models."""
+        logger.info("📊 Creating scatter plots...")
+        
+        classifiers = ["toxic_bert", "roberta_toxicity", "dynabench_hate"]
+        text_types = ["output", "full_text"]
+        
+        # Get base model data
+        base_model = model_names[0] if model_names else None
+        if not base_model:
+            return
+        
+        base_df = model_groups.get_group(base_model)
+        
+        for classifier in classifiers:
+            for text_type in text_types:
+                # Get base scores
+                base_col = f"{text_type}_{classifier}_results"
+                base_scores = []
+                
+                if base_col in base_df.columns:
+                    for result in base_df[base_col]:
+                        if isinstance(result, dict):
+                            if classifier == "toxic_bert":
+                                score = result.get('toxic', 0.0)
+                            elif classifier == "roberta_toxicity":
+                                score = result.get('toxic', 0.0)
+                            elif classifier == "dynabench_hate":
+                                score = result.get('hate', 0.0)
+                            else:
+                                score = next(iter(result.values()), 0.0)
+                            base_scores.append(score)
+                
+                if not base_scores:
+                    continue
+                
+                # Create scatter plot
+                fig = go.Figure()
+                
+                # Add diagonal reference line
+                max_score = max(max(base_scores), 1.0)
+                fig.add_trace(go.Scatter(
+                    x=[0, max_score],
+                    y=[0, max_score],
+                    mode='lines',
+                    name='No Change',
+                    line=dict(color='red', dash='dash'),
+                    showlegend=True
+                ))
+                
+                # Add detoxified models
+                for model_name in model_names[1:]:  # Skip base model
+                    model_df = model_groups.get_group(model_name)
+                    detox_col = f"{text_type}_{classifier}_results"
+                    detox_scores = []
+                    
+                    if detox_col in model_df.columns:
+                        for result in model_df[detox_col]:
+                            if isinstance(result, dict):
+                                if classifier == "toxic_bert":
+                                    score = result.get('toxic', 0.0)
+                                elif classifier == "roberta_toxicity":
+                                    score = result.get('toxic', 0.0)
+                                elif classifier == "dynabench_hate":
+                                    score = result.get('hate', 0.0)
+                                else:
+                                    score = next(iter(result.values()), 0.0)
+                                detox_scores.append(score)
+                    
+                    if detox_scores and len(detox_scores) == len(base_scores):
+                        fig.add_trace(go.Scatter(
+                            x=base_scores,
+                            y=detox_scores,
+                            mode='markers',
+                            name=f'{model_name} (Epoch {model_name.split("_")[-1] if "epoch" in model_name else "N/A"})',
+                            marker=dict(size=8, opacity=0.7),
+                            hovertemplate='<b>Prompt %{text}</b><br>Base: %{x:.3f}<br>Detoxified: %{y:.3f}<extra></extra>',
+                            text=[f"{i+1}" for i in range(len(base_scores))]
+                        ))
+                
+                fig.update_layout(
+                    title=f'Base vs Detoxified Toxicity: {classifier} - {text_type}',
+                    xaxis_title='Base Toxicity Score',
+                    yaxis_title='Detoxified Toxicity Score',
+                    showlegend=True
+                )
+                
+                # Log to WandB
+                if self.wandb_run:
+                    wandb.log({f"scatter_{classifier}_{text_type}": fig})
+                
+                # Save locally
+                plot_path = self.output_dir / f"scatter_{classifier}_{text_type}.html"
+                fig.write_html(str(plot_path))
+                logger.info(f"✅ Created scatter plot for {classifier} - {text_type}")
+    
+    def _create_improvement_distribution_plots(self, model_groups, model_names: List[str], epochs: List[int]):
+        """Create distribution plots of improvements."""
+        logger.info("📊 Creating improvement distribution plots...")
+        
+        classifiers = ["toxic_bert", "roberta_toxicity", "dynabench_hate"]
+        text_types = ["output", "full_text"]
+        
+        # Get base model data
+        base_model = model_names[0] if model_names else None
+        if not base_model:
+            return
+        
+        base_df = model_groups.get_group(base_model)
+        
+        for classifier in classifiers:
+            for text_type in text_types:
+                # Get base scores
+                base_col = f"{text_type}_{classifier}_results"
+                base_scores = []
+                
+                if base_col in base_df.columns:
+                    for result in base_df[base_col]:
+                        if isinstance(result, dict):
+                            if classifier == "toxic_bert":
+                                score = result.get('toxic', 0.0)
+                            elif classifier == "roberta_toxicity":
+                                score = result.get('toxic', 0.0)
+                            elif classifier == "dynabench_hate":
+                                score = result.get('hate', 0.0)
+                            else:
+                                score = next(iter(result.values()), 0.0)
+                            base_scores.append(score)
+                
+                if not base_scores:
+                    continue
+                
+                # Create distribution plot
+                fig = go.Figure()
+                
+                # Calculate improvements for each detoxified model
+                for model_name in model_names[1:]:  # Skip base model
+                    model_df = model_groups.get_group(model_name)
+                    detox_col = f"{text_type}_{classifier}_results"
+                    improvements = []
+                    
+                    if detox_col in model_df.columns:
+                        for i, result in enumerate(model_df[detox_col]):
+                            if i < len(base_scores) and isinstance(result, dict):
+                                if classifier == "toxic_bert":
+                                    detox_score = result.get('toxic', 0.0)
+                                elif classifier == "roberta_toxicity":
+                                    detox_score = result.get('toxic', 0.0)
+                                elif classifier == "dynabench_hate":
+                                    detox_score = result.get('hate', 0.0)
+                                else:
+                                    detox_score = next(iter(result.values()), 0.0)
+                                
+                                improvement = base_scores[i] - detox_score
+                                improvements.append(improvement)
+                    
+                    if improvements:
+                        fig.add_trace(go.Histogram(
+                            x=improvements,
+                            name=f'{model_name} (Epoch {model_name.split("_")[-1] if "epoch" in model_name else "N/A"})',
+                            opacity=0.7,
+                            nbinsx=20
+                        ))
+                
+                fig.update_layout(
+                    title=f'Distribution of Toxicity Improvements: {classifier} - {text_type}',
+                    xaxis_title='Improvement (Base - Detoxified)',
+                    yaxis_title='Count',
+                    barmode='overlay',
+                    showlegend=True
+                )
+                
+                # Log to WandB
+                if self.wandb_run:
+                    wandb.log({f"improvement_distribution_{classifier}_{text_type}": fig})
+                
+                # Save locally
+                plot_path = self.output_dir / f"improvement_distribution_{classifier}_{text_type}.html"
+                fig.write_html(str(plot_path))
+                logger.info(f"✅ Created improvement distribution plot for {classifier} - {text_type}")
+    
+    def _create_comprehensive_dashboard(self, model_groups, model_names: List[str], epochs: List[int]):
+        """Create a comprehensive dashboard with all metrics."""
+        logger.info("📊 Creating comprehensive dashboard...")
+        
+        classifiers = ["toxic_bert", "roberta_toxicity", "dynabench_hate"]
+        text_types = ["output", "full_text"]
+        
+        # Create subplots
+        fig = make_subplots(
+            rows=2, cols=3,
+            subplot_titles=[
+                'Toxic-Bert Output', 'Roberta Output', 'Dynabench Output',
+                'Toxic-Bert Full Text', 'Roberta Full Text', 'Dynabench Full Text'
+            ],
+            specs=[[{"secondary_y": False}, {"secondary_y": False}, {"secondary_y": False}],
+                   [{"secondary_y": False}, {"secondary_y": False}, {"secondary_y": False}]]
+        )
+        
+        # Add mean toxicity progression for each classifier and text type
+        for i, classifier in enumerate(classifiers):
+            for j, text_type in enumerate(text_types):
+                row = j + 1
+                col = i + 1
+                
+                mean_scores = []
+                for model_name in model_names:
+                    model_df = model_groups.get_group(model_name)
+                    col_name = f"{text_type}_{classifier}_results"
+                    
+                    if col_name in model_df.columns:
+                        scores = []
+                        for result in model_df[col_name]:
+                            if isinstance(result, dict):
+                                if classifier == "toxic_bert":
+                                    scores.append(result.get('toxic', 0.0))
+                                elif classifier == "roberta_toxicity":
+                                    scores.append(result.get('toxic', 0.0))
+                                elif classifier == "dynabench_hate":
+                                    scores.append(result.get('hate', 0.0))
+                        
+                        if scores:
+                            mean_scores.append(np.mean(scores))
+                        else:
+                            mean_scores.append(0.0)
+                    else:
+                        mean_scores.append(0.0)
+                
+                if mean_scores:
+                    fig.add_trace(
+                        go.Scatter(
+                            x=epochs,
+                            y=mean_scores,
+                            mode='lines+markers',
+                            name=f'{classifier} {text_type}',
+                            line=dict(width=3),
+                            marker=dict(size=8),
+                            showlegend=False
+                        ),
+                        row=row, col=col
+                    )
+                    
+                    # Add improvement annotation
+                    if len(mean_scores) > 1:
+                        improvement = mean_scores[0] - mean_scores[-1]
+                        improvement_pct = (improvement / mean_scores[0]) * 100 if mean_scores[0] > 0 else 0
+                        fig.add_annotation(
+                            x=epochs[-1],
+                            y=mean_scores[-1],
+                            text=f'{improvement_pct:.1f}%',
+                            showarrow=True,
+                            arrowhead=2,
+                            arrowsize=1,
+                            arrowwidth=2,
+                            arrowcolor="red",
+                            ax=20,
+                            ay=-30,
+                            row=row, col=col
+                        )
+        
+        fig.update_layout(
+            title='Comprehensive Toxicity Reduction Dashboard',
+            height=800,
+            showlegend=False
+        )
+        
+        # Update axes labels
+        for i in range(1, 3):
+            for j in range(1, 4):
+                fig.update_xaxes(title_text="Epoch", row=i, col=j)
+                fig.update_yaxes(title_text="Mean Toxicity", row=i, col=j)
+        
+        # Log to WandB
+        if self.wandb_run:
+            wandb.log({"comprehensive_dashboard": fig})
+        
+        # Save locally
+        dashboard_path = self.output_dir / "comprehensive_dashboard.html"
+        fig.write_html(str(dashboard_path))
+        logger.info("✅ Created comprehensive dashboard")
     
     def _log_full_csv_to_wandb(self, results_df: pd.DataFrame):
         """Log the complete CSV to WandB as an artifact."""
