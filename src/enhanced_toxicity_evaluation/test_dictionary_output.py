@@ -68,34 +68,52 @@ def test_dictionary_classification_output():
         # Load actual classifiers
         logger.info("🔧 Loading actual classifiers...")
         
+        classifiers = {}
+        
+        # Load toxic-bert (multi-label)
         try:
-            # Load toxic-bert (multi-label)
             toxic_bert_classifier = pipeline(
                 "text-classification",
                 model="unitary/toxic-bert",
                 return_all_scores=True,
                 device=-1  # Use CPU to avoid CUDA issues
             )
+            classifiers["toxic_bert"] = toxic_bert_classifier
             logger.info("✅ Loaded toxic-bert classifier")
-            
-            # Load roberta toxicity (single-label)
+        except Exception as e:
+            logger.error(f"❌ Error loading toxic-bert classifier: {e}")
+            classifiers["toxic_bert"] = None
+        
+        # Load roberta toxicity (single-label)
+        try:
             roberta_classifier = pipeline(
                 "text-classification",
                 model="s-nlp/roberta_toxicity_classifier",
                 device=-1
             )
+            classifiers["roberta_toxicity"] = roberta_classifier
             logger.info("✅ Loaded roberta toxicity classifier")
-            
-            # Load dynabench hate (single-label)
+        except Exception as e:
+            logger.error(f"❌ Error loading roberta toxicity classifier: {e}")
+            classifiers["roberta_toxicity"] = None
+        
+        # Load dynabench hate (single-label)
+        try:
             dynabench_classifier = pipeline(
                 "text-classification",
-                model="facebook/roberta-hate-speech-detector",
+                model="facebook/roberta-hate-speech-dynabench-r4-target",
                 device=-1
             )
+            classifiers["dynabench_hate"] = dynabench_classifier
             logger.info("✅ Loaded dynabench hate classifier")
-            
         except Exception as e:
-            logger.error(f"❌ Error loading classifiers: {e}")
+            logger.error(f"❌ Error loading dynabench hate classifier: {e}")
+            classifiers["dynabench_hate"] = None
+        
+        # Check if any classifiers loaded successfully
+        loaded_classifiers = {k: v for k, v in classifiers.items() if v is not None}
+        if not loaded_classifiers:
+            logger.error("❌ No classifiers loaded successfully")
             logger.info("⚠️ Falling back to mock results for testing...")
             mock_results = _create_mock_results(prompts, mock_outputs, full_texts)
             toxic_bert_prompt_results = mock_results["prompts"]["toxic_bert"]
@@ -107,27 +125,71 @@ def test_dictionary_classification_output():
             dynabench_prompt_results = mock_results["prompts"]["dynabench_hate"]
             dynabench_output_results = mock_results["outputs"]["dynabench_hate"]
             dynabench_full_results = mock_results["full_texts"]["dynabench_hate"]
+        else:
+            logger.info(f"✅ Successfully loaded {len(loaded_classifiers)} classifiers: {list(loaded_classifiers.keys())}")
         
         # Run actual classifications
         logger.info("🔍 Running actual classifications...")
         
+        # Initialize results
+        toxic_bert_prompt_results = []
+        toxic_bert_output_results = []
+        toxic_bert_full_results = []
+        roberta_prompt_results = []
+        roberta_output_results = []
+        roberta_full_results = []
+        dynabench_prompt_results = []
+        dynabench_output_results = []
+        dynabench_full_results = []
+        
         # Classify prompts
         logger.info("  Classifying prompts...")
-        toxic_bert_prompt_results = _classify_texts(toxic_bert_classifier, prompts, "toxic_bert")
-        roberta_prompt_results = _classify_texts(roberta_classifier, prompts, "roberta_toxicity")
-        dynabench_prompt_results = _classify_texts(dynabench_classifier, prompts, "dynabench_hate")
+        if classifiers["toxic_bert"]:
+            toxic_bert_prompt_results = _classify_texts(classifiers["toxic_bert"], prompts, "toxic_bert")
+        if classifiers["roberta_toxicity"]:
+            roberta_prompt_results = _classify_texts(classifiers["roberta_toxicity"], prompts, "roberta_toxicity")
+        if classifiers["dynabench_hate"]:
+            dynabench_prompt_results = _classify_texts(classifiers["dynabench_hate"], prompts, "dynabench_hate")
         
         # Classify outputs
         logger.info("  Classifying outputs...")
-        toxic_bert_output_results = _classify_texts(toxic_bert_classifier, mock_outputs, "toxic_bert")
-        roberta_output_results = _classify_texts(roberta_classifier, mock_outputs, "roberta_toxicity")
-        dynabench_output_results = _classify_texts(dynabench_classifier, mock_outputs, "dynabench_hate")
+        if classifiers["toxic_bert"]:
+            toxic_bert_output_results = _classify_texts(classifiers["toxic_bert"], mock_outputs, "toxic_bert")
+        if classifiers["roberta_toxicity"]:
+            roberta_output_results = _classify_texts(classifiers["roberta_toxicity"], mock_outputs, "roberta_toxicity")
+        if classifiers["dynabench_hate"]:
+            dynabench_output_results = _classify_texts(classifiers["dynabench_hate"], mock_outputs, "dynabench_hate")
         
         # Classify full texts
         logger.info("  Classifying full texts...")
-        toxic_bert_full_results = _classify_texts(toxic_bert_classifier, full_texts, "toxic_bert")
-        roberta_full_results = _classify_texts(roberta_classifier, full_texts, "roberta_toxicity")
-        dynabench_full_results = _classify_texts(dynabench_classifier, full_texts, "dynabench_hate")
+        if classifiers["toxic_bert"]:
+            toxic_bert_full_results = _classify_texts(classifiers["toxic_bert"], full_texts, "toxic_bert")
+        if classifiers["roberta_toxicity"]:
+            roberta_full_results = _classify_texts(classifiers["roberta_toxicity"], full_texts, "roberta_toxicity")
+        if classifiers["dynabench_hate"]:
+            dynabench_full_results = _classify_texts(classifiers["dynabench_hate"], full_texts, "dynabench_hate")
+        
+        # Handle missing results with fallbacks
+        if not toxic_bert_prompt_results:
+            logger.warning("⚠️ Using fallback for toxic-bert results")
+            mock_results = _create_mock_results(prompts, mock_outputs, full_texts)
+            toxic_bert_prompt_results = mock_results["prompts"]["toxic_bert"]
+            toxic_bert_output_results = mock_results["outputs"]["toxic_bert"]
+            toxic_bert_full_results = mock_results["full_texts"]["toxic_bert"]
+        
+        if not roberta_prompt_results:
+            logger.warning("⚠️ Using fallback for roberta results")
+            mock_results = _create_mock_results(prompts, mock_outputs, full_texts)
+            roberta_prompt_results = mock_results["prompts"]["roberta_toxicity"]
+            roberta_output_results = mock_results["outputs"]["roberta_toxicity"]
+            roberta_full_results = mock_results["full_texts"]["roberta_toxicity"]
+        
+        if not dynabench_prompt_results:
+            logger.warning("⚠️ Using fallback for dynabench results")
+            mock_results = _create_mock_results(prompts, mock_outputs, full_texts)
+            dynabench_prompt_results = mock_results["prompts"]["dynabench_hate"]
+            dynabench_output_results = mock_results["outputs"]["dynabench_hate"]
+            dynabench_full_results = mock_results["full_texts"]["dynabench_hate"]
         
         # Store all results
         classification_results["prompts"] = {
