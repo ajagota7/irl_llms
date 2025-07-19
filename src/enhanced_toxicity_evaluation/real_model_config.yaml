@@ -1,0 +1,45 @@
+# Configuration for Real End-to-End Model Test
+# Replace these paths with your actual model paths
+
+models:
+  base:
+    path: "microsoft/DialoGPT-medium"  # Replace with your actual base model path
+    description: "Base model for comparison"
+  
+  detoxified:
+    path: "microsoft/DialoGPT-medium"  # Replace with your actual detoxified model path (epoch 100)
+    description: "Detoxified model (epoch 100)"
+
+# Generation parameters
+generation:
+  max_new_tokens: 50
+  temperature: 0.7
+  do_sample: true
+  top_p: 0.9
+
+# Dataset parameters
+dataset:
+  name: "allenai/real-toxicity-prompts"
+  split: "train"
+  sample_size: 5  # Small sample for testing
+
+# Classifiers
+classifiers:
+  toxic_bert:
+    model: "unitary/toxic-bert"
+    return_all_scores: true
+    device: -1  # CPU
+  
+  roberta_toxicity:
+    model: "s-nlp/roberta_toxicity_classifier"
+    device: -1  # CPU
+  
+  dynabench_hate:
+    model: "facebook/roberta-hate-speech-dynabench-r4-target"
+    device: -1  # CPU
+
+# Output settings
+output:
+  directory: "real_model_results"
+  save_formats: ["csv", "json", "txt"]
+  include_summary: true 
