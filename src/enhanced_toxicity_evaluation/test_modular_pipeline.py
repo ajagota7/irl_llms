@@ -50,20 +50,28 @@ def load_config(config_path: str = "configs/modular_config.yaml") -> OmegaConf:
         logger.error(f"❌ Error loading config: {e}")
         logger.info("⚠️ Using default configuration...")
         
-        # Create default config
+        # Create default config that matches real_model_test.py approach
         default_config = {
             "models": {
                 "base": {"path": "microsoft/DialoGPT-medium"},
                 "detoxified": {"path": "microsoft/DialoGPT-medium"}
             },
             "generation": {"max_new_tokens": 50, "temperature": 0.7},
-            "dataset": {"name": "allenai/real-toxicity-prompts", "split": "train", "max_prompts": 5},
+            "dataset": {
+                "name": "allenai/real-toxicity-prompts", 
+                "split": "train", 
+                "sample_size": 5,
+                "filter_toxic": True,
+                "min_toxicity_score": 0.5
+            },
             "classifiers": {
                 "toxic_bert": {"model": "unitary/toxic-bert", "return_all_scores": True, "device": -1},
                 "roberta_toxicity": {"model": "s-nlp/roberta_toxicity_classifier", "return_all_scores": True, "device": -1},
                 "dynabench_hate": {"model": "facebook/roberta-hate-speech-dynabench-r4-target", "return_all_scores": True, "device": -1}
             },
-            "output": {"directory": "modular_test_results"}
+            "output": {"directory": "modular_test_results"},
+            "caching": {"use_cache": False},
+            "device": "auto"
         }
         
         return OmegaConf.create(default_config)
@@ -174,6 +182,12 @@ def test_individual_components():
     config = load_config()
     
     try:
+        # Test DatasetManager first (since this was causing issues)
+        logger.info("Testing DatasetManager...")
+        dataset_manager = DatasetManager(config)
+        prompts = dataset_manager.get_prompts()
+        logger.info(f"✅ DatasetManager: Loaded {len(prompts)} prompts")
+        
         # Test ModelLoader
         logger.info("Testing ModelLoader...")
         model_loader = ModelLoader(config)
@@ -187,12 +201,6 @@ def test_individual_components():
         classifiers = classifier_manager.load_classifiers()
         logger.info(f"✅ ClassifierManager: Loaded {len(classifiers)} classifiers")
         classifier_manager.cleanup()
-        
-        # Test DatasetManager
-        logger.info("Testing DatasetManager...")
-        dataset_manager = DatasetManager(config)
-        prompts = dataset_manager.get_prompts()
-        logger.info(f"✅ DatasetManager: Loaded {len(prompts)} prompts")
         
         # Test GenerationEngine
         logger.info("Testing GenerationEngine...")
@@ -216,6 +224,41 @@ def test_individual_components():
         return False
 
 
+def test_dataset_manager_only():
+    """Test only the dataset manager to isolate the issue."""
+    logger.info("🧪 Testing Dataset Manager Only")
+    logger.info("=" * 60)
+    
+    # Load configuration
+    config = load_config()
+    
+    try:
+        # Test DatasetManager
+        logger.info("Testing DatasetManager...")
+        dataset_manager = DatasetManager(config)
+        
+        # Get dataset info
+        dataset_info = dataset_manager.get_dataset_info()
+        logger.info(f"Dataset info: {dataset_info}")
+        
+        # Get prompts
+        prompts = dataset_manager.get_prompts()
+        logger.info(f"✅ DatasetManager: Loaded {len(prompts)} prompts")
+        
+        if prompts:
+            logger.info(f"Sample prompts:")
+            for i, prompt in enumerate(prompts[:3]):
+                logger.info(f"  {i+1}: {prompt[:100]}...")
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Dataset manager test failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
 def main():
     """Main test function."""
     logger.info("🚀 Starting Modular Pipeline Tests")
@@ -226,7 +269,15 @@ def main():
     if not Path(config_path).exists():
         logger.warning(f"⚠️ Configuration file {config_path} not found, using default config")
     
-    # Test individual components first
+    # Test dataset manager first to isolate the issue
+    logger.info("\n0️⃣ Testing Dataset Manager Only...")
+    dataset_success = test_dataset_manager_only()
+    
+    if not dataset_success:
+        logger.error("❌ Dataset manager test failed, stopping")
+        return False
+    
+    # Test individual components
     logger.info("\n1️⃣ Testing Individual Components...")
     component_success = test_individual_components()
     
@@ -261,6 +312,7 @@ def main():
     logger.info("\n🎉 ALL TESTS COMPLETED SUCCESSFULLY!")
     logger.info("=" * 60)
     logger.info("📋 Test Summary:")
+    logger.info("  ✅ Dataset manager working")
     logger.info("  ✅ Individual components working")
     logger.info("  ✅ Classification phase working")
     logger.info("  ✅ Evaluation phase working")
