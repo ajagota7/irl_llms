@@ -271,9 +271,13 @@ class ClassifierManager:
                                     category_score = item["score"]
                                     break
                             scores.append(category_score)
+                        elif isinstance(pred, dict):
+                            # Dictionary format (from _evaluate_with_classifier)
+                            category_score = pred.get(category.lower(), 0.0)
+                            scores.append(category_score)
                         else:
                             # Single prediction case
-                            if pred["label"].lower() == category.lower():
+                            if hasattr(pred, "label") and pred["label"].lower() == category.lower():
                                 scores.append(pred["score"])
                             else:
                                 scores.append(0.0)
@@ -291,6 +295,9 @@ class ClassifierManager:
                             if any(word in label for word in ["toxic", "hate", "harassment"]):
                                 toxic_score = max(toxic_score, item["score"])
                         scores.append(toxic_score)
+                    elif isinstance(pred, dict) and "score" in pred:
+                        # Dictionary format with score
+                        scores.append(pred["score"])
                     else:
                         # Single label
                         label = pred["label"].lower()

@@ -32,19 +32,27 @@ def test_core_enhanced_features():
         # Test 1: Multi-label classifier manager
         logger.info("Test 1: Testing multi-label classifier support...")
         
-        # Create mock multi-label predictions
+        # Create mock multi-label predictions in the correct format
+        # This matches what the classifier manager actually produces
         mock_predictions = {
             "toxic_bert": [
-                [
-                    {"label": "toxic", "score": 0.8},
-                    {"label": "severe_toxic", "score": 0.2},
-                    {"label": "obscene", "score": 0.1}
-                ],
-                [
-                    {"label": "toxic", "score": 0.3},
-                    {"label": "severe_toxic", "score": 0.1},
-                    {"label": "obscene", "score": 0.05}
-                ]
+                # Each prediction is a dict with category keys
+                {
+                    "toxic": 0.8,
+                    "severe_toxic": 0.2,
+                    "obscene": 0.1,
+                    "threat": 0.05,
+                    "insult": 0.3,
+                    "identity_attack": 0.1
+                },
+                {
+                    "toxic": 0.3,
+                    "severe_toxic": 0.1,
+                    "obscene": 0.05,
+                    "threat": 0.02,
+                    "insult": 0.15,
+                    "identity_attack": 0.05
+                }
             ]
         }
         
@@ -56,25 +64,31 @@ def test_core_enhanced_features():
         logger.info(f"✅ Multi-label scores extracted: {list(detailed_scores.keys())}")
         
         # Verify toxic-bert categories are extracted
-        expected_categories = ["toxic_bert_toxic", "toxic_bert_severe_toxic", "toxic_bert_obscene"]
+        expected_categories = ["toxic_bert_toxic", "toxic_bert_severe_toxic", "toxic_bert_obscene", 
+                             "toxic_bert_threat", "toxic_bert_insult", "toxic_bert_identity_attack"]
         for category in expected_categories:
             if category in detailed_scores:
                 logger.info(f"✅ Found category: {category}")
+                logger.info(f"   Values: {detailed_scores[category]}")
             else:
                 logger.warning(f"❌ Missing category: {category}")
         
         # Test 2: Delta analysis
         logger.info("Test 2: Testing delta analysis...")
         
-        # Create mock toxicity results
+        # Create mock toxicity results with the correct format
         mock_toxicity_results = {
             "base": {
                 "roberta_score": [0.8, 0.7, 0.9],
-                "toxic_bert_toxic": [0.7, 0.6, 0.8]
+                "toxic_bert_toxic": [0.7, 0.6, 0.8],
+                "toxic_bert_severe_toxic": [0.2, 0.1, 0.3],
+                "toxic_bert_obscene": [0.1, 0.05, 0.15]
             },
             "detoxified": {
                 "roberta_score": [0.3, 0.4, 0.5],
-                "toxic_bert_toxic": [0.2, 0.3, 0.4]
+                "toxic_bert_toxic": [0.2, 0.3, 0.4],
+                "toxic_bert_severe_toxic": [0.05, 0.1, 0.15],
+                "toxic_bert_obscene": [0.02, 0.05, 0.08]
             }
         }
         
@@ -92,7 +106,7 @@ def test_core_enhanced_features():
         # Test 3: Inspector
         logger.info("Test 3: Testing inspector...")
         
-        # Create mock DataFrame with more realistic data
+        # Create mock DataFrame with more realistic data including toxic-bert categories
         mock_df = pd.DataFrame({
             "prompt": ["Test prompt 1", "Test prompt 2", "Test prompt 3", "Test prompt 4", "Test prompt 5"],
             "output_base": ["Base output 1", "Base output 2", "Base output 3", "Base output 4", "Base output 5"],
@@ -102,7 +116,13 @@ def test_core_enhanced_features():
             "delta_detoxified_vs_base_roberta_score": [0.5, 0.3, 0.4, 0.4, 0.5],
             "output_base_toxic_bert_toxic": [0.7, 0.6, 0.8, 0.5, 0.75],
             "output_detoxified_toxic_bert_toxic": [0.2, 0.3, 0.4, 0.1, 0.25],
-            "delta_detoxified_vs_base_toxic_bert_toxic": [0.5, 0.3, 0.4, 0.4, 0.5]
+            "delta_detoxified_vs_base_toxic_bert_toxic": [0.5, 0.3, 0.4, 0.4, 0.5],
+            "output_base_toxic_bert_severe_toxic": [0.2, 0.1, 0.3, 0.15, 0.25],
+            "output_detoxified_toxic_bert_severe_toxic": [0.05, 0.1, 0.15, 0.02, 0.08],
+            "delta_detoxified_vs_base_toxic_bert_severe_toxic": [0.15, 0.0, 0.15, 0.13, 0.17],
+            "output_base_toxic_bert_obscene": [0.1, 0.05, 0.15, 0.08, 0.12],
+            "output_detoxified_toxic_bert_obscene": [0.02, 0.05, 0.08, 0.01, 0.03],
+            "delta_detoxified_vs_base_toxic_bert_obscene": [0.08, 0.0, 0.07, 0.07, 0.09]
         })
         
         inspector = ToxicityInspector(mock_df)
@@ -121,6 +141,8 @@ def test_core_enhanced_features():
         # Test toxic-bert category analysis
         category_analysis = inspector.analyze_toxic_bert_categories("detoxified")
         logger.info(f"✅ Toxic-bert category analysis: {len(category_analysis)} categories")
+        if len(category_analysis) > 0:
+            logger.info(f"✅ Category analysis columns: {list(category_analysis.columns)}")
         
         # Test model comparison
         comparison = inspector.compare_models_across_classifiers()
