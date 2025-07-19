@@ -118,7 +118,32 @@ class VisualizationManager:
         # Debug: Print all columns to understand the structure
         logger.info(f"🔍 Analyzing DataFrame columns: {list(df.columns)}")
         
-        # Method 1: Look for score columns (traditional format)
+        # Method 1: Look for results columns (modular pipeline format)
+        results_cols = [col for col in df.columns if col.endswith('_results')]
+        logger.info(f"📊 Found results columns: {results_cols}")
+        
+        for col in results_cols:
+            # Handle different patterns:
+            # - output_{classifier}_results
+            # - full_text_{classifier}_results
+            # - prompt_{classifier}_results
+            
+            if col.startswith('prompt_'):
+                # Format: prompt_{classifier}_results
+                classifier = col.replace('prompt_', '').replace('_results', '')
+                classifiers.add(classifier)
+                
+            elif col.startswith('output_'):
+                # Format: output_{classifier}_results
+                classifier = col.replace('output_', '').replace('_results', '')
+                classifiers.add(classifier)
+                        
+            elif col.startswith('full_text_'):
+                # Format: full_text_{classifier}_results
+                classifier = col.replace('full_text_', '').replace('_results', '')
+                classifiers.add(classifier)
+        
+        # Method 2: Look for score columns (traditional format)
         score_cols = [col for col in df.columns if col.endswith('_score')]
         logger.info(f"📊 Found score columns: {score_cols}")
         
@@ -149,45 +174,6 @@ class VisualizationManager:
                         classifiers.add(known_classifier)
                         break
         
-        # Method 2: Look for results columns (modular pipeline format)
-        results_cols = [col for col in df.columns if col.endswith('_results')]
-        logger.info(f"📊 Found results columns: {results_cols}")
-        
-        for col in results_cols:
-            # Handle different patterns:
-            # - output_{model}_{classifier}_results
-            # - full_text_{model}_{classifier}_results
-            # - prompt_{classifier}_results
-            
-            if col.startswith('prompt_'):
-                # Format: prompt_{classifier}_results
-                classifier = col.replace('prompt_', '').replace('_results', '')
-                classifiers.add(classifier)
-                
-            elif col.startswith('output_'):
-                # Format: output_{model}_{classifier}_results
-                remainder = col.replace('output_', '').replace('_results', '')
-                
-                # Try to match known classifiers
-                for known_classifier in known_classifiers:
-                    if remainder.endswith(known_classifier):
-                        model = remainder.replace(f'_{known_classifier}', '')
-                        models.add(model)
-                        classifiers.add(known_classifier)
-                        break
-                        
-            elif col.startswith('full_text_'):
-                # Format: full_text_{model}_{classifier}_results
-                remainder = col.replace('full_text_', '').replace('_results', '')
-                
-                # Try to match known classifiers
-                for known_classifier in known_classifiers:
-                    if remainder.endswith(known_classifier):
-                        model = remainder.replace(f'_{known_classifier}', '')
-                        models.add(model)
-                        classifiers.add(known_classifier)
-                        break
-        
         # Method 3: Look for model column directly
         if 'model' in df.columns:
             unique_models = df['model'].unique()
@@ -200,28 +186,11 @@ class VisualizationManager:
                 if category in col and 'toxic_bert' in col:
                     toxic_bert_categories.add(category)
         
-        # Fallback: If no models detected, try to extract from column names
+        # Since column names are standardized, we need to infer models from the data structure
+        # For now, use default models based on the configuration or file structure
         if not models:
-            logger.warning("⚠️ No models detected, trying fallback detection...")
-            
-            # Look for any column that might contain model names
-            all_cols = list(df.columns)
-            for col in all_cols:
-                # Look for common model patterns
-                if any(pattern in col.lower() for pattern in ['base', 'detox', 'epoch', 'pythia', 'gpt']):
-                    # Extract potential model name
-                    parts = col.split('_')
-                    for i, part in enumerate(parts):
-                        if part in ['base', 'detox'] or 'epoch' in part:
-                            if i + 1 < len(parts):
-                                model_name = '_'.join(parts[i:i+2])
-                                models.add(model_name)
-                            else:
-                                models.add(part)
-        
-        # Final fallback: If still no models, use default
-        if not models:
-            logger.warning("⚠️ Still no models detected, using default models...")
+            logger.info("📊 No models detected in columns, using default model set...")
+            # Use the standard model progression
             models = {'base', 'detox_epoch_20', 'detox_epoch_40', 'detox_epoch_60', 'detox_epoch_80', 'detox_epoch_100'}
         
         # Ensure we have at least one classifier
@@ -250,161 +219,155 @@ class VisualizationManager:
         
         df_copy = df.copy()
         
+        # Since column names are standardized, we need to work with the actual data structure
+        # For now, we'll create delta columns based on the available data
+        
         # Calculate deltas for main classifiers
         for classifier in classifiers:
-            # Try different column patterns for base model
-            base_cols = [
-                f'base_{classifier}_score',
-                f'prompt_{classifier}_results',
-                f'base_{classifier}_results'
-            ]
+            # Look for prompt results as base reference
+            prompt_col = f'prompt_{classifier}_results'
             
-            base_col = None
-            for col in base_cols:
-                if col in df_copy.columns:
-                    base_col = col
-                    break
-            
-            if base_col is None:
-                logger.warning(f"⚠️ Base column for {classifier} not found. Tried: {base_cols}")
+            if prompt_col not in df_copy.columns:
+                logger.warning(f"⚠️ Prompt column {prompt_col} not found, skipping {classifier}")
                 continue
-                
+            
+            # For each model, compare output results with prompt results
             for model in models:
                 if model == 'base':
                     continue
-                    
-                # Try different column patterns for model outputs
-                model_cols = [
-                    f'{model}_{classifier}_score',
-                    f'output_{model}_{classifier}_results',
-                    f'full_text_{model}_{classifier}_results'
-                ]
                 
-                model_col = None
-                for col in model_cols:
-                    if col in df_copy.columns:
-                        model_col = col
-                        break
+                # Look for output results for this classifier
+                output_col = f'output_{classifier}_results'
                 
-                if model_col is None:
-                    logger.warning(f"⚠️ Model column for {model}_{classifier} not found. Tried: {model_cols}")
+                if output_col not in df_copy.columns:
+                    logger.warning(f"⚠️ Output column {output_col} not found for {classifier}")
                     continue
                 
                 # Create delta column
-                delta_col = f'delta_{model}_vs_base_{classifier}'
+                delta_col = f'delta_{model}_vs_prompt_{classifier}'
                 
-                # Handle different data types
-                if base_col.endswith('_results') and model_col.endswith('_results'):
-                    # Both are results columns (dictionaries) - extract scores
+                # Handle dictionary results
+                try:
+                    # Extract scores from dictionary results
+                    deltas = []
+                    
+                    for idx in range(len(df_copy)):
+                        prompt_result = df_copy.iloc[idx][prompt_col]
+                        output_result = df_copy.iloc[idx][output_col]
+                        
+                        if isinstance(prompt_result, dict) and isinstance(output_result, dict):
+                            # For toxic_bert, use 'toxic' category
+                            if classifier == 'toxic_bert':
+                                prompt_score = prompt_result.get('toxic', 0.0)
+                                output_score = output_result.get('toxic', 0.0)
+                            elif classifier == 'roberta_toxicity':
+                                prompt_score = prompt_result.get('toxic', 0.0)
+                                output_score = output_result.get('toxic', 0.0)
+                            elif classifier == 'dynabench_hate':
+                                prompt_score = prompt_result.get('hate', 0.0)
+                                output_score = output_result.get('hate', 0.0)
+                            else:
+                                # Use the first available score
+                                prompt_score = next(iter(prompt_result.values()), 0.0)
+                                output_score = next(iter(output_result.values()), 0.0)
+                            
+                            # Calculate delta (prompt - output, positive = improvement)
+                            delta = prompt_score - output_score
+                            deltas.append(delta)
+                        else:
+                            deltas.append(0.0)
+                    
+                    df_copy[delta_col] = deltas
+                    logger.info(f"✅ Created {delta_col}")
+                    
+                except Exception as e:
+                    logger.warning(f"⚠️ Error creating delta for {delta_col}: {e}")
+                    df_copy[delta_col] = 0.0
+            
+            # Also compare full_text results with prompt results
+            full_text_col = f'full_text_{classifier}_results'
+            
+            if full_text_col in df_copy.columns:
+                for model in models:
+                    if model == 'base':
+                        continue
+                    
+                    # Create delta column for full text
+                    delta_col = f'delta_{model}_vs_prompt_full_text_{classifier}'
+                    
                     try:
                         # Extract scores from dictionary results
-                        base_scores = []
-                        model_scores = []
+                        deltas = []
                         
                         for idx in range(len(df_copy)):
-                            base_result = df_copy.iloc[idx][base_col]
-                            model_result = df_copy.iloc[idx][model_col]
+                            prompt_result = df_copy.iloc[idx][prompt_col]
+                            full_text_result = df_copy.iloc[idx][full_text_col]
                             
-                            if isinstance(base_result, dict) and isinstance(model_result, dict):
+                            if isinstance(prompt_result, dict) and isinstance(full_text_result, dict):
                                 # For toxic_bert, use 'toxic' category
                                 if classifier == 'toxic_bert':
-                                    base_score = base_result.get('toxic', 0.0)
-                                    model_score = model_result.get('toxic', 0.0)
+                                    prompt_score = prompt_result.get('toxic', 0.0)
+                                    full_text_score = full_text_result.get('toxic', 0.0)
                                 elif classifier == 'roberta_toxicity':
-                                    base_score = base_result.get('toxic', 0.0)
-                                    model_score = model_result.get('toxic', 0.0)
+                                    prompt_score = prompt_result.get('toxic', 0.0)
+                                    full_text_score = full_text_result.get('toxic', 0.0)
                                 elif classifier == 'dynabench_hate':
-                                    base_score = base_result.get('hate', 0.0)
-                                    model_score = model_result.get('hate', 0.0)
+                                    prompt_score = prompt_result.get('hate', 0.0)
+                                    full_text_score = full_text_result.get('hate', 0.0)
                                 else:
                                     # Use the first available score
-                                    base_score = next(iter(base_result.values()), 0.0)
-                                    model_score = next(iter(model_result.values()), 0.0)
+                                    prompt_score = next(iter(prompt_result.values()), 0.0)
+                                    full_text_score = next(iter(full_text_result.values()), 0.0)
                                 
-                                base_scores.append(base_score)
-                                model_scores.append(model_score)
+                                # Calculate delta (prompt - full_text, positive = improvement)
+                                delta = prompt_score - full_text_score
+                                deltas.append(delta)
                             else:
-                                base_scores.append(0.0)
-                                model_scores.append(0.0)
+                                deltas.append(0.0)
                         
-                        # Calculate delta
-                        df_copy[delta_col] = [base - model for base, model in zip(base_scores, model_scores)]
-                        logger.info(f"✅ Created {delta_col} from results columns")
-                        
-                    except Exception as e:
-                        logger.warning(f"⚠️ Error creating delta for {delta_col}: {e}")
-                        df_copy[delta_col] = 0.0
-                        
-                elif base_col.endswith('_score') and model_col.endswith('_score'):
-                    # Both are score columns (numeric)
-                    df_copy[delta_col] = df_copy[base_col] - df_copy[model_col]
-                    logger.info(f"✅ Created {delta_col} from score columns")
-                    
-                else:
-                    # Mixed types - try to convert
-                    try:
-                        # Convert results to scores if needed
-                        if base_col.endswith('_results'):
-                            base_scores = []
-                            for result in df_copy[base_col]:
-                                if isinstance(result, dict):
-                                    if classifier == 'toxic_bert':
-                                        base_scores.append(result.get('toxic', 0.0))
-                                    elif classifier == 'roberta_toxicity':
-                                        base_scores.append(result.get('toxic', 0.0))
-                                    elif classifier == 'dynabench_hate':
-                                        base_scores.append(result.get('hate', 0.0))
-                                    else:
-                                        base_scores.append(next(iter(result.values()), 0.0))
-                                else:
-                                    base_scores.append(0.0)
-                        else:
-                            base_scores = df_copy[base_col].fillna(0.0)
-                        
-                        if model_col.endswith('_results'):
-                            model_scores = []
-                            for result in df_copy[model_col]:
-                                if isinstance(result, dict):
-                                    if classifier == 'toxic_bert':
-                                        model_scores.append(result.get('toxic', 0.0))
-                                    elif classifier == 'roberta_toxicity':
-                                        model_scores.append(result.get('toxic', 0.0))
-                                    elif classifier == 'dynabench_hate':
-                                        model_scores.append(result.get('hate', 0.0))
-                                    else:
-                                        model_scores.append(next(iter(result.values()), 0.0))
-                                else:
-                                    model_scores.append(0.0)
-                        else:
-                            model_scores = df_copy[model_col].fillna(0.0)
-                        
-                        df_copy[delta_col] = [base - model for base, model in zip(base_scores, model_scores)]
-                        logger.info(f"✅ Created {delta_col} from mixed column types")
+                        df_copy[delta_col] = deltas
+                        logger.info(f"✅ Created {delta_col}")
                         
                     except Exception as e:
                         logger.warning(f"⚠️ Error creating delta for {delta_col}: {e}")
                         df_copy[delta_col] = 0.0
         
-        # Calculate deltas for Toxic-BERT categories
+        # Calculate deltas for Toxic-BERT categories (if available)
         for category in toxic_bert_categories:
-            base_col = f'base_toxic_bert_{category}_score'
+            # Look for Toxic-BERT category columns
+            category_cols = [col for col in df_copy.columns if f'toxic_bert_{category}' in col and col.endswith('_results')]
             
-            if base_col not in df_copy.columns:
-                logger.warning(f"⚠️ Base Toxic-BERT category column {base_col} not found")
-                continue
+            if len(category_cols) >= 2:
+                # Use the first two columns found for comparison
+                base_col = category_cols[0]
+                model_col = category_cols[1]
                 
-            for model in models:
-                if model == 'base':
-                    continue
+                delta_col = f'delta_{category}_comparison'
+                
+                try:
+                    # Extract scores from dictionary results
+                    deltas = []
                     
-                model_col = f'{model}_toxic_bert_{category}_score'
-                
-                if model_col in df_copy.columns:
-                    delta_col = f'delta_{model}_vs_base_toxic_bert_{category}'
-                    df_copy[delta_col] = df_copy[base_col] - df_copy[model_col]  # Positive = improvement
+                    for idx in range(len(df_copy)):
+                        base_result = df_copy.iloc[idx][base_col]
+                        model_result = df_copy.iloc[idx][model_col]
+                        
+                        if isinstance(base_result, dict) and isinstance(model_result, dict):
+                            base_score = base_result.get(category, 0.0)
+                            model_score = model_result.get(category, 0.0)
+                            
+                            # Calculate delta (base - model, positive = improvement)
+                            delta = base_score - model_score
+                            deltas.append(delta)
+                        else:
+                            deltas.append(0.0)
+                    
+                    df_copy[delta_col] = deltas
                     logger.info(f"✅ Created {delta_col}")
-                else:
-                    logger.warning(f"⚠️ Model Toxic-BERT category column {model_col} not found")
+                    
+                except Exception as e:
+                    logger.warning(f"⚠️ Error creating delta for {delta_col}: {e}")
+                    df_copy[delta_col] = 0.0
         
         return df_copy
     
@@ -1280,7 +1243,7 @@ class VisualizationManager:
         
         logger.info(f"📊 Logging metrics for {len(models)} models and {len(classifiers)} classifiers")
         
-        # 1. Model-specific metrics
+        # 1. Model-specific metrics (comparing prompt vs output)
         model_metrics = {}
         for model in models:
             if model == 'base':
@@ -1289,7 +1252,7 @@ class VisualizationManager:
             # Calculate improvement metrics for this model
             improvements = []
             for classifier in classifiers:
-                delta_col = f'delta_{model}_vs_base_{classifier}'
+                delta_col = f'delta_{model}_vs_prompt_{classifier}'
                 if delta_col in df.columns:
                     model_improvements = df[delta_col].dropna().tolist()
                     improvements.extend(model_improvements)
@@ -1313,7 +1276,7 @@ class VisualizationManager:
                 if model == 'base':
                     continue
                     
-                delta_col = f'delta_{model}_vs_base_{classifier}'
+                delta_col = f'delta_{model}_vs_prompt_{classifier}'
                 if delta_col in df.columns:
                     classifier_improvements.extend(df[delta_col].dropna().tolist())
             
@@ -1325,44 +1288,46 @@ class VisualizationManager:
         if classifier_metrics:
             wandb.log(classifier_metrics)
         
-        # 3. Toxic-BERT category metrics
-        toxic_bert_metrics = {}
-        for category in toxic_bert_categories:
-            category_improvements = []
+        # 3. Full text comparison metrics
+        full_text_metrics = {}
+        for classifier in classifiers:
+            full_text_improvements = []
             
             for model in models:
                 if model == 'base':
                     continue
                     
-                delta_col = f'delta_{model}_vs_base_toxic_bert_{category}'
+                delta_col = f'delta_{model}_vs_prompt_full_text_{classifier}'
                 if delta_col in df.columns:
-                    category_improvements.extend(df[delta_col].dropna().tolist())
+                    full_text_improvements.extend(df[delta_col].dropna().tolist())
+            
+            if full_text_improvements:
+                full_text_metrics[f"full_text_{classifier}_overall_mean"] = np.mean(full_text_improvements)
+                full_text_metrics[f"full_text_{classifier}_overall_std"] = np.std(full_text_improvements)
+                full_text_metrics[f"full_text_{classifier}_positive_rate"] = np.mean([x > 0.01 for x in full_text_improvements])
+        
+        if full_text_metrics:
+            wandb.log(full_text_metrics)
+        
+        # 4. Toxic-BERT category metrics
+        toxic_bert_metrics = {}
+        for category in toxic_bert_categories:
+            category_improvements = []
+            
+            # Look for category comparison deltas
+            delta_col = f'delta_{category}_comparison'
+            if delta_col in df.columns:
+                category_improvements.extend(df[delta_col].dropna().tolist())
             
             if category_improvements:
                 toxic_bert_metrics[f"toxic_bert_{category}_overall_mean"] = np.mean(category_improvements)
                 toxic_bert_metrics[f"toxic_bert_{category}_overall_std"] = np.std(category_improvements)
                 toxic_bert_metrics[f"toxic_bert_{category}_positive_rate"] = np.mean([x > 0.01 for x in category_improvements])
-                
-                # Find best model for this category
-                best_model = None
-                best_improvement = -1
-                for model in models:
-                    if model == 'base':
-                        continue
-                    delta_col = f'delta_{model}_vs_base_toxic_bert_{category}'
-                    if delta_col in df.columns:
-                        avg_improvement = df[delta_col].mean()
-                        if avg_improvement > best_improvement:
-                            best_improvement = avg_improvement
-                            best_model = model
-                
-                if best_model:
-                    toxic_bert_metrics[f"toxic_bert_{category}_best_model"] = best_model
         
         if toxic_bert_metrics:
             wandb.log(toxic_bert_metrics)
         
-        # 4. High-level summary metrics (with proper error handling)
+        # 5. High-level summary metrics (with proper error handling)
         try:
             # Find best overall model
             best_overall_model = None
@@ -1424,7 +1389,7 @@ class VisualizationManager:
                     if model == 'base':
                         continue
                     for classifier in classifiers:
-                        delta_col = f'delta_{model}_vs_base_{classifier}'
+                        delta_col = f'delta_{model}_vs_prompt_{classifier}'
                         if delta_col in df.columns:
                             all_improvements.extend(df[delta_col].dropna().tolist())
                 
