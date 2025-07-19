@@ -324,6 +324,41 @@ def save_results(df, model_outputs, output_dir="real_model_results"):
     df_csv.to_csv(comprehensive_path, index=False)
     logger.info(f"✅ Saved comprehensive results to {comprehensive_path}")
     
+    # Save separate CSV files for each model for easy comparison
+    for model_name in model_outputs.keys():
+        # Create model-specific DataFrame
+        model_df = df[['prompt', 'prompt_index']].copy()
+        
+        # Add model-specific columns
+        model_df[f'output_{model_name}'] = df[f'output_{model_name}']
+        model_df[f'full_text_{model_name}'] = df[f'full_text_{model_name}']
+        
+        # Add prompt classifications
+        for col in df.columns:
+            if col.startswith('prompt_') and col.endswith('_results'):
+                model_df[col] = df[col]
+        
+        # Add model-specific output and full text classifications
+        for col in df.columns:
+            if col.startswith(f'output_{model_name}_') or col.startswith(f'full_text_{model_name}_'):
+                model_df[col] = df[col]
+        
+        # Convert dictionaries to strings for CSV
+        model_df_csv = model_df.copy()
+        for col in model_df_csv.columns:
+            if col.endswith('_results'):
+                model_df_csv[col] = model_df_csv[col].apply(lambda x: str(x) if isinstance(x, dict) else x)
+        
+        # Save model-specific CSV
+        model_csv_path = output_path / f"{model_name}_results.csv"
+        model_df_csv.to_csv(model_csv_path, index=False)
+        logger.info(f"✅ Saved {model_name} results to {model_csv_path}")
+        
+        # Save model-specific JSON
+        model_json_path = output_path / f"{model_name}_results.json"
+        model_df.to_json(model_json_path, orient='records', indent=2)
+        logger.info(f"✅ Saved {model_name} results to {model_json_path}")
+    
     # Save comprehensive results as JSON
     json_path = output_path / "comprehensive_results.json"
     df.to_json(json_path, orient='records', indent=2)
@@ -381,6 +416,47 @@ def save_results(df, model_outputs, output_dir="real_model_results"):
         json.dump(summary_data, f, indent=2)
     logger.info(f"✅ Saved classification summary to {summary_path}")
     
+    # Create model comparison summary
+    comparison_data = {}
+    models_list = list(model_outputs.keys())
+    
+    if len(models_list) >= 2:
+        base_model = models_list[0]
+        detox_model = models_list[1]
+        
+        comparison_data["model_comparison"] = {
+            "base_model": base_model,
+            "detoxified_model": detox_model,
+            "improvements": {}
+        }
+        
+        # Calculate improvements for each classifier and text type
+        for classifier_name in summary_data.keys():
+            if classifier_name in summary_data:
+                classifier_data = summary_data[classifier_name]
+                
+                for text_type in ["output", "full_text"]:
+                    if text_type in classifier_data:
+                        text_data = classifier_data[text_type]
+                        
+                        for category, stats in text_data.items():
+                            base_key = f"{base_model}_{category}"
+                            detox_key = f"{detox_model}_{category}"
+                            
+                            if base_key in stats and detox_key in stats:
+                                improvement = stats[base_key]["mean"] - stats[detox_key]["mean"]
+                                comparison_data["model_comparison"]["improvements"][f"{classifier_name}_{text_type}_{category}"] = {
+                                    "improvement": improvement,
+                                    "base_mean": stats[base_key]["mean"],
+                                    "detoxified_mean": stats[detox_key]["mean"],
+                                    "percentage_improvement": (improvement / stats[base_key]["mean"]) * 100 if stats[base_key]["mean"] > 0 else 0
+                                }
+        
+        comparison_path = output_path / "model_comparison.json"
+        with open(comparison_path, 'w', encoding='utf-8') as f:
+            json.dump(comparison_data, f, indent=2)
+        logger.info(f"✅ Saved model comparison to {comparison_path}")
+    
     return output_path
 
 
@@ -432,11 +508,29 @@ def main():
         logger.info(f"\nFIRST SAMPLE CLASSIFICATIONS:")
         logger.info(f"  Prompt: {first_row['prompt'][:50]}...")
         
+        # Show toxic-bert results specifically
+        logger.info(f"\nTOXIC-BERT CLASSIFICATIONS (First Sample):")
         for col in df.columns:
-            if col.endswith('_results') and isinstance(first_row[col], dict):
+            if col.endswith('_results') and isinstance(first_row[col], dict) and 'toxic_bert' in col:
                 logger.info(f"  {col}: {first_row[col]}")
         
+        # Show other classifier results
+        logger.info(f"\nOTHER CLASSIFIER RESULTS (First Sample):")
+        for col in df.columns:
+            if col.endswith('_results') and isinstance(first_row[col], dict) and 'toxic_bert' not in col:
+                logger.info(f"  {col}: {first_row[col]}")
+        
+        # Show available columns
+        logger.info(f"\nAVAILABLE COLUMNS:")
+        for col in df.columns:
+            if col.endswith('_results'):
+                logger.info(f"  {col}")
+        
         logger.info(f"\n📁 All results saved to: {output_path}")
+        logger.info(f"📄 Separate files created for each model:")
+        for model_name in model_outputs.keys():
+            logger.info(f"  - {model_name}_results.csv")
+            logger.info(f"  - {model_name}_results.json")
         logger.info("\n" + "=" * 60)
         logger.info("🎉 REAL END-TO-END TEST COMPLETED!")
         logger.info("=" * 60)

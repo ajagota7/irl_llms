@@ -3,12 +3,12 @@
 
 models:
   base:
-    path: "microsoft/DialoGPT-medium"  # Replace with your actual base model path
-    description: "Base model for comparison"
+    path: "EleutherAI/pythia-70m"  # Base Pythia-70m model
+    description: "Original Pythia-70m model"
   
   detoxified:
-    path: "microsoft/DialoGPT-medium"  # Replace with your actual detoxified model path (epoch 100)
-    description: "Detoxified model (epoch 100)"
+    path: "ajagota71/pythia-70m-s-nlp-detox-checkpoint-epoch-100"  # Detoxified model at epoch 100
+    description: "Detoxified Pythia-70m model (epoch 100)"
 
 # Generation parameters
 generation:
