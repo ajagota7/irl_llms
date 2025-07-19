@@ -728,6 +728,184 @@ def create_toxicity_plots(model_dfs, output_path):
     logger.info("✅ All toxicity reduction plots created!")
 
 
+def create_prompt_comparison_plots(model_dfs, output_path):
+    """Create plots showing toxicity scores for each prompt across all models."""
+    logger.info("📊 Creating prompt comparison plots...")
+    
+    # Set up the plotting style
+    plt.style.use('default')
+    sns.set_palette("husl")
+    
+    # Extract epoch numbers and create mapping
+    model_epochs = {}
+    for model_name in model_dfs.keys():
+        if model_name == "base":
+            model_epochs[model_name] = 0  # Base model = epoch 0
+        elif "epoch" in model_name:
+            # Extract epoch number from name like "detox_epoch_20"
+            epoch_num = int(model_name.split("_")[-1])
+            model_epochs[model_name] = epoch_num
+        else:
+            # For any other models, assign a default epoch
+            model_epochs[model_name] = 100
+    
+    # Sort models by epoch
+    sorted_models = sorted(model_epochs.items(), key=lambda x: x[1])
+    model_names = [name for name, _ in sorted_models]
+    epochs = [epoch for _, epoch in sorted_models]
+    
+    # Get the first model to determine number of prompts
+    first_model_name = list(model_dfs.keys())[0]
+    first_df = model_dfs[first_model_name]
+    num_prompts = len(first_df)
+    
+    # Create plots for each classifier and text type
+    classifiers = ["toxic_bert", "roberta_toxicity", "dynabench_hate"]
+    text_types = ["output", "full_text"]
+    
+    for classifier in classifiers:
+        for text_type in text_types:
+            logger.info(f"  Creating prompt comparison for {classifier} - {text_type}")
+            
+            # Create a large figure with subplots for each prompt
+            num_cols = 5  # 5 columns
+            num_rows = (num_prompts + num_cols - 1) // num_cols  # Calculate rows needed
+            
+            fig, axes = plt.subplots(num_rows, num_cols, figsize=(20, 4 * num_rows))
+            fig.suptitle(f'Prompt-by-Prompt Toxicity Comparison: {classifier} - {text_type}', 
+                        fontsize=16, fontweight='bold')
+            
+            # Flatten axes for easier indexing
+            if num_rows == 1:
+                axes = [axes] if num_cols == 1 else axes
+            else:
+                axes = axes.flatten()
+            
+            # Plot each prompt
+            for prompt_idx in range(num_prompts):
+                ax = axes[prompt_idx]
+                
+                # Collect toxicity scores for this prompt across all models
+                prompt_scores = []
+                prompt_epochs = []
+                
+                for model_name in model_names:
+                    if model_name in model_dfs:
+                        df = model_dfs[model_name]
+                        col_name = f"{text_type}_{classifier}_results"
+                        
+                        if col_name in df.columns and prompt_idx < len(df):
+                            row = df.iloc[prompt_idx]
+                            if isinstance(row[col_name], dict):
+                                if classifier == "toxic_bert":
+                                    score = row[col_name].get('toxic', 0.0)
+                                elif classifier == "roberta_toxicity":
+                                    score = row[col_name].get('toxic', 0.0)
+                                elif classifier == "dynabench_hate":
+                                    score = row[col_name].get('hate', 0.0)
+                                else:
+                                    score = 0.0
+                                
+                                prompt_scores.append(score)
+                                prompt_epochs.append(model_epochs[model_name])
+                
+                # Plot this prompt's progression
+                if prompt_scores:
+                    ax.plot(prompt_epochs, prompt_scores, 'o-', linewidth=2, markersize=6)
+                    ax.set_xlabel('Epoch')
+                    ax.set_ylabel('Toxicity Score')
+                    ax.set_title(f'Prompt {prompt_idx + 1}')
+                    ax.grid(True, alpha=0.3)
+                    
+                    # Add improvement annotation
+                    if len(prompt_scores) > 1:
+                        improvement = prompt_scores[0] - prompt_scores[-1]  # Base - Final
+                        improvement_pct = (improvement / prompt_scores[0]) * 100 if prompt_scores[0] > 0 else 0
+                        ax.text(0.02, 0.98, f'{improvement_pct:.0f}%', 
+                               transform=ax.transAxes, verticalalignment='top',
+                               bbox=dict(boxstyle='round', facecolor='lightgreen' if improvement > 0 else 'lightcoral', alpha=0.8))
+                
+                # Hide unused subplots
+                if prompt_idx >= num_prompts:
+                    ax.set_visible(False)
+            
+            plt.tight_layout()
+            
+            # Save plot
+            plot_path = output_path / f"prompt_comparison_{classifier}_{text_type}.png"
+            plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+            logger.info(f"    Saved prompt comparison plot to {plot_path}")
+            plt.close()
+    
+    # Create a summary heatmap showing improvement percentages
+    logger.info("  Creating improvement heatmap")
+    fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+    fig.suptitle('Toxicity Reduction Heatmap by Prompt', fontsize=16, fontweight='bold')
+    
+    for i, classifier in enumerate(classifiers):
+        for j, text_type in enumerate(text_types):
+            ax = axes[j, i]
+            
+            # Calculate improvement matrix
+            improvement_matrix = []
+            for prompt_idx in range(min(20, num_prompts)):  # Show first 20 prompts
+                prompt_improvements = []
+                
+                for model_name in model_names:
+                    if model_name in model_dfs:
+                        df = model_dfs[model_name]
+                        col_name = f"{text_type}_{classifier}_results"
+                        
+                        if col_name in df.columns and prompt_idx < len(df):
+                            row = df.iloc[prompt_idx]
+                            if isinstance(row[col_name], dict):
+                                if classifier == "toxic_bert":
+                                    score = row[col_name].get('toxic', 0.0)
+                                elif classifier == "roberta_toxicity":
+                                    score = row[col_name].get('toxic', 0.0)
+                                elif classifier == "dynabench_hate":
+                                    score = row[col_name].get('hate', 0.0)
+                                else:
+                                    score = 0.0
+                                
+                                prompt_improvements.append(score)
+                            else:
+                                prompt_improvements.append(0.0)
+                        else:
+                            prompt_improvements.append(0.0)
+                    else:
+                        prompt_improvements.append(0.0)
+                
+                improvement_matrix.append(prompt_improvements)
+            
+            # Create heatmap
+            if improvement_matrix:
+                im = ax.imshow(improvement_matrix, cmap='RdYlGn_r', aspect='auto', vmin=0, vmax=1)
+                ax.set_xlabel('Epoch')
+                ax.set_ylabel('Prompt Index')
+                ax.set_title(f'{classifier.replace("_", " ").title()} - {text_type}')
+                
+                # Set x-axis labels
+                ax.set_xticks(range(len(epochs)))
+                ax.set_xticklabels(epochs)
+                
+                # Set y-axis labels
+                ax.set_yticks(range(min(20, num_prompts)))
+                ax.set_yticklabels(range(1, min(21, num_prompts + 1)))
+                
+                # Add colorbar
+                cbar = plt.colorbar(im, ax=ax)
+                cbar.set_label('Toxicity Score')
+    
+    plt.tight_layout()
+    heatmap_path = output_path / "toxicity_improvement_heatmap.png"
+    plt.savefig(heatmap_path, dpi=300, bbox_inches='tight')
+    logger.info(f"    Saved improvement heatmap to {heatmap_path}")
+    plt.close()
+    
+    logger.info("✅ All prompt comparison plots created!")
+
+
 def main():
     """Run real end-to-end test with actual models and classifiers."""
     logger.info("🚀 Starting Real End-to-End Model Test")
@@ -812,6 +990,9 @@ def main():
         
         # Create toxicity reduction plots
         create_toxicity_plots(model_dfs, output_path)
+        
+        # Create prompt comparison plots
+        create_prompt_comparison_plots(model_dfs, output_path)
         
         # Print classifier summary for first model
         first_model_df = list(model_dfs.values())[0]
