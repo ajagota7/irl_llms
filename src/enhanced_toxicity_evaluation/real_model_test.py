@@ -308,86 +308,54 @@ def create_comprehensive_results(prompts, model_outputs, classifiers):
         full_texts = [f"{prompt} {output}" for prompt, output in zip(prompts, outputs)]
         full_text_classifications[model_name] = classify_texts(classifiers, full_texts, f"full_texts_{model_name}")
     
-    # Create DataFrame with consistent column naming
-    df_data = []
-    for i in range(len(prompts)):
-        row = {
-            "prompt": prompts[i],
-            "prompt_index": i
-        }
-        
-        # Add outputs for each model with consistent naming
-        for model_name, outputs in model_outputs.items():
-            # Use consistent naming: output_1, output_2, etc.
-            model_num = list(model_outputs.keys()).index(model_name) + 1
-            row[f"output_{model_num}"] = outputs[i]
-            row[f"full_text_{model_num}"] = f"{prompts[i]} {outputs[i]}"
-        
-        # Add prompt classifications
-        for classifier_name, results in prompt_classifications.items():
-            if results and i < len(results):
-                row[f"prompt_{classifier_name}_results"] = results[i]
-        
-        # Add output classifications for each model with consistent naming
-        for model_name in model_outputs.keys():
-            model_num = list(model_outputs.keys()).index(model_name) + 1
+    # Create separate DataFrames for each model with generic column names
+    model_dfs = {}
+    
+    for model_name, outputs in model_outputs.items():
+        df_data = []
+        for i in range(len(prompts)):
+            row = {
+                "prompt": prompts[i],
+                "prompt_index": i,
+                "output": outputs[i],
+                "full_text": f"{prompts[i]} {outputs[i]}"
+            }
+            
+            # Add prompt classifications
+            for classifier_name, results in prompt_classifications.items():
+                if results and i < len(results):
+                    row[f"prompt_{classifier_name}_results"] = results[i]
+            
+            # Add output classifications for this model
             if model_name in output_classifications:
                 for classifier_name, results in output_classifications[model_name].items():
                     if results and i < len(results):
-                        row[f"output_{model_num}_{classifier_name}_results"] = results[i]
-        
-        # Add full text classifications for each model with consistent naming
-        for model_name in model_outputs.keys():
-            model_num = list(model_outputs.keys()).index(model_name) + 1
+                        row[f"output_{classifier_name}_results"] = results[i]
+            
+            # Add full text classifications for this model
             if model_name in full_text_classifications:
                 for classifier_name, results in full_text_classifications[model_name].items():
                     if results and i < len(results):
-                        row[f"full_text_{model_num}_{classifier_name}_results"] = results[i]
+                        row[f"full_text_{classifier_name}_results"] = results[i]
+            
+            df_data.append(row)
         
-        df_data.append(row)
+        model_dfs[model_name] = pd.DataFrame(df_data)
+        logger.info(f"✅ Created DataFrame for {model_name} with {len(df_data)} rows and {len(model_dfs[model_name].columns)} columns")
     
-    df = pd.DataFrame(df_data)
-    logger.info(f"✅ Created comprehensive DataFrame with {len(df)} rows and {len(df.columns)} columns")
-    
-    return df
+    return model_dfs
 
 
-def save_results(df, model_outputs, output_dir="real_model_results"):
+def save_results(model_dfs, model_outputs, output_dir="real_model_results"):
     """Save results to separate files."""
     logger.info(f"💾 Saving results to {output_dir}...")
     
     output_path = Path(output_dir)
     output_path.mkdir(exist_ok=True)
     
-    # Save comprehensive DataFrame
-    comprehensive_path = output_path / "comprehensive_results.csv"
-    df_csv = df.copy()
-    for col in df_csv.columns:
-        if col.endswith('_results'):
-            df_csv[col] = df_csv[col].apply(lambda x: str(x) if isinstance(x, dict) else x)
-    df_csv.to_csv(comprehensive_path, index=False)
-    logger.info(f"✅ Saved comprehensive results to {comprehensive_path}")
-    
-    # Save separate CSV files for each model for easy comparison
-    for model_name in model_outputs.keys():
+    # Save separate CSV files for each model with generic column names
+    for model_name, model_df in model_dfs.items():
         model_num = list(model_outputs.keys()).index(model_name) + 1
-        
-        # Create model-specific DataFrame
-        model_df = df[['prompt', 'prompt_index']].copy()
-        
-        # Add model-specific columns with consistent naming
-        model_df[f'output_{model_num}'] = df[f'output_{model_num}']
-        model_df[f'full_text_{model_num}'] = df[f'full_text_{model_num}']
-        
-        # Add prompt classifications
-        for col in df.columns:
-            if col.startswith('prompt_') and col.endswith('_results'):
-                model_df[col] = df[col]
-        
-        # Add model-specific output and full text classifications
-        for col in df.columns:
-            if col.startswith(f'output_{model_num}_') or col.startswith(f'full_text_{model_num}_'):
-                model_df[col] = df[col]
         
         # Convert dictionaries to strings for CSV
         model_df_csv = model_df.copy()
@@ -395,19 +363,47 @@ def save_results(df, model_outputs, output_dir="real_model_results"):
             if col.endswith('_results'):
                 model_df_csv[col] = model_df_csv[col].apply(lambda x: str(x) if isinstance(x, dict) else x)
         
-        # Save model-specific CSV with consistent naming
+        # Save model-specific CSV with generic column names
         model_csv_path = output_path / f"model_{model_num}_results.csv"
         model_df_csv.to_csv(model_csv_path, index=False)
         logger.info(f"✅ Saved model {model_num} ({model_name}) results to {model_csv_path}")
         
-        # Save model-specific JSON with consistent naming
+        # Save model-specific JSON with generic column names
         model_json_path = output_path / f"model_{model_num}_results.json"
         model_df.to_json(model_json_path, orient='records', indent=2)
         logger.info(f"✅ Saved model {model_num} ({model_name}) results to {model_json_path}")
     
+    # Create comprehensive DataFrame for comparison (optional)
+    comprehensive_data = []
+    for model_name, model_df in model_dfs.items():
+        model_num = list(model_outputs.keys()).index(model_name) + 1
+        for _, row in model_df.iterrows():
+            comprehensive_row = {
+                "model": f"model_{model_num}",
+                "model_name": model_name,
+                "prompt": row["prompt"],
+                "prompt_index": row["prompt_index"],
+                "output": row["output"],
+                "full_text": row["full_text"]
+            }
+            # Add all classification results
+            for col in model_df.columns:
+                if col.endswith('_results'):
+                    comprehensive_row[col] = row[col]
+            comprehensive_data.append(comprehensive_row)
+    
+    comprehensive_df = pd.DataFrame(comprehensive_data)
+    comprehensive_path = output_path / "comprehensive_results.csv"
+    comprehensive_csv = comprehensive_df.copy()
+    for col in comprehensive_csv.columns:
+        if col.endswith('_results'):
+            comprehensive_csv[col] = comprehensive_csv[col].apply(lambda x: str(x) if isinstance(x, dict) else x)
+    comprehensive_csv.to_csv(comprehensive_path, index=False)
+    logger.info(f"✅ Saved comprehensive results to {comprehensive_path}")
+    
     # Save comprehensive results as JSON
     json_path = output_path / "comprehensive_results.json"
-    df.to_json(json_path, orient='records', indent=2)
+    comprehensive_df.to_json(json_path, orient='records', indent=2)
     logger.info(f"✅ Saved comprehensive results to {json_path}")
     
     # Save model outputs separately with consistent naming
@@ -441,35 +437,39 @@ def save_results(df, model_outputs, output_dir="real_model_results"):
     
     # Save classification summary
     summary_data = {}
-    for col in df.columns:
-        if col.endswith('_results'):
-            # Extract classifier and text type from column name
-            parts = col.split('_')
-            if len(parts) >= 3:
-                text_type = parts[0]  # prompt, output, or full_text
-                classifier = parts[1]  # classifier name
-                
-                if classifier not in summary_data:
-                    summary_data[classifier] = {}
-                
-                if text_type not in summary_data[classifier]:
-                    summary_data[classifier][text_type] = {}
-                
-                # Calculate average scores for each category
-                valid_results = [r for r in df[col] if isinstance(r, dict) and r]
-                if valid_results:
-                    all_categories = set()
-                    for result in valid_results:
-                        all_categories.update(result.keys())
+    for model_name, model_df in model_dfs.items():
+        model_num = list(model_outputs.keys()).index(model_name) + 1
+        summary_data[f"model_{model_num}"] = {}
+        
+        for col in model_df.columns:
+            if col.endswith('_results'):
+                # Extract classifier and text type from column name
+                parts = col.split('_')
+                if len(parts) >= 3:
+                    text_type = parts[0]  # prompt, output, or full_text
+                    classifier = parts[1]  # classifier name
                     
-                    for category in all_categories:
-                        scores = [result.get(category, 0.0) for result in valid_results]
-                        summary_data[classifier][text_type][category] = {
-                            "mean": np.mean(scores),
-                            "std": np.std(scores),
-                            "min": np.min(scores),
-                            "max": np.max(scores)
-                        }
+                    if classifier not in summary_data[f"model_{model_num}"]:
+                        summary_data[f"model_{model_num}"][classifier] = {}
+                    
+                    if text_type not in summary_data[f"model_{model_num}"][classifier]:
+                        summary_data[f"model_{model_num}"][classifier][text_type] = {}
+                    
+                    # Calculate average scores for each category
+                    valid_results = [r for r in model_df[col] if isinstance(r, dict) and r]
+                    if valid_results:
+                        all_categories = set()
+                        for result in valid_results:
+                            all_categories.update(result.keys())
+                        
+                        for category in all_categories:
+                            scores = [result.get(category, 0.0) for result in valid_results]
+                            summary_data[f"model_{model_num}"][classifier][text_type][category] = {
+                                "mean": np.mean(scores),
+                                "std": np.std(scores),
+                                "min": np.min(scores),
+                                "max": np.max(scores)
+                            }
     
     summary_path = output_path / "classification_summary.json"
     with open(summary_path, 'w', encoding='utf-8') as f:
@@ -578,13 +578,14 @@ def main():
         model_outputs = generate_outputs(models, tokenizers, prompts, config["generation"]["max_new_tokens"])
         
         # Create comprehensive results
-        df = create_comprehensive_results(prompts, model_outputs, classifiers)
+        model_dfs = create_comprehensive_results(prompts, model_outputs, classifiers)
         
         # Save results
-        output_path = save_results(df, model_outputs, config["output"]["directory"])
+        output_path = save_results(model_dfs, model_outputs, config["output"]["directory"])
         
-        # Print classifier summary
-        print_classifier_summary(df)
+        # Print classifier summary for first model
+        first_model_df = list(model_dfs.values())[0]
+        print_classifier_summary(first_model_df)
         
         # Display summary
         logger.info("\n📋 RESULTS SUMMARY:")
