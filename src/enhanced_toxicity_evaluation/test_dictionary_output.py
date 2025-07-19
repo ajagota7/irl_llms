@@ -11,6 +11,7 @@ from pathlib import Path
 import pandas as pd
 import numpy as np
 from datasets import load_dataset
+from transformers import pipeline
 
 # Suppress CUDA warnings
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
@@ -64,54 +65,69 @@ def test_dictionary_classification_output():
             "full_texts": {}
         }
         
-        # Mock toxic-bert results (multi-label)
-        toxic_bert_prompt_results = []
-        toxic_bert_output_results = []
-        toxic_bert_full_results = []
+        # Load actual classifiers
+        logger.info("🔧 Loading actual classifiers...")
         
-        for i in range(len(prompts)):
-            # Mock toxic-bert predictions for prompts
-            prompt_pred = {
-                "toxic": 0.3 + i * 0.1,
-                "severe_toxic": 0.1 + i * 0.02,
-                "obscene": 0.05 + i * 0.01,
-                "threat": 0.02 + i * 0.005,
-                "insult": 0.15 + i * 0.03,
-                "identity_attack": 0.08 + i * 0.015
-            }
-            toxic_bert_prompt_results.append(prompt_pred)
+        try:
+            # Load toxic-bert (multi-label)
+            toxic_bert_classifier = pipeline(
+                "text-classification",
+                model="unitary/toxic-bert",
+                return_all_scores=True,
+                device=-1  # Use CPU to avoid CUDA issues
+            )
+            logger.info("✅ Loaded toxic-bert classifier")
             
-            # Mock toxic-bert predictions for outputs (lower toxicity)
-            output_pred = {
-                "toxic": 0.1 + i * 0.05,
-                "severe_toxic": 0.02 + i * 0.01,
-                "obscene": 0.01 + i * 0.005,
-                "threat": 0.005 + i * 0.002,
-                "insult": 0.05 + i * 0.015,
-                "identity_attack": 0.02 + i * 0.008
-            }
-            toxic_bert_output_results.append(output_pred)
+            # Load roberta toxicity (single-label)
+            roberta_classifier = pipeline(
+                "text-classification",
+                model="s-nlp/roberta_toxicity_classifier",
+                device=-1
+            )
+            logger.info("✅ Loaded roberta toxicity classifier")
             
-            # Mock toxic-bert predictions for full texts
-            full_pred = {
-                "toxic": 0.2 + i * 0.08,
-                "severe_toxic": 0.06 + i * 0.015,
-                "obscene": 0.03 + i * 0.008,
-                "threat": 0.01 + i * 0.003,
-                "insult": 0.1 + i * 0.025,
-                "identity_attack": 0.05 + i * 0.012
-            }
-            toxic_bert_full_results.append(full_pred)
+            # Load dynabench hate (single-label)
+            dynabench_classifier = pipeline(
+                "text-classification",
+                model="facebook/roberta-hate-speech-detector",
+                device=-1
+            )
+            logger.info("✅ Loaded dynabench hate classifier")
+            
+        except Exception as e:
+            logger.error(f"❌ Error loading classifiers: {e}")
+            logger.info("⚠️ Falling back to mock results for testing...")
+            mock_results = _create_mock_results(prompts, mock_outputs, full_texts)
+            toxic_bert_prompt_results = mock_results["prompts"]["toxic_bert"]
+            toxic_bert_output_results = mock_results["outputs"]["toxic_bert"]
+            toxic_bert_full_results = mock_results["full_texts"]["toxic_bert"]
+            roberta_prompt_results = mock_results["prompts"]["roberta_toxicity"]
+            roberta_output_results = mock_results["outputs"]["roberta_toxicity"]
+            roberta_full_results = mock_results["full_texts"]["roberta_toxicity"]
+            dynabench_prompt_results = mock_results["prompts"]["dynabench_hate"]
+            dynabench_output_results = mock_results["outputs"]["dynabench_hate"]
+            dynabench_full_results = mock_results["full_texts"]["dynabench_hate"]
         
-        # Mock roberta toxicity results (single-label)
-        roberta_prompt_results = [{"toxicity": 0.4 + i * 0.1} for i in range(len(prompts))]
-        roberta_output_results = [{"toxicity": 0.15 + i * 0.05} for i in range(len(prompts))]
-        roberta_full_results = [{"toxicity": 0.25 + i * 0.08} for i in range(len(prompts))]
+        # Run actual classifications
+        logger.info("🔍 Running actual classifications...")
         
-        # Mock dynabench hate results (single-label)
-        dynabench_prompt_results = [{"hate": 0.3 + i * 0.08} for i in range(len(prompts))]
-        dynabench_output_results = [{"hate": 0.1 + i * 0.03} for i in range(len(prompts))]
-        dynabench_full_results = [{"hate": 0.2 + i * 0.06} for i in range(len(prompts))]
+        # Classify prompts
+        logger.info("  Classifying prompts...")
+        toxic_bert_prompt_results = _classify_texts(toxic_bert_classifier, prompts, "toxic_bert")
+        roberta_prompt_results = _classify_texts(roberta_classifier, prompts, "roberta_toxicity")
+        dynabench_prompt_results = _classify_texts(dynabench_classifier, prompts, "dynabench_hate")
+        
+        # Classify outputs
+        logger.info("  Classifying outputs...")
+        toxic_bert_output_results = _classify_texts(toxic_bert_classifier, mock_outputs, "toxic_bert")
+        roberta_output_results = _classify_texts(roberta_classifier, mock_outputs, "roberta_toxicity")
+        dynabench_output_results = _classify_texts(dynabench_classifier, mock_outputs, "dynabench_hate")
+        
+        # Classify full texts
+        logger.info("  Classifying full texts...")
+        toxic_bert_full_results = _classify_texts(toxic_bert_classifier, full_texts, "toxic_bert")
+        roberta_full_results = _classify_texts(roberta_classifier, full_texts, "roberta_toxicity")
+        dynabench_full_results = _classify_texts(dynabench_classifier, full_texts, "dynabench_hate")
         
         # Store all results
         classification_results["prompts"] = {
@@ -275,6 +291,111 @@ def main():
         logger.error("\n❌ Dictionary classification output test failed.")
     
     return success
+
+
+def _classify_texts(classifier, texts, classifier_type):
+    """Classify texts and return results as dictionaries."""
+    results = []
+    
+    for text in texts:
+        try:
+            if classifier_type == "toxic_bert":
+                # Toxic-bert returns all scores for all categories
+                predictions = classifier(text, truncation=True, max_length=512)
+                if isinstance(predictions, list) and len(predictions) > 0:
+                    # Convert to dictionary format
+                    result = {}
+                    for pred in predictions[0]:  # Take first (and only) prediction
+                        label = pred["label"].lower()
+                        score = pred["score"]
+                        result[label] = score
+                    results.append(result)
+                else:
+                    results.append({})
+            else:
+                # Single-label classifiers
+                prediction = classifier(text, truncation=True, max_length=512)
+                if isinstance(prediction, list) and len(prediction) > 0:
+                    pred = prediction[0]
+                    label = pred["label"].lower()
+                    score = pred["score"]
+                    
+                    # Map labels to consistent names
+                    if classifier_type == "roberta_toxicity":
+                        label = "toxicity"
+                    elif classifier_type == "dynabench_hate":
+                        label = "hate"
+                    
+                    results.append({label: score})
+                else:
+                    results.append({})
+                    
+        except Exception as e:
+            logger.warning(f"⚠️ Error classifying text: {e}")
+            results.append({})
+    
+    return results
+
+
+def _create_mock_results(prompts, mock_outputs, full_texts):
+    """Create mock results for fallback testing."""
+    logger.info("🔄 Creating mock results for testing...")
+    
+    # Mock toxic-bert results (multi-label)
+    toxic_bert_categories = ["toxic", "severe_toxic", "obscene", "threat", "insult", "identity_attack"]
+    
+    results = {
+        "prompts": {},
+        "outputs": {},
+        "full_texts": {}
+    }
+    
+    for text_type, texts in [("prompts", prompts), ("outputs", mock_outputs), ("full_texts", full_texts)]:
+        toxic_bert_results = []
+        roberta_results = []
+        dynabench_results = []
+        
+        for i, text in enumerate(texts):
+            # Mock toxic-bert prediction
+            pred = {}
+            for category in toxic_bert_categories:
+                if text_type == "prompts":
+                    base_score = 0.3 + i * 0.1
+                elif text_type == "outputs":
+                    base_score = 0.05 + i * 0.02
+                else:  # full_texts
+                    base_score = 0.15 + i * 0.05
+                
+                pred[category] = base_score + np.random.normal(0, 0.02)
+                pred[category] = max(0.0, min(1.0, pred[category]))
+            
+            toxic_bert_results.append(pred)
+            
+            # Mock roberta prediction
+            if text_type == "prompts":
+                score = 0.4 + i * 0.1
+            elif text_type == "outputs":
+                score = 0.15 + i * 0.05
+            else:  # full_texts
+                score = 0.25 + i * 0.08
+            
+            roberta_results.append({"toxicity": score})
+            
+            # Mock dynabench prediction
+            if text_type == "prompts":
+                score = 0.3 + i * 0.08
+            elif text_type == "outputs":
+                score = 0.1 + i * 0.03
+            else:  # full_texts
+                score = 0.2 + i * 0.06
+            
+            dynabench_results.append({"hate": score})
+        
+        results[text_type]["toxic_bert"] = toxic_bert_results
+        results[text_type]["roberta_toxicity"] = roberta_results
+        results[text_type]["dynabench_hate"] = dynabench_results
+    
+    return results
 
 
 if __name__ == "__main__":
