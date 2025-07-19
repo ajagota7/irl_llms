@@ -142,10 +142,10 @@ visualization:
 
 # WandB integration (optional)
 wandb:
-  use_wandb: false
+  use_wandb: true  # Enable WandB for tracking
   project: "toxicity-evaluation"
   entity: null
-  tags: []
+  tags: ["modular", "toxicity", "evaluation"]
 
 # Experiment settings
 experiment:
