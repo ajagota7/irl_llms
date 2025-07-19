@@ -419,8 +419,10 @@ def save_results(model_dfs, model_outputs, output_dir="real_model_results"):
     
     # Save prompts
     prompts_path = output_path / "prompts.txt"
+    # Get prompts from the first model DataFrame
+    first_model_df = list(model_dfs.values())[0]
     with open(prompts_path, 'w', encoding='utf-8') as f:
-        for i, prompt in enumerate(df['prompt']):
+        for i, prompt in enumerate(first_model_df['prompt']):
             f.write(f"Prompt {i+1}:\n{prompt}\n\n")
     logger.info(f"✅ Saved prompts to {prompts_path}")
     
