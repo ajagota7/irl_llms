@@ -86,51 +86,65 @@ def load_models(config):
     return models, tokenizers
 
 
-def load_classifiers():
+def load_classifiers(config):
     """Load toxicity classifiers."""
     logger.info("🔧 Loading toxicity classifiers...")
     
     classifiers = {}
     
-    try:
-        # Load toxic-bert (multi-label)
-        toxic_bert_classifier = pipeline(
-            "text-classification",
-            model="unitary/toxic-bert",
-            return_all_scores=True,
-            device=-1  # Use CPU to avoid CUDA issues
-        )
-        classifiers["toxic_bert"] = toxic_bert_classifier
-        logger.info("✅ Loaded toxic-bert classifier")
-    except Exception as e:
-        logger.error(f"❌ Error loading toxic-bert classifier: {e}")
-        classifiers["toxic_bert"] = None
-    
-    try:
-        # Load roberta toxicity (single-label)
-        roberta_classifier = pipeline(
-            "text-classification",
-            model="s-nlp/roberta_toxicity_classifier",
-            device=-1
-        )
-        classifiers["roberta_toxicity"] = roberta_classifier
-        logger.info("✅ Loaded roberta toxicity classifier")
-    except Exception as e:
-        logger.error(f"❌ Error loading roberta toxicity classifier: {e}")
-        classifiers["roberta_toxicity"] = None
-    
-    try:
-        # Load dynabench hate (single-label)
-        dynabench_classifier = pipeline(
-            "text-classification",
-            model="facebook/roberta-hate-speech-dynabench-r4-target",
-            device=-1
-        )
-        classifiers["dynabench_hate"] = dynabench_classifier
-        logger.info("✅ Loaded dynabench hate classifier")
-    except Exception as e:
-        logger.error(f"❌ Error loading dynabench hate classifier: {e}")
-        classifiers["dynabench_hate"] = None
+    for classifier_name, classifier_config in config["classifiers"].items():
+        try:
+            logger.info(f"📥 Loading {classifier_name} classifier...")
+            
+            # Get classifier parameters
+            model_name = classifier_config["model"]
+            device = classifier_config.get("device", -1)
+            return_all_scores = classifier_config.get("return_all_scores", False)
+            
+            # Create pipeline
+            if return_all_scores:
+                classifier = pipeline(
+                    "text-classification",
+                    model=model_name,
+                    return_all_scores=True,
+                    device=device
+                )
+            else:
+                classifier = pipeline(
+                    "text-classification",
+                    model=model_name,
+                    device=device
+                )
+            
+            classifiers[classifier_name] = classifier
+            logger.info(f"✅ Loaded {classifier_name} classifier (device: {device})")
+            
+        except Exception as e:
+            logger.error(f"❌ Error loading {classifier_name} classifier: {e}")
+            logger.info(f"⚠️ Falling back to CPU for {classifier_name}...")
+            
+            # Fallback to CPU
+            try:
+                if classifier_config.get("return_all_scores", False):
+                    classifier = pipeline(
+                        "text-classification",
+                        model=model_name,
+                        return_all_scores=True,
+                        device=-1
+                    )
+                else:
+                    classifier = pipeline(
+                        "text-classification",
+                        model=model_name,
+                        device=-1
+                    )
+                
+                classifiers[classifier_name] = classifier
+                logger.info(f"✅ Loaded {classifier_name} classifier on CPU")
+                
+            except Exception as e2:
+                logger.error(f"❌ Failed to load {classifier_name} even on CPU: {e2}")
+                classifiers[classifier_name] = None
     
     return classifiers
 
@@ -180,8 +194,13 @@ def generate_outputs(models, tokenizers, prompts, max_new_tokens=50):
                 output = tokenizer.decode(gen_only[0], skip_special_tokens=True)
                 model_outputs.append(output)
                 
-                if (i + 1) % 10 == 0:
-                    logger.info(f"    Generated {i + 1}/{len(prompts)} outputs")
+                # Progress tracking
+                if (i + 1) % 5 == 0:
+                    logger.info(f"    Generated {i + 1}/{len(prompts)} outputs for {model_name}")
+                
+                # Clear GPU memory periodically
+                if torch.cuda.is_available() and (i + 1) % 10 == 0:
+                    torch.cuda.empty_cache()
                     
             except Exception as e:
                 logger.warning(f"⚠️ Error generating output {i} for {model_name}: {e}")
@@ -189,6 +208,10 @@ def generate_outputs(models, tokenizers, prompts, max_new_tokens=50):
         
         outputs[model_name] = model_outputs
         logger.info(f"✅ Generated {len(model_outputs)} outputs for {model_name}")
+        
+        # Clear GPU memory after each model
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
     
     return outputs
 
@@ -465,6 +488,13 @@ def main():
     logger.info("🚀 Starting Real End-to-End Model Test")
     logger.info("=" * 60)
     
+    # Check GPU availability
+    if torch.cuda.is_available():
+        logger.info(f"🔥 GPU available: {torch.cuda.get_device_name(0)}")
+        logger.info(f"🔥 GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
+    else:
+        logger.info("💻 Using CPU for computation")
+    
     try:
         # Load configuration
         config = load_config()
@@ -482,7 +512,7 @@ def main():
         
         # Load models and classifiers
         models, tokenizers = load_models(config)
-        classifiers = load_classifiers()
+        classifiers = load_classifiers(config)
         
         # Generate outputs
         model_outputs = generate_outputs(models, tokenizers, prompts, config["generation"]["max_new_tokens"])

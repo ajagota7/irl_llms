@@ -21,22 +21,22 @@ generation:
 dataset:
   name: "allenai/real-toxicity-prompts"
   split: "train"
-  sample_size: 5  # Small sample for testing
+  sample_size: 20  # Increased sample size for better testing
 
 # Classifiers
 classifiers:
   toxic_bert:
     model: "unitary/toxic-bert"
     return_all_scores: true
-    device: -1  # CPU
+    device: 0  # GPU
   
   roberta_toxicity:
     model: "s-nlp/roberta_toxicity_classifier"
-    device: -1  # CPU
+    device: 0  # GPU
   
   dynabench_hate:
     model: "facebook/roberta-hate-speech-dynabench-r4-target"
-    device: -1  # CPU
+    device: 0  # GPU
 
 # Output settings
 output:
