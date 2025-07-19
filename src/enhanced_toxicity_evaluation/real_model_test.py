@@ -230,6 +230,9 @@ def classify_texts(classifiers, texts, text_type):
         logger.info(f"  Running {classifier_name}...")
         classifier_results = []
         
+        # Log first few results for debugging
+        debug_count = 0
+        
         for text in texts:
             try:
                 if classifier_name == "toxic_bert":
@@ -246,20 +249,34 @@ def classify_texts(classifiers, texts, text_type):
                     else:
                         classifier_results.append({})
                 else:
-                    # Single-label classifiers
-                    prediction = classifier(text, truncation=True, max_length=512)
-                    if isinstance(prediction, list) and len(prediction) > 0:
-                        pred = prediction[0]
-                        label = pred["label"].lower()
-                        score = pred["score"]
+                    # Single-label classifiers - get all scores
+                    predictions = classifier(text, truncation=True, max_length=512, return_all_scores=True)
+                    if isinstance(predictions, list) and len(predictions) > 0:
+                        # Convert to dictionary format with all scores
+                        result = {}
+                        for pred in predictions[0]:  # Take first (and only) prediction
+                            label = pred["label"].lower()
+                            score = pred["score"]
+                            
+                            # Map labels to consistent names
+                            if classifier_name == "roberta_toxicity":
+                                if "toxic" in label:
+                                    label = "toxic"
+                                elif "neutral" in label:
+                                    label = "neutral"
+                            elif classifier_name == "dynabench_hate":
+                                if "hate" in label:
+                                    label = "hate"
+                                elif "not" in label:
+                                    label = "not_hate"
+                            
+                            result[label] = score
+                        classifier_results.append(result)
                         
-                        # Map labels to consistent names
-                        if classifier_name == "roberta_toxicity":
-                            label = "toxicity"
-                        elif classifier_name == "dynabench_hate":
-                            label = "hate"
-                        
-                        classifier_results.append({label: score})
+                        # Debug logging for first few results
+                        if debug_count < 3:
+                            logger.info(f"    Sample {debug_count + 1} {classifier_name} results: {result}")
+                            debug_count += 1
                     else:
                         classifier_results.append({})
                         
@@ -483,6 +500,29 @@ def save_results(df, model_outputs, output_dir="real_model_results"):
     return output_path
 
 
+def print_classifier_summary(df):
+    """Print summary of classifier scores for debugging."""
+    logger.info("\n🔍 CLASSIFIER SCORE SUMMARY:")
+    logger.info("=" * 40)
+    
+    for col in df.columns:
+        if col.endswith('_results'):
+            logger.info(f"\n📊 {col}:")
+            valid_results = [r for r in df[col] if isinstance(r, dict) and r]
+            if valid_results:
+                # Get all categories
+                all_categories = set()
+                for result in valid_results:
+                    all_categories.update(result.keys())
+                
+                for category in sorted(all_categories):
+                    scores = [result.get(category, 0.0) for result in valid_results]
+                    mean_score = np.mean(scores)
+                    logger.info(f"  {category}: {mean_score:.4f} (mean)")
+            else:
+                logger.info("  No valid results")
+
+
 def main():
     """Run real end-to-end test with actual models and classifiers."""
     logger.info("🚀 Starting Real End-to-End Model Test")
@@ -522,6 +562,9 @@ def main():
         
         # Save results
         output_path = save_results(df, model_outputs, config["output"]["directory"])
+        
+        # Print classifier summary
+        print_classifier_summary(df)
         
         # Display summary
         logger.info("\n📋 RESULTS SUMMARY:")

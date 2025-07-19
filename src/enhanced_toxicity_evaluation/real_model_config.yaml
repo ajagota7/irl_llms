@@ -32,10 +32,12 @@ classifiers:
   
   roberta_toxicity:
     model: "s-nlp/roberta_toxicity_classifier"
+    return_all_scores: true
     device: 0  # GPU
   
   dynabench_hate:
     model: "facebook/roberta-hate-speech-dynabench-r4-target"
+    return_all_scores: true
     device: 0  # GPU
 
 # Output settings
