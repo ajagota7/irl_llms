@@ -149,6 +149,29 @@ class EvaluationPipeline:
                     results_path = Path(self.config.get("output", {}).get("directory", "real_model_results"))
                 
                 logger.info(f"📥 Loading results from {results_path}")
+                
+                # Check if the results directory exists
+                if not results_path.exists():
+                    logger.error(f"❌ Results directory not found: {results_path}")
+                    logger.info("💡 Available directories:")
+                    current_dir = Path(".")
+                    for item in current_dir.iterdir():
+                        if item.is_dir() and any(name in item.name.lower() for name in ["result", "modular", "real"]):
+                            logger.info(f"  - {item}")
+                    
+                    # Try to find the correct directory
+                    possible_dirs = ["modular_results", "modular_test_results", "real_model_results"]
+                    for possible_dir in possible_dirs:
+                        if Path(possible_dir).exists():
+                            logger.info(f"💡 Found existing directory: {possible_dir}")
+                            results_path = Path(possible_dir)
+                            break
+                    else:
+                        return {
+                            "success": False,
+                            "error": f"Results directory not found at {results_path}. Please run classification phase first."
+                        }
+                
                 results_data = self._load_results_from_path(results_path)
             
             model_dfs = results_data["model_dfs"]

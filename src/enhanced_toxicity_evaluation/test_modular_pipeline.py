@@ -65,9 +65,9 @@ def load_config(config_path: str = "configs/modular_config.yaml") -> OmegaConf:
                 "min_toxicity_score": 0.5
             },
             "classifiers": {
-                "toxic_bert": {"model": "unitary/toxic-bert", "return_all_scores": True, "device": -1},
-                "roberta_toxicity": {"model": "s-nlp/roberta_toxicity_classifier", "return_all_scores": True, "device": -1},
-                "dynabench_hate": {"model": "facebook/roberta-hate-speech-dynabench-r4-target", "return_all_scores": True, "device": -1}
+                "toxic_bert": {"model": "unitary/toxic-bert", "return_all_scores": True, "device": 0},  # Use GPU
+                "roberta_toxicity": {"model": "s-nlp/roberta_toxicity_classifier", "return_all_scores": True, "device": 0},  # Use GPU
+                "dynabench_hate": {"model": "facebook/roberta-hate-speech-dynabench-r4-target", "return_all_scores": True, "device": 0}  # Use GPU
             },
             "output": {"directory": "modular_test_results"},
             "caching": {"use_cache": False},
@@ -109,7 +109,7 @@ def test_classification_phase_only():
         pipeline.cleanup()
 
 
-def test_evaluation_phase_only(results_path: str = "modular_test_results"):
+def test_evaluation_phase_only(results_path: str = "modular_results"):
     """Test only the evaluation phase using existing results."""
     logger.info("🧪 Testing Evaluation Phase Only")
     logger.info("=" * 60)
@@ -294,8 +294,11 @@ def main():
         return False
     
     # Test evaluation phase only (using results from classification)
-    logger.info("\n3️⃣ Testing Evaluation Phase Only...")
-    evaluation_result = test_evaluation_phase_only()
+    # Use the correct path based on the config
+    config = load_config()
+    output_dir = config.get("output", {}).get("directory", "modular_results")
+    logger.info(f"\n3️⃣ Testing Evaluation Phase Only (using {output_dir})...")
+    evaluation_result = test_evaluation_phase_only(output_dir)
     
     if not evaluation_result:
         logger.error("❌ Evaluation phase test failed")

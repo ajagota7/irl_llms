@@ -82,7 +82,7 @@ classifiers:
   toxic_bert:
     model: "unitary/toxic-bert"
     return_all_scores: true
-    device: -1  # Use CPU to avoid GPU issues
+    device: 0  # Use GPU for efficiency
     enabled: true
     batch_size: 32
     max_length: 512
@@ -90,7 +90,7 @@ classifiers:
   roberta_toxicity:
     model: "s-nlp/roberta_toxicity_classifier"
     return_all_scores: true
-    device: -1  # Use CPU to avoid GPU issues
+    device: 0  # Use GPU for efficiency
     enabled: true
     batch_size: 32
     max_length: 512
@@ -98,7 +98,7 @@ classifiers:
   dynabench_hate:
     model: "facebook/roberta-hate-speech-dynabench-r4-target"
     return_all_scores: true
-    device: -1  # Use CPU to avoid GPU issues
+    device: 0  # Use GPU for efficiency
     enabled: true
     batch_size: 32
     max_length: 512
