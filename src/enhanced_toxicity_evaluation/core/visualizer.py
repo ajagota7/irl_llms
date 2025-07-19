@@ -176,7 +176,7 @@ class ToxicityVisualizer:
                 x=0.1, y=0.9,
                 text=f"Improvements: {improvements}<br>Regressions: {regressions}",
                 showarrow=False,
-                xref=f"x{i+1}", yref=f"y{i+1} domain",
+                xref=f"x{i+1}", yref=f"y{i+1}",
                 bgcolor="white",
                 bordercolor="black"
             )

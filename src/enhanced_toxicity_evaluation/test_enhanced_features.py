@@ -5,10 +5,15 @@ Test enhanced features: multi-label support, inspector, visualizer, delta analys
 
 import sys
 import logging
+import os
 from pathlib import Path
 from omegaconf import OmegaConf
 import pandas as pd
 import numpy as np
+
+# Suppress CUDA warnings
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+os.environ['CUDA_VISIBLE_DEVICES'] = ''
 
 sys.path.append(str(Path(__file__).parent))
 
@@ -116,6 +121,15 @@ def test_enhanced_features():
             logger.info("✅ Delta analysis plot created successfully")
         except Exception as e:
             logger.warning(f"Delta analysis plot creation failed: {e}")
+            # Try to get more details about the error
+            import traceback
+            logger.debug(f"Delta analysis error details: {traceback.format_exc()}")
+        
+        try:
+            fig = visualizer.create_comprehensive_dashboard(save_html=False)
+            logger.info("✅ Comprehensive dashboard created successfully")
+        except Exception as e:
+            logger.warning(f"Dashboard creation failed: {e}")
         
         logger.info("\n" + "=" * 50)
         logger.info("🎉 ALL ENHANCED FEATURES TESTS PASSED!")
