@@ -601,25 +601,26 @@ def main():
                 logger.info(f"  Sample output: {outputs[0][:100]}...")
         
         # Show classification results for first sample
-        first_row = df.iloc[0]
+        first_model_df = list(model_dfs.values())[0]
+        first_row = first_model_df.iloc[0]
         logger.info(f"\nFIRST SAMPLE CLASSIFICATIONS:")
         logger.info(f"  Prompt: {first_row['prompt'][:50]}...")
         
         # Show toxic-bert results specifically
         logger.info(f"\nTOXIC-BERT CLASSIFICATIONS (First Sample):")
-        for col in df.columns:
+        for col in first_model_df.columns:
             if col.endswith('_results') and isinstance(first_row[col], dict) and 'toxic_bert' in col:
                 logger.info(f"  {col}: {first_row[col]}")
         
         # Show other classifier results
         logger.info(f"\nOTHER CLASSIFIER RESULTS (First Sample):")
-        for col in df.columns:
+        for col in first_model_df.columns:
             if col.endswith('_results') and isinstance(first_row[col], dict) and 'toxic_bert' not in col:
                 logger.info(f"  {col}: {first_row[col]}")
         
         # Show available columns
         logger.info(f"\nAVAILABLE COLUMNS:")
-        for col in df.columns:
+        for col in first_model_df.columns:
             if col.endswith('_results'):
                 logger.info(f"  {col}")
         
