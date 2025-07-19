@@ -236,45 +236,360 @@ class VisualizationManager:
                 col_name = f'{text_type}_{classifier}_results'
                 
                 if col_name in df.columns:
-                    # Extract scores
-                    scores = []
+                    # Extract scores for each category
+                    category_scores = {}
+                    
                     for result in df[col_name]:
                         if isinstance(result, dict):
-                            if classifier == 'toxic_bert':
-                                score = result.get('toxic', 0.0)
-                            elif classifier == 'roberta_toxicity':
-                                score = result.get('toxic', 0.0)
-                            elif classifier == 'dynabench_hate':
-                                score = result.get('hate', 0.0)
-                            else:
-                                score = next(iter(result.values()), 0.0)
-                            scores.append(score)
+                            for category, score in result.items():
+                                if category not in category_scores:
+                                    category_scores[category] = []
+                                category_scores[category].append(score)
                     
-                    if scores:
-                        # Create histogram
+                    # Create plots for each category
+                    for category, scores in category_scores.items():
+                        if scores:
+                            # Create histogram for this category
+                            fig = go.Figure()
+                            fig.add_trace(go.Histogram(
+                                x=scores,
+                                nbinsx=20,
+                                name=f'{category}',
+                                opacity=0.7
+                            ))
+                            
+                            fig.update_layout(
+                                title=f'{classifier} - {category} Scores - {text_type}',
+                                xaxis_title=f'{category} Score',
+                                yaxis_title='Count',
+                                showlegend=True
+                            )
+                            
+                            # Log to WandB
+                            if self.wandb_run:
+                                wandb.log({f"{text_type}_{classifier}_{category}_distribution": fig})
+                            
+                            # Save locally
+                            plot_path = self.output_dir / f"{text_type}_{classifier}_{category}_distribution.html"
+                            fig.write_html(str(plot_path))
+                            logger.info(f"✅ Created {text_type}_{classifier}_{category}_distribution plot")
+                            
+                            # Create box plot for this category
+                            fig_box = go.Figure()
+                            fig_box.add_trace(go.Box(
+                                y=scores,
+                                name=f'{category}',
+                                boxpoints='outliers'
+                            ))
+                            
+                            fig_box.update_layout(
+                                title=f'{classifier} - {category} Score Distribution - {text_type}',
+                                yaxis_title=f'{category} Score',
+                                showlegend=True
+                            )
+                            
+                            # Log to WandB
+                            if self.wandb_run:
+                                wandb.log({f"{text_type}_{classifier}_{category}_boxplot": fig_box})
+                            
+                            # Save locally
+                            box_plot_path = self.output_dir / f"{text_type}_{classifier}_{category}_boxplot.html"
+                            fig_box.write_html(str(box_plot_path))
+                            logger.info(f"✅ Created {text_type}_{classifier}_{category}_boxplot")
+    
+    def _create_category_comparison_plots(self, df: pd.DataFrame):
+        """Create plots comparing different categories within each classifier."""
+        logger.info("📊 Creating category comparison plots...")
+        
+        models, classifiers, toxic_bert_categories = self._detect_models_and_classifiers(df)
+        
+        for classifier in classifiers:
+            for text_type in ['prompt', 'output', 'full_text']:
+                col_name = f'{text_type}_{classifier}_results'
+                
+                if col_name in df.columns:
+                    # Extract all categories and their scores
+                    category_data = {}
+                    
+                    for result in df[col_name]:
+                        if isinstance(result, dict):
+                            for category, score in result.items():
+                                if category not in category_data:
+                                    category_data[category] = []
+                                category_data[category].append(score)
+                    
+                    if len(category_data) > 1:
+                        # Create comparison box plot
                         fig = go.Figure()
-                        fig.add_trace(go.Histogram(
-                            x=scores,
-                            nbinsx=20,
-                            name=f'{text_type} {classifier}',
-                            opacity=0.7
-                        ))
+                        
+                        for category, scores in category_data.items():
+                            fig.add_trace(go.Box(
+                                y=scores,
+                                name=category,
+                                boxpoints='outliers'
+                            ))
                         
                         fig.update_layout(
-                            title=f'Distribution of {classifier} Scores - {text_type}',
-                            xaxis_title='Toxicity Score',
-                            yaxis_title='Count',
+                            title=f'{classifier} - Category Comparison - {text_type}',
+                            yaxis_title='Score',
                             showlegend=True
                         )
                         
                         # Log to WandB
                         if self.wandb_run:
-                            wandb.log({f"{text_type}_{classifier}_distribution": fig})
+                            wandb.log({f"{text_type}_{classifier}_category_comparison": fig})
                         
                         # Save locally
-                        plot_path = self.output_dir / f"{text_type}_{classifier}_distribution.html"
+                        plot_path = self.output_dir / f"{text_type}_{classifier}_category_comparison.html"
                         fig.write_html(str(plot_path))
-                        logger.info(f"✅ Created {text_type}_{classifier}_distribution plot")
+                        logger.info(f"✅ Created {text_type}_{classifier}_category_comparison plot")
+                        
+                        # Create correlation heatmap for categories
+                        if len(category_data) >= 2:
+                            # Create correlation matrix
+                            category_df = pd.DataFrame(category_data)
+                            corr_matrix = category_df.corr()
+                            
+                            fig_heatmap = go.Figure(data=go.Heatmap(
+                                z=corr_matrix.values,
+                                x=corr_matrix.columns,
+                                y=corr_matrix.columns,
+                                colorscale='RdBu',
+                                zmid=0
+                            ))
+                            
+                            fig_heatmap.update_layout(
+                                title=f'{classifier} - Category Correlation - {text_type}',
+                                xaxis_title='Categories',
+                                yaxis_title='Categories'
+                            )
+                            
+                            # Log to WandB
+                            if self.wandb_run:
+                                wandb.log({f"{text_type}_{classifier}_category_correlation": fig_heatmap})
+                            
+                            # Save locally
+                            heatmap_path = self.output_dir / f"{text_type}_{classifier}_category_correlation.html"
+                            fig_heatmap.write_html(str(heatmap_path))
+                            logger.info(f"✅ Created {text_type}_{classifier}_category_correlation heatmap")
+    
+    def _create_detailed_toxicity_plots(self, model_groups, model_names: List[str], epochs: List[int]):
+        """Create detailed toxicity plots for each category within classifiers."""
+        logger.info("📊 Creating detailed category-specific toxicity plots...")
+        
+        classifiers = ["toxic_bert", "roberta_toxicity", "dynabench_hate"]
+        text_types = ["output", "full_text"]
+        
+        for classifier in classifiers:
+            for text_type in text_types:
+                # Get all categories for this classifier
+                categories = set()
+                for model_name in model_names:
+                    model_df = model_groups.get_group(model_name)
+                    col_name = f"{text_type}_{classifier}_results"
+                    
+                    if col_name in model_df.columns:
+                        for result in model_df[col_name]:
+                            if isinstance(result, dict):
+                                categories.update(result.keys())
+                
+                # Create plots for each category
+                for category in categories:
+                    # Calculate mean scores for each model for this category
+                    mean_scores = []
+                    for model_name in model_names:
+                        model_df = model_groups.get_group(model_name)
+                        col_name = f"{text_type}_{classifier}_results"
+                        
+                        if col_name in model_df.columns:
+                            scores = []
+                            for result in model_df[col_name]:
+                                if isinstance(result, dict):
+                                    score = result.get(category, 0.0)
+                                    scores.append(score)
+                            
+                            if scores:
+                                mean_scores.append(np.mean(scores))
+                            else:
+                                mean_scores.append(0.0)
+                        else:
+                            mean_scores.append(0.0)
+                    
+                    # Create progression plot for this category
+                    fig = go.Figure()
+                    
+                    # Add mean category score line
+                    fig.add_trace(go.Scatter(
+                        x=epochs,
+                        y=mean_scores,
+                        mode='lines+markers',
+                        name=f'{category}',
+                        line=dict(width=3),
+                        marker=dict(size=8)
+                    ))
+                    
+                    # Add individual prompt scores as scatter
+                    all_scores = []
+                    all_epochs = []
+                    all_prompts = []
+                    
+                    for i, model_name in enumerate(model_names):
+                        model_df = model_groups.get_group(model_name)
+                        col_name = f"{text_type}_{classifier}_results"
+                        
+                        if col_name in model_df.columns:
+                            for j, result in enumerate(model_df[col_name]):
+                                if isinstance(result, dict):
+                                    score = result.get(category, 0.0)
+                                    all_scores.append(score)
+                                    all_epochs.append(epochs[i])
+                                    all_prompts.append(j)
+                    
+                    # Add scatter plot
+                    fig.add_trace(go.Scatter(
+                        x=all_epochs,
+                        y=all_scores,
+                        mode='markers',
+                        name=f'Individual {category}',
+                        marker=dict(
+                            size=6,
+                            color=all_prompts,
+                            colorscale='viridis',
+                            opacity=0.6,
+                            showscale=True,
+                            colorbar=dict(title="Prompt Index")
+                        ),
+                        hovertemplate=f'<b>Prompt %{{marker.color}}</b><br>Epoch: %{{x}}<br>{category}: %{{y:.3f}}<extra></extra>'
+                    ))
+                    
+                    # Add improvement annotation
+                    if len(mean_scores) > 1:
+                        improvement = mean_scores[0] - mean_scores[-1]
+                        improvement_pct = (improvement / mean_scores[0]) * 100 if mean_scores[0] > 0 else 0
+                        
+                        fig.add_annotation(
+                            x=epochs[-1],
+                            y=mean_scores[-1],
+                            text=f'{category} Change: {improvement:.3f} ({improvement_pct:.1f}%)',
+                            showarrow=True,
+                            arrowhead=2,
+                            arrowsize=1,
+                            arrowwidth=2,
+                            arrowcolor="red",
+                            ax=20,
+                            ay=-30
+                        )
+                    
+                    fig.update_layout(
+                        title=f'{classifier} - {category} Progression: {text_type}',
+                        xaxis_title='Epoch',
+                        yaxis_title=f'{category} Score',
+                        showlegend=True
+                    )
+                    
+                    # Log to WandB
+                    if self.wandb_run:
+                        wandb.log({f"category_progression_{classifier}_{category}_{text_type}": fig})
+                    
+                    # Save locally
+                    plot_path = self.output_dir / f"category_progression_{classifier}_{category}_{text_type}.html"
+                    fig.write_html(str(plot_path))
+                    logger.info(f"✅ Created category progression plot for {classifier} - {category} - {text_type}")
+    
+    def _create_category_scatter_plots(self, model_groups, model_names: List[str], epochs: List[int]):
+        """Create scatter plots for each category comparing base vs detoxified models."""
+        logger.info("📊 Creating category-specific scatter plots...")
+        
+        classifiers = ["toxic_bert", "roberta_toxicity", "dynabench_hate"]
+        text_types = ["output", "full_text"]
+        
+        # Get base model data
+        base_model = model_names[0] if model_names else None
+        if not base_model:
+            return
+        
+        base_df = model_groups.get_group(base_model)
+        
+        for classifier in classifiers:
+            for text_type in text_types:
+                # Get all categories for this classifier
+                categories = set()
+                for model_name in model_names:
+                    model_df = model_groups.get_group(model_name)
+                    col_name = f"{text_type}_{classifier}_results"
+                    
+                    if col_name in model_df.columns:
+                        for result in model_df[col_name]:
+                            if isinstance(result, dict):
+                                categories.update(result.keys())
+                
+                # Create scatter plots for each category
+                for category in categories:
+                    # Get base scores for this category
+                    base_col = f"{text_type}_{classifier}_results"
+                    base_scores = []
+                    
+                    if base_col in base_df.columns:
+                        for result in base_df[base_col]:
+                            if isinstance(result, dict):
+                                score = result.get(category, 0.0)
+                                base_scores.append(score)
+                    
+                    if not base_scores:
+                        continue
+                    
+                    # Create scatter plot for this category
+                    fig = go.Figure()
+                    
+                    # Add diagonal reference line
+                    max_score = max(max(base_scores), 1.0)
+                    fig.add_trace(go.Scatter(
+                        x=[0, max_score],
+                        y=[0, max_score],
+                        mode='lines',
+                        name='No Change',
+                        line=dict(color='red', dash='dash'),
+                        showlegend=True
+                    ))
+                    
+                    # Add detoxified models for this category
+                    for model_name in model_names[1:]:  # Skip base model
+                        model_df = model_groups.get_group(model_name)
+                        detox_col = f"{text_type}_{classifier}_results"
+                        detox_scores = []
+                        
+                        if detox_col in model_df.columns:
+                            for result in model_df[detox_col]:
+                                if isinstance(result, dict):
+                                    score = result.get(category, 0.0)
+                                    detox_scores.append(score)
+                        
+                        if detox_scores and len(detox_scores) == len(base_scores):
+                            fig.add_trace(go.Scatter(
+                                x=base_scores,
+                                y=detox_scores,
+                                mode='markers',
+                                name=f'{model_name} - {category}',
+                                marker=dict(size=8, opacity=0.7),
+                                hovertemplate=f'<b>Prompt %{{text}}</b><br>Base {category}: %{{x:.3f}}<br>Detoxified {category}: %{{y:.3f}}<extra></extra>',
+                                text=[f"{i+1}" for i in range(len(base_scores))]
+                            ))
+                    
+                    fig.update_layout(
+                        title=f'{classifier} - {category}: Base vs Detoxified - {text_type}',
+                        xaxis_title=f'Base {category} Score',
+                        yaxis_title=f'Detoxified {category} Score',
+                        showlegend=True
+                    )
+                    
+                    # Log to WandB
+                    if self.wandb_run:
+                        wandb.log({f"category_scatter_{classifier}_{category}_{text_type}": fig})
+                    
+                    # Save locally
+                    plot_path = self.output_dir / f"category_scatter_{classifier}_{category}_{text_type}.html"
+                    fig.write_html(str(plot_path))
+                    logger.info(f"✅ Created category scatter plot for {classifier} - {category} - {text_type}")
     
     def _create_advanced_plots(self, df: pd.DataFrame):
         """Create advanced plots for multi-model comparison."""
@@ -303,11 +618,20 @@ class VisualizationManager:
         model_names = [name for name, _ in sorted_models]
         epochs = [epoch for _, epoch in sorted_models]
         
+        # Create basic category comparison plots
+        self._create_category_comparison_plots(df)
+        
         # Create toxicity reduction plots
         self._create_toxicity_reduction_plots(model_groups, model_names, epochs)
         
+        # Create detailed category-specific plots
+        self._create_detailed_toxicity_plots(model_groups, model_names, epochs)
+        
         # Create scatter plots
         self._create_scatter_plots(model_groups, model_names, epochs)
+        
+        # Create category-specific scatter plots
+        self._create_category_scatter_plots(model_groups, model_names, epochs)
         
         # Create distribution plots
         self._create_improvement_distribution_plots(model_groups, model_names, epochs)
