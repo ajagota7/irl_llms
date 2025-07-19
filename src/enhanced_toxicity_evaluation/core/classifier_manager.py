@@ -195,19 +195,14 @@ class ClassifierManager:
                     # Handle toxic-bert's multiple labels
                     predictions = classifier(batch)
                     
-                    # Process toxic-bert results
+                    # Process toxic-bert results - preserve original list format for multi-label extraction
                     for pred in predictions:
                         if isinstance(pred, list):
-                            # Multiple categories returned
-                            result = {}
-                            for category_pred in pred:
-                                label = category_pred["label"].lower()
-                                score = category_pred["score"]
-                                result[label] = score
-                            results.append(result)
+                            # Multiple categories returned - keep as list for extract_detailed_scores
+                            results.append(pred)
                         else:
-                            # Single prediction
-                            results.append({"toxic": pred.get("score", 0.0)})
+                            # Single prediction - convert to list format
+                            results.append([pred])
                 else:
                     # Handle standard binary classifiers
                     predictions = classifier(batch)
