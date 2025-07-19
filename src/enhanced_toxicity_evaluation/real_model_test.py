@@ -569,8 +569,9 @@ def main():
             # Filter dataset by toxicity score
             toxic_prompts = []
             for item in dataset:
-                toxicity_score = item.get("prompt", {}).get("toxicity", 0.0)
-                if toxicity_score >= min_toxicity:
+                toxicity_score = item.get("prompt", {}).get("toxicity")
+                # Skip items with no toxicity score or None values
+                if toxicity_score is not None and toxicity_score >= min_toxicity:
                     toxic_prompts.append(item)
             
             logger.info(f"📊 Found {len(toxic_prompts)} prompts with toxicity >= {min_toxicity}")
@@ -583,11 +584,14 @@ def main():
             logger.info(f"✅ Loaded {len(prompts)} toxic prompts (toxicity >= {min_toxicity})")
             
             # Show toxicity statistics
-            toxicity_scores = [item["prompt"]["toxicity"] for item in sample_data]
-            logger.info(f"📊 Toxicity statistics:")
-            logger.info(f"  - Mean toxicity: {np.mean(toxicity_scores):.3f}")
-            logger.info(f"  - Min toxicity: {np.min(toxicity_scores):.3f}")
-            logger.info(f"  - Max toxicity: {np.max(toxicity_scores):.3f}")
+            toxicity_scores = [item["prompt"]["toxicity"] for item in sample_data if item["prompt"]["toxicity"] is not None]
+            if toxicity_scores:
+                logger.info(f"📊 Toxicity statistics:")
+                logger.info(f"  - Mean toxicity: {np.mean(toxicity_scores):.3f}")
+                logger.info(f"  - Min toxicity: {np.min(toxicity_scores):.3f}")
+                logger.info(f"  - Max toxicity: {np.max(toxicity_scores):.3f}")
+            else:
+                logger.info("📊 No toxicity scores available for selected prompts")
         else:
             # Take random sample
             sample_size = config["dataset"]["sample_size"]
@@ -597,11 +601,14 @@ def main():
             logger.info(f"✅ Loaded {len(prompts)} random prompts from AllenAI dataset")
             
             # Show toxicity statistics for random sample too
-            toxicity_scores = [item["prompt"]["toxicity"] for item in sample_data]
-            logger.info(f"📊 Toxicity statistics:")
-            logger.info(f"  - Mean toxicity: {np.mean(toxicity_scores):.3f}")
-            logger.info(f"  - Min toxicity: {np.min(toxicity_scores):.3f}")
-            logger.info(f"  - Max toxicity: {np.max(toxicity_scores):.3f}")
+            toxicity_scores = [item["prompt"]["toxicity"] for item in sample_data if item["prompt"]["toxicity"] is not None]
+            if toxicity_scores:
+                logger.info(f"📊 Toxicity statistics:")
+                logger.info(f"  - Mean toxicity: {np.mean(toxicity_scores):.3f}")
+                logger.info(f"  - Min toxicity: {np.min(toxicity_scores):.3f}")
+                logger.info(f"  - Max toxicity: {np.max(toxicity_scores):.3f}")
+            else:
+                logger.info("📊 No toxicity scores available for selected prompts")
         
         # Load models and classifiers
         models, tokenizers = load_models(config)
