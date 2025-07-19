@@ -15,6 +15,8 @@ import yaml
 from datasets import load_dataset
 from transformers import pipeline, AutoTokenizer, AutoModelForCausalLM
 import torch
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 # Suppress CUDA warnings
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
@@ -541,6 +543,191 @@ def print_classifier_summary(df):
                 logger.info("  No valid results")
 
 
+def create_toxicity_plots(model_dfs, output_path):
+    """Create scatter plots showing toxicity reduction across epochs."""
+    logger.info("📊 Creating toxicity reduction plots...")
+    
+    # Set up the plotting style
+    plt.style.use('default')
+    sns.set_palette("husl")
+    
+    # Extract epoch numbers and create mapping
+    model_epochs = {}
+    for model_name in model_dfs.keys():
+        if model_name == "base":
+            model_epochs[model_name] = 0  # Base model = epoch 0
+        elif "epoch" in model_name:
+            # Extract epoch number from name like "detox_epoch_20"
+            epoch_num = int(model_name.split("_")[-1])
+            model_epochs[model_name] = epoch_num
+        else:
+            # For any other models, assign a default epoch
+            model_epochs[model_name] = 100
+    
+    # Sort models by epoch
+    sorted_models = sorted(model_epochs.items(), key=lambda x: x[1])
+    model_names = [name for name, _ in sorted_models]
+    epochs = [epoch for _, epoch in sorted_models]
+    
+    # Create plots for each classifier and text type
+    classifiers = ["toxic_bert", "roberta_toxicity", "dynabench_hate"]
+    text_types = ["output", "full_text"]
+    
+    for classifier in classifiers:
+        for text_type in text_types:
+            logger.info(f"  Creating plot for {classifier} - {text_type}")
+            
+            # Create figure
+            fig, axes = plt.subplots(1, 2, figsize=(15, 6))
+            fig.suptitle(f'Toxicity Reduction: {classifier} - {text_type}', fontsize=16, fontweight='bold')
+            
+            # Plot 1: Mean toxicity across epochs
+            mean_scores = []
+            for model_name in model_names:
+                if model_name in model_dfs:
+                    df = model_dfs[model_name]
+                    col_name = f"{text_type}_{classifier}_results"
+                    
+                    if col_name in df.columns:
+                        # Extract toxicity scores
+                        scores = []
+                        for _, row in df.iterrows():
+                            if isinstance(row[col_name], dict):
+                                if classifier == "toxic_bert":
+                                    # Use 'toxic' category for toxic-bert
+                                    scores.append(row[col_name].get('toxic', 0.0))
+                                elif classifier == "roberta_toxicity":
+                                    # Use 'toxic' category for roberta
+                                    scores.append(row[col_name].get('toxic', 0.0))
+                                elif classifier == "dynabench_hate":
+                                    # Use 'hate' category for dynabench
+                                    scores.append(row[col_name].get('hate', 0.0))
+                        
+                        if scores:
+                            mean_scores.append(np.mean(scores))
+                        else:
+                            mean_scores.append(0.0)
+                    else:
+                        mean_scores.append(0.0)
+                else:
+                    mean_scores.append(0.0)
+            
+            # Plot mean toxicity progression
+            axes[0].plot(epochs, mean_scores, 'o-', linewidth=2, markersize=8, label='Mean Toxicity')
+            axes[0].set_xlabel('Epoch')
+            axes[0].set_ylabel('Mean Toxicity Score')
+            axes[0].set_title(f'Mean Toxicity Across Epochs')
+            axes[0].grid(True, alpha=0.3)
+            axes[0].legend()
+            
+            # Plot 2: Scatter plot of individual prompt toxicity
+            all_scores = []
+            all_epochs = []
+            all_prompts = []
+            
+            for i, model_name in enumerate(model_names):
+                if model_name in model_dfs:
+                    df = model_dfs[model_name]
+                    col_name = f"{text_type}_{classifier}_results"
+                    
+                    if col_name in df.columns:
+                        for j, (_, row) in enumerate(df.iterrows()):
+                            if isinstance(row[col_name], dict):
+                                if classifier == "toxic_bert":
+                                    score = row[col_name].get('toxic', 0.0)
+                                elif classifier == "roberta_toxicity":
+                                    score = row[col_name].get('toxic', 0.0)
+                                elif classifier == "dynabench_hate":
+                                    score = row[col_name].get('hate', 0.0)
+                                else:
+                                    score = 0.0
+                                
+                                all_scores.append(score)
+                                all_epochs.append(epochs[i])
+                                all_prompts.append(j)
+            
+            # Create scatter plot
+            scatter = axes[1].scatter(all_epochs, all_scores, c=all_prompts, cmap='viridis', alpha=0.6, s=30)
+            axes[1].set_xlabel('Epoch')
+            axes[1].set_ylabel('Toxicity Score')
+            axes[1].set_title(f'Individual Prompt Toxicity')
+            axes[1].grid(True, alpha=0.3)
+            
+            # Add colorbar for prompt indices
+            cbar = plt.colorbar(scatter, ax=axes[1])
+            cbar.set_label('Prompt Index')
+            
+            # Add improvement annotations
+            if len(mean_scores) > 1:
+                improvement = mean_scores[0] - mean_scores[-1]  # Base - Final
+                improvement_pct = (improvement / mean_scores[0]) * 100 if mean_scores[0] > 0 else 0
+                axes[0].text(0.02, 0.98, f'Total Reduction: {improvement:.3f} ({improvement_pct:.1f}%)', 
+                           transform=axes[0].transAxes, verticalalignment='top',
+                           bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+            
+            plt.tight_layout()
+            
+            # Save plot
+            plot_path = output_path / f"toxicity_reduction_{classifier}_{text_type}.png"
+            plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+            logger.info(f"    Saved plot to {plot_path}")
+            plt.close()
+    
+    # Create a summary plot showing all classifiers for outputs
+    logger.info("  Creating summary plot for outputs")
+    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+    fig.suptitle('Toxicity Reduction Summary - Outputs', fontsize=16, fontweight='bold')
+    
+    for i, classifier in enumerate(classifiers):
+        mean_scores = []
+        for model_name in model_names:
+            if model_name in model_dfs:
+                df = model_dfs[model_name]
+                col_name = f"output_{classifier}_results"
+                
+                if col_name in df.columns:
+                    scores = []
+                    for _, row in df.iterrows():
+                        if isinstance(row[col_name], dict):
+                            if classifier == "toxic_bert":
+                                scores.append(row[col_name].get('toxic', 0.0))
+                            elif classifier == "roberta_toxicity":
+                                scores.append(row[col_name].get('toxic', 0.0))
+                            elif classifier == "dynabench_hate":
+                                scores.append(row[col_name].get('hate', 0.0))
+                    
+                    if scores:
+                        mean_scores.append(np.mean(scores))
+                    else:
+                        mean_scores.append(0.0)
+                else:
+                    mean_scores.append(0.0)
+            else:
+                mean_scores.append(0.0)
+        
+        axes[i].plot(epochs, mean_scores, 'o-', linewidth=2, markersize=8)
+        axes[i].set_xlabel('Epoch')
+        axes[i].set_ylabel('Mean Toxicity Score')
+        axes[i].set_title(f'{classifier.replace("_", " ").title()}')
+        axes[i].grid(True, alpha=0.3)
+        
+        # Add improvement annotation
+        if len(mean_scores) > 1:
+            improvement = mean_scores[0] - mean_scores[-1]
+            improvement_pct = (improvement / mean_scores[0]) * 100 if mean_scores[0] > 0 else 0
+            axes[i].text(0.02, 0.98, f'Reduction: {improvement_pct:.1f}%', 
+                       transform=axes[i].transAxes, verticalalignment='top',
+                       bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.8))
+    
+    plt.tight_layout()
+    summary_plot_path = output_path / "toxicity_reduction_summary_outputs.png"
+    plt.savefig(summary_plot_path, dpi=300, bbox_inches='tight')
+    logger.info(f"    Saved summary plot to {summary_plot_path}")
+    plt.close()
+    
+    logger.info("✅ All toxicity reduction plots created!")
+
+
 def main():
     """Run real end-to-end test with actual models and classifiers."""
     logger.info("🚀 Starting Real End-to-End Model Test")
@@ -622,6 +809,9 @@ def main():
         
         # Save results
         output_path = save_results(model_dfs, model_outputs, config["output"]["directory"])
+        
+        # Create toxicity reduction plots
+        create_toxicity_plots(model_dfs, output_path)
         
         # Print classifier summary for first model
         first_model_df = list(model_dfs.values())[0]
