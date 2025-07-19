@@ -7,6 +7,7 @@ output:
     save_json: true
     save_plots: true
     save_reports: true
+    enhanced_analysis: true  # Enable enhanced inspector/visualizer outputs
     
     # File naming
     naming:

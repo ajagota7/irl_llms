@@ -1,0 +1,34 @@
+# Enhanced multi-label classifier configuration
+classifiers:
+  roberta_toxicity:
+    enabled: true
+    model: "s-nlp/roberta_toxicity_classifier"
+    type: "binary"
+    batch_size: 32
+    max_length: 512
+    
+  toxic_bert:
+    enabled: true
+    model: "unitary/toxic-bert"
+    type: "multi_label"
+    batch_size: 16
+    max_length: 512
+    return_all_scores: true
+    categories: ["toxic", "severe_toxic", "obscene", "threat", "insult", "identity_attack"]
+    
+  dynabench_hate:
+    enabled: true
+    model: "facebook/roberta-hate-speech-dynabench-r4-target"
+    type: "binary"
+    batch_size: 32
+    max_length: 512
+
+evaluation:
+  parallel: false
+  max_workers: 1
+  timeout: 300
+  
+error_handling:
+  skip_failed_classifiers: true
+  log_errors: true
+  fallback_to_safe: true 

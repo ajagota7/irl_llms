@@ -1,19 +1,25 @@
 """
-Core evaluation modules for the Enhanced Toxicity Evaluation Pipeline.
+Core modules for the Enhanced Toxicity Evaluation Pipeline.
 """
 
-from .evaluator import ToxicityEvaluator
-from .model_loader import ModelLoader
-from .dataset_manager import DatasetManager
 from .classifier_manager import ClassifierManager
+from .dataset_manager import DatasetManager
+from .evaluator import ToxicityEvaluator
 from .generation_engine import GenerationEngine
 from .metrics_calculator import MetricsCalculator
+from .model_loader import ModelLoader
+from .visualization_manager import VisualizationManager
+from .inspector import ToxicityInspector
+from .visualizer import ToxicityVisualizer
 
 __all__ = [
-    "ToxicityEvaluator",
-    "ModelLoader", 
-    "DatasetManager",
     "ClassifierManager",
+    "DatasetManager", 
+    "ToxicityEvaluator",
     "GenerationEngine",
-    "MetricsCalculator"
+    "MetricsCalculator",
+    "ModelLoader",
+    "VisualizationManager",
+    "ToxicityInspector",
+    "ToxicityVisualizer"
 ] 

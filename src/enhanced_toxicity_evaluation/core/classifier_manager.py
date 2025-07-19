@@ -38,6 +38,18 @@ class ClassifierManager:
         else:
             return "cpu"
     
+    def _is_multi_label_classifier(self, model_name: str) -> bool:
+        """Detect if a classifier returns multi-label results."""
+        multi_label_models = [
+            "toxic-bert", "unitary/toxic-bert",
+            "toxigen", "detoxify"
+        ]
+        return any(name in model_name.lower() for name in multi_label_models)
+
+    def _get_toxic_bert_categories(self) -> List[str]:
+        """Get standard toxic-bert category names."""
+        return ["toxic", "severe_toxic", "obscene", "threat", "insult", "identity_attack"]
+    
     def load_classifiers(self) -> Dict[str, Any]:
         """Load all enabled classifiers."""
         logger.info("Loading toxicity classifiers...")
@@ -70,8 +82,8 @@ class ClassifierManager:
         max_length = config.get("max_length", 512)
         
         try:
-            if name == "toxic_bert":
-                # Special handling for toxic-bert which has multiple labels
+            if self._is_multi_label_classifier(model_name):
+                # Special handling for multi-label classifiers like toxic-bert
                 classifier = pipeline(
                     "text-classification",
                     model=model_name,
@@ -234,30 +246,60 @@ class ClassifierManager:
         """Create safe fallback results when classifier fails."""
         return [{"score": 0.0, "error": "classifier_failed"} for _ in range(num_texts)]
     
-    def extract_detailed_scores(self, predictions: Dict[str, List[Dict]]) -> Dict[str, List[float]]:
-        """Extract detailed toxicity scores from classifier predictions."""
+    def extract_detailed_scores(self, predictions: Dict[str, List[Dict]], text_type: str = "text") -> Dict[str, List[float]]:
+        """Extract detailed toxicity scores from classifier predictions with multi-label support."""
         detailed_scores = {}
         
+        if not predictions:
+            return detailed_scores
+        
+        num_texts = len(next(iter(predictions.values())))
+        
         for classifier_name, classifier_predictions in predictions.items():
-            scores = []
-            
-            for pred in classifier_predictions:
-                if classifier_name == "toxic_bert":
-                    # Handle toxic-bert's multiple categories
-                    if isinstance(pred, dict):
-                        # Use the highest toxicity score across categories
-                        max_score = max(pred.values()) if pred else 0.0
-                        scores.append(max_score)
+            if self._is_multi_label_classifier(classifier_name):
+                # Handle multi-label classifiers (toxic-bert)
+                categories = self._get_toxic_bert_categories()
+                
+                for category in categories:
+                    scores = []
+                    for pred in classifier_predictions:
+                        if isinstance(pred, list):
+                            # Find the category score in the list
+                            category_score = 0.0
+                            for item in pred:
+                                if item["label"].lower() == category.lower():
+                                    category_score = item["score"]
+                                    break
+                            scores.append(category_score)
+                        else:
+                            # Single prediction case
+                            if pred["label"].lower() == category.lower():
+                                scores.append(pred["score"])
+                            else:
+                                scores.append(0.0)
+                    
+                    detailed_scores[f"{classifier_name}_{category}"] = scores
+            else:
+                # Handle binary classifiers
+                scores = []
+                for pred in classifier_predictions:
+                    if isinstance(pred, list):
+                        # Multiple labels - find the toxic one
+                        toxic_score = 0.0
+                        for item in pred:
+                            label = item["label"].lower()
+                            if any(word in label for word in ["toxic", "hate", "harassment"]):
+                                toxic_score = max(toxic_score, item["score"])
+                        scores.append(toxic_score)
                     else:
-                        scores.append(0.0)
-                else:
-                    # Handle standard classifiers
-                    if isinstance(pred, dict) and "score" in pred:
-                        scores.append(pred["score"])
-                    else:
-                        scores.append(0.0)
-            
-            detailed_scores[classifier_name] = scores
+                        # Single label
+                        label = pred["label"].lower()
+                        if any(word in label for word in ["toxic", "hate", "harassment"]):
+                            scores.append(pred["score"])
+                        else:
+                            scores.append(1.0 - pred["score"])
+                
+                detailed_scores[f"{classifier_name}_score"] = scores
         
         return detailed_scores
     

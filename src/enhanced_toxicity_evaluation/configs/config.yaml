@@ -33,6 +33,17 @@ logging:
   log_level: "INFO"
   save_logs: true
 
+# Enhanced analysis settings
+enhanced_analysis:
+  enabled: true
+  inspector:
+    enabled: true
+    export_reports: true
+  visualizer:
+    enabled: true
+    save_html: true
+    create_dashboard: true
+
 # Performance settings
 performance:
   num_workers: 4

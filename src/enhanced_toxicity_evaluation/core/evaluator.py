@@ -19,6 +19,8 @@ from .classifier_manager import ClassifierManager
 from .generation_engine import GenerationEngine
 from .metrics_calculator import MetricsCalculator
 from .visualization_manager import VisualizationManager
+from .inspector import ToxicityInspector
+from .visualizer import ToxicityVisualizer
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +138,11 @@ class ToxicityEvaluator:
             logger.info("📈 Creating visualizations and logging to WandB...")
             self.visualization_manager.create_comprehensive_visualizations(results_df, metrics)
             
+            # Step 11: Generate enhanced outputs
+            if self.output_config.get("local", {}).get("enhanced_analysis", True):
+                logger.info("🔍 Generating enhanced analysis outputs...")
+                self.generate_enhanced_outputs(results_df, metrics)
+            
             duration = time.time() - start_time
             logger.info(f"✅ Evaluation completed in {duration:.2f} seconds")
             
@@ -187,60 +194,90 @@ class ToxicityEvaluator:
     def _create_results_dataframe(self, prompts: List[str], completions: Dict[str, List[str]], 
                                  full_texts: Dict[str, List[str]], 
                                  toxicity_results: Dict[str, Dict[str, List[float]]]) -> pd.DataFrame:
-        """Create a comprehensive results DataFrame."""
-        logger.info("Creating comprehensive results DataFrame")
-        
-        # Start with prompts
+        """Create a comprehensive results DataFrame with delta analysis."""
+        # Create base DataFrame
         data = {
             "prompt": prompts,
             "prompt_index": range(len(prompts))
         }
         
-        # Add completions for each model
+        # Add completions
         for model_name, model_completions in completions.items():
             data[f"output_{model_name}"] = model_completions
-            data[f"full_text_{model_name}"] = full_texts.get(model_name, [])
+        
+        # Add full texts
+        for model_name, model_full_texts in full_texts.items():
+            data[f"full_text_{model_name}"] = model_full_texts
+        
+        df = pd.DataFrame(data)
         
         # Add toxicity scores
         for text_type, classifier_scores in toxicity_results.items():
             for classifier_name, scores in classifier_scores.items():
-                if text_type == "prompt":
-                    column_name = f"prompt_{classifier_name}_score"
-                elif text_type.startswith("output_"):
-                    model_name = text_type.replace("output_", "")
-                    column_name = f"output_{model_name}_{classifier_name}_score"
-                elif text_type.startswith("full_"):
-                    model_name = text_type.replace("full_", "")
-                    column_name = f"full_{model_name}_{classifier_name}_score"
+                column_name = f"{text_type}_{classifier_name}"
+                if len(scores) == len(df):
+                    df[column_name] = scores
                 else:
-                    column_name = f"{text_type}_{classifier_name}_score"
-                data[column_name] = scores
+                    logger.warning(f"Score length mismatch for {column_name}: {len(scores)} vs {len(df)}")
         
-        # Create DataFrame
-        df = pd.DataFrame(data)
+        # Calculate and add delta columns
+        baseline_model = self.config.get("evaluation", {}).get("comparison", {}).get("baseline_model", "base")
+        delta_results = self.metrics_calculator.calculate_delta_metrics(toxicity_results, baseline_model)
         
-        # Calculate deltas between base model and others
-        self._calculate_deltas(df, toxicity_results)
+        for model_name, model_deltas in delta_results.items():
+            for metric_name, deltas in model_deltas.items():
+                if len(deltas) == len(df):
+                    df[metric_name] = deltas
+                else:
+                    logger.warning(f"Delta length mismatch for {metric_name}: {len(deltas)} vs {len(df)}")
         
         return df
-    
-    def _calculate_deltas(self, df: pd.DataFrame, toxicity_results: Dict[str, Dict[str, List[float]]]):
-        """Calculate delta scores between base model and other models."""
-        baseline_model = self.config.get("evaluation", {}).get("comparison", {}).get("baseline_model", "base")
-        
-        # Find output columns for baseline model
-        baseline_output_cols = [col for col in df.columns if col.startswith(f"output_{baseline_model}_") and col.endswith("_score")]
-        
-        for col in baseline_output_cols:
-            classifier_name = col.replace(f"output_{baseline_model}_", "").replace("_score", "")
+
+    def create_inspector(self, results_df: pd.DataFrame) -> ToxicityInspector:
+        """Create inspector instance for interactive analysis."""
+        inspector = ToxicityInspector(results_df, self.output_dir / "inspection")
+        logger.info("Inspector created for interactive analysis")
+        return inspector
+
+    def create_visualizer(self, results_df: pd.DataFrame) -> ToxicityVisualizer:
+        """Create visualizer instance for enhanced plotting."""
+        visualizer = ToxicityVisualizer(results_df, self.output_dir / "visualizations")
+        logger.info("Visualizer created for enhanced plotting")
+        return visualizer
+
+    def generate_enhanced_outputs(self, results_df: pd.DataFrame, metrics: Dict[str, Any]) -> None:
+        """Generate enhanced outputs using inspector and visualizer."""
+        try:
+            # Create inspector and visualizer
+            inspector = self.create_inspector(results_df)
+            visualizer = self.create_visualizer(results_df)
             
-            # Find corresponding columns for other models
-            for model_name in [m for m in toxicity_results.keys() if m != baseline_model and not m.startswith("prompt")]:
-                other_col = f"output_{model_name}_{classifier_name}_score"
-                
-                if other_col in df.columns:
-                    delta_col = f"delta_{model_name}_vs_{baseline_model}_{classifier_name}_score"
-                    df[delta_col] = df[col] - df[other_col]
+            # Generate inspector analysis
+            logger.info("Generating inspector analysis...")
+            inspector.export_analysis_report()
+            
+            # Generate visualizations
+            logger.info("Generating enhanced visualizations...")
+            visualizer.plot_toxicity_distributions()
+            visualizer.create_comprehensive_dashboard()
+            
+            # Generate model-specific analyses
+            models = [m for m in inspector.models if m != "base"]
+            for model in models:
+                try:
+                    visualizer.plot_model_comparison_scatter(model)
+                    visualizer.plot_delta_analysis(model)
+                    
+                    # Generate toxic-bert analysis if available
+                    if inspector.toxic_bert_categories:
+                        visualizer.plot_toxic_bert_categories(model)
+                except Exception as e:
+                    logger.warning(f"Failed to generate analysis for model {model}: {e}")
+            
+            logger.info("Enhanced outputs generated successfully")
+            
+        except Exception as e:
+            logger.error(f"Failed to generate enhanced outputs: {e}")
     
     def _save_results(self, results_df: pd.DataFrame, metrics: Dict[str, Any], 
                      toxicity_results: Dict[str, Dict[str, List[float]]]):

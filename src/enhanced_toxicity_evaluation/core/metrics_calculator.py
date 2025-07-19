@@ -24,38 +24,227 @@ class MetricsCalculator:
         
         logger.info("MetricsCalculator initialized")
     
-    def calculate_comprehensive_metrics(self, toxicity_scores: Dict[str, Dict[str, List[float]]]) -> Dict[str, Any]:
-        """Calculate comprehensive metrics for all models and classifiers."""
+    def calculate_comprehensive_metrics(self, toxicity_scores: Dict[str, Dict[str, List[float]]], 
+                                      baseline_model: str = "base") -> Dict[str, Any]:
+        """Calculate comprehensive metrics including delta analysis."""
         logger.info("Calculating comprehensive metrics")
         
-        results = {
-            "model_metrics": {},
-            "classifier_metrics": {},
-            "comparison_metrics": {},
-            "statistical_tests": {}
+        metrics = {}
+        
+        # Basic model metrics
+        metrics["model_metrics"] = self.calculate_model_metrics(toxicity_scores)
+        
+        # Delta calculations
+        delta_results = self.calculate_delta_metrics(toxicity_scores, baseline_model)
+        metrics["delta_results"] = delta_results
+        
+        # Improvement statistics
+        metrics["improvement_statistics"] = self.calculate_improvement_statistics(delta_results)
+        
+        # Statistical significance tests
+        metrics["significance_tests"] = self.perform_statistical_significance_tests(delta_results)
+        
+        # Comparison metrics (maintain backward compatibility)
+        metrics["comparison_metrics"] = self._calculate_comparison_metrics(toxicity_scores, baseline_model)
+        
+        # Summary statistics
+        metrics["summary"] = self._calculate_summary_statistics(delta_results)
+        
+        return metrics
+    
+    def calculate_delta_metrics(self, toxicity_results: Dict[str, Dict[str, List[float]]], 
+                              baseline_model: str = "base") -> Dict[str, Dict[str, List[float]]]:
+        """Calculate delta (improvement) metrics between models and baseline."""
+        delta_results = {}
+        
+        # Get baseline results
+        if baseline_model not in toxicity_results:
+            logger.warning(f"Baseline model '{baseline_model}' not found in results")
+            return delta_results
+        
+        baseline_scores = toxicity_results[baseline_model]
+        
+        # Calculate deltas for each model
+        for model_name, model_scores in toxicity_results.items():
+            if model_name == baseline_model or model_name == "prompt":
+                continue
+                
+            model_deltas = {}
+            
+            # Calculate deltas for each classifier
+            for classifier_name, scores in model_scores.items():
+                baseline_classifier = f"{baseline_model}_{classifier_name}" if not classifier_name.startswith(baseline_model) else classifier_name
+                
+                # Find matching baseline scores
+                if classifier_name in baseline_scores:
+                    baseline_vals = baseline_scores[classifier_name]
+                    if len(baseline_vals) == len(scores):
+                        # Calculate improvement (baseline - model, so positive = improvement)
+                        deltas = [base - model for base, model in zip(baseline_vals, scores)]
+                        model_deltas[f"delta_{model_name}_vs_{baseline_model}_{classifier_name}"] = deltas
+            
+            if model_deltas:
+                delta_results[model_name] = model_deltas
+        
+        return delta_results
+
+    def calculate_improvement_statistics(self, delta_results: Dict[str, Dict[str, List[float]]], 
+                                       improvement_threshold: float = 0.05) -> Dict[str, Dict]:
+        """Calculate comprehensive improvement statistics from delta results."""
+        improvement_stats = {}
+        
+        for model_name, model_deltas in delta_results.items():
+            model_stats = {}
+            
+            for metric_name, deltas in model_deltas.items():
+                deltas_array = np.array(deltas)
+                
+                # Basic statistics
+                stats = {
+                    "mean_improvement": float(np.mean(deltas_array)),
+                    "std_improvement": float(np.std(deltas_array)),
+                    "median_improvement": float(np.median(deltas_array)),
+                    "min_improvement": float(np.min(deltas_array)),
+                    "max_improvement": float(np.max(deltas_array)),
+                    
+                    # Threshold-based metrics
+                    "significant_improvements": int(np.sum(deltas_array > improvement_threshold)),
+                    "significant_regressions": int(np.sum(deltas_array < -improvement_threshold)),
+                    "neutral_samples": int(np.sum(np.abs(deltas_array) <= improvement_threshold)),
+                    
+                    # Percentage metrics
+                    "improvement_rate": float(np.sum(deltas_array > improvement_threshold) / len(deltas_array)),
+                    "regression_rate": float(np.sum(deltas_array < -improvement_threshold) / len(deltas_array)),
+                    "neutral_rate": float(np.sum(np.abs(deltas_array) <= improvement_threshold) / len(deltas_array)),
+                    
+                    # Distribution metrics
+                    "percentile_25": float(np.percentile(deltas_array, 25)),
+                    "percentile_75": float(np.percentile(deltas_array, 75)),
+                    "skewness": float(self._calculate_skewness(deltas_array)),
+                    
+                    # Effect size (Cohen's d compared to zero)
+                    "cohens_d": float(np.mean(deltas_array) / np.std(deltas_array)) if np.std(deltas_array) > 0 else 0.0
+                }
+                
+                model_stats[metric_name] = stats
+            
+            improvement_stats[model_name] = model_stats
+        
+        return improvement_stats
+
+    def _calculate_skewness(self, data: np.ndarray) -> float:
+        """Calculate skewness of a distribution."""
+        if len(data) < 3:
+            return 0.0
+        
+        mean_val = np.mean(data)
+        std_val = np.std(data)
+        
+        if std_val == 0:
+            return 0.0
+        
+        skew = np.mean(((data - mean_val) / std_val) ** 3)
+        return skew
+
+    def perform_statistical_significance_tests(self, delta_results: Dict[str, Dict[str, List[float]]]) -> Dict[str, Dict]:
+        """Perform statistical significance tests on improvement deltas."""
+        try:
+            from scipy import stats
+        except ImportError:
+            logger.warning("scipy not available, skipping statistical tests")
+            return {}
+        
+        significance_results = {}
+        
+        for model_name, model_deltas in delta_results.items():
+            model_tests = {}
+            
+            for metric_name, deltas in model_deltas.items():
+                deltas_array = np.array(deltas)
+                
+                # One-sample t-test against zero (no improvement)
+                t_stat, t_pvalue = stats.ttest_1samp(deltas_array, 0.0)
+                
+                # Wilcoxon signed-rank test (non-parametric alternative)
+                try:
+                    w_stat, w_pvalue = stats.wilcoxon(deltas_array)
+                except ValueError:
+                    # Handle case where all values are the same
+                    w_stat, w_pvalue = 0.0, 1.0
+                
+                # Shapiro-Wilk normality test
+                try:
+                    sw_stat, sw_pvalue = stats.shapiro(deltas_array)
+                except ValueError:
+                    sw_stat, sw_pvalue = 0.0, 1.0
+                
+                model_tests[metric_name] = {
+                    "t_test": {
+                        "statistic": float(t_stat),
+                        "p_value": float(t_pvalue),
+                        "significant_01": bool(t_pvalue < 0.01),
+                        "significant_05": bool(t_pvalue < 0.05)
+                    },
+                    "wilcoxon_test": {
+                        "statistic": float(w_stat),
+                        "p_value": float(w_pvalue),
+                        "significant_01": bool(w_pvalue < 0.01),
+                        "significant_05": bool(w_pvalue < 0.05)
+                    },
+                    "normality_test": {
+                        "statistic": float(sw_stat),
+                        "p_value": float(sw_pvalue),
+                        "is_normal_05": bool(sw_pvalue > 0.05)
+                    }
+                }
+            
+            significance_results[model_name] = model_tests
+        
+        return significance_results
+
+    def _calculate_summary_statistics(self, delta_results: Dict[str, Dict[str, List[float]]]) -> Dict[str, Any]:
+        """Calculate high-level summary statistics."""
+        summary = {
+            "total_models_evaluated": len(delta_results),
+            "total_comparisons": sum(len(model_deltas) for model_deltas in delta_results.values()),
+            "best_performing_model": None,
+            "worst_performing_model": None,
+            "overall_improvement_rate": 0.0
         }
         
-        # Calculate metrics for each model
+        # Find best and worst performing models
+        model_scores = {}
+        all_improvements = []
+        
+        for model_name, model_deltas in delta_results.items():
+            # Calculate average improvement across all metrics for this model
+            all_model_deltas = []
+            for deltas in model_deltas.values():
+                all_model_deltas.extend(deltas)
+            
+            if all_model_deltas:
+                avg_improvement = np.mean(all_model_deltas)
+                model_scores[model_name] = avg_improvement
+                all_improvements.extend(all_model_deltas)
+        
+        if model_scores:
+            summary["best_performing_model"] = max(model_scores.items(), key=lambda x: x[1])
+            summary["worst_performing_model"] = min(model_scores.items(), key=lambda x: x[1])
+        
+        if all_improvements:
+            summary["overall_improvement_rate"] = float(np.sum(np.array(all_improvements) > 0.05) / len(all_improvements))
+            summary["overall_mean_improvement"] = float(np.mean(all_improvements))
+        
+        return summary
+
+    def calculate_model_metrics(self, toxicity_scores: Dict[str, Dict[str, List[float]]]) -> Dict[str, Any]:
+        """Calculate metrics for all models (maintains backward compatibility)."""
+        model_metrics = {}
+        
         for model_name, classifier_scores in toxicity_scores.items():
-            results["model_metrics"][model_name] = self._calculate_model_metrics(classifier_scores)
+            model_metrics[model_name] = self._calculate_model_metrics(classifier_scores)
         
-        # Calculate metrics for each classifier
-        classifier_names = list(next(iter(toxicity_scores.values())).keys())
-        for classifier_name in classifier_names:
-            classifier_scores = {
-                model_name: scores[classifier_name] 
-                for model_name, scores in toxicity_scores.items()
-                if classifier_name in scores
-            }
-            results["classifier_metrics"][classifier_name] = self._calculate_classifier_metrics(classifier_scores)
-        
-        # Calculate comparison metrics
-        results["comparison_metrics"] = self._calculate_comparison_metrics(toxicity_scores)
-        
-        # Perform statistical tests
-        results["statistical_tests"] = self._perform_statistical_tests(toxicity_scores)
-        
-        return results
+        return model_metrics
     
     def _calculate_model_metrics(self, classifier_scores: Dict[str, List[float]]) -> Dict[str, Any]:
         """Calculate metrics for a single model across all classifiers."""
@@ -114,19 +303,20 @@ class MetricsCalculator:
         
         return metrics
     
-    def _calculate_comparison_metrics(self, toxicity_scores: Dict[str, Dict[str, List[float]]]) -> Dict[str, Any]:
+    def _calculate_comparison_metrics(self, toxicity_scores: Dict[str, Dict[str, List[float]]], 
+                                      baseline_model: str = "base") -> Dict[str, Any]:
         """Calculate comparison metrics between models."""
-        baseline_model = self.comparison_config.get("baseline_model", "base")
+        baseline_model_name = baseline_model if baseline_model != "base" else "base" # Ensure consistent name
         comparison_metrics = {}
         
-        if baseline_model not in toxicity_scores:
-            logger.warning(f"Baseline model '{baseline_model}' not found in results")
+        if baseline_model_name not in toxicity_scores:
+            logger.warning(f"Baseline model '{baseline_model_name}' not found in results")
             return comparison_metrics
         
-        baseline_scores = toxicity_scores[baseline_model]
+        baseline_scores = toxicity_scores[baseline_model_name]
         
         for model_name, classifier_scores in toxicity_scores.items():
-            if model_name == baseline_model:
+            if model_name == baseline_model_name:
                 continue
             
             comparison_metrics[model_name] = {}
