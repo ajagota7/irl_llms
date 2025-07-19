@@ -17,6 +17,10 @@ from transformers import pipeline, AutoTokenizer, AutoModelForCausalLM
 import torch
 import matplotlib.pyplot as plt
 import seaborn as sns
+import plotly.graph_objects as go
+import plotly.express as px
+from plotly.subplots import make_subplots
+import plotly.offline as pyo
 
 # Suppress CUDA warnings
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
@@ -906,6 +910,341 @@ def create_prompt_comparison_plots(model_dfs, output_path):
     logger.info("✅ All prompt comparison plots created!")
 
 
+def create_interactive_plots(model_dfs, output_path):
+    """Create interactive plots showing toxicity improvements and distributions."""
+    logger.info("📊 Creating interactive plots...")
+    
+    # Extract epoch numbers and create mapping
+    model_epochs = {}
+    for model_name in model_dfs.keys():
+        if model_name == "base":
+            model_epochs[model_name] = 0  # Base model = epoch 0
+        elif "epoch" in model_name:
+            # Extract epoch number from name like "detox_epoch_20"
+            epoch_num = int(model_name.split("_")[-1])
+            model_epochs[model_name] = epoch_num
+        else:
+            # For any other models, assign a default epoch
+            model_epochs[model_name] = 100
+    
+    # Sort models by epoch
+    sorted_models = sorted(model_epochs.items(), key=lambda x: x[1])
+    model_names = [name for name, _ in sorted_models]
+    epochs = [epoch for _, epoch in sorted_models]
+    
+    # Get detoxified models (exclude base)
+    detox_models = [name for name in model_names if name != "base"]
+    detox_epochs = [epoch for name, epoch in sorted_models if name != "base"]
+    
+    # Create plots for each classifier and text type
+    classifiers = ["toxic_bert", "roberta_toxicity", "dynabench_hate"]
+    text_types = ["output", "full_text"]
+    
+    for classifier in classifiers:
+        for text_type in text_types:
+            logger.info(f"  Creating interactive plots for {classifier} - {text_type}")
+            
+            # 1. Distribution of improvements (base - detoxified)
+            fig_dist = make_subplots(
+                rows=1, cols=1,
+                subplot_titles=[f'Distribution of Toxicity Improvements: {classifier} - {text_type}']
+            )
+            
+            # Get base model scores
+            base_df = model_dfs["base"]
+            base_col = f"{text_type}_{classifier}_results"
+            base_scores = []
+            
+            if base_col in base_df.columns:
+                for _, row in base_df.iterrows():
+                    if isinstance(row[base_col], dict):
+                        if classifier == "toxic_bert":
+                            score = row[base_col].get('toxic', 0.0)
+                        elif classifier == "roberta_toxicity":
+                            score = row[base_col].get('toxic', 0.0)
+                        elif classifier == "dynabench_hate":
+                            score = row[base_col].get('hate', 0.0)
+                        else:
+                            score = 0.0
+                        base_scores.append(score)
+            
+            # Calculate improvements for each detoxified model
+            for detox_model in detox_models:
+                detox_df = model_dfs[detox_model]
+                detox_col = f"{text_type}_{classifier}_results"
+                improvements = []
+                
+                if detox_col in detox_df.columns and base_col in base_df.columns:
+                    for i, (_, row) in enumerate(detox_df.iterrows()):
+                        if i < len(base_scores) and isinstance(row[detox_col], dict):
+                            if classifier == "toxic_bert":
+                                detox_score = row[detox_col].get('toxic', 0.0)
+                            elif classifier == "roberta_toxicity":
+                                detox_score = row[detox_col].get('toxic', 0.0)
+                            elif classifier == "dynabench_hate":
+                                detox_score = row[detox_col].get('hate', 0.0)
+                            else:
+                                detox_score = 0.0
+                            
+                            improvement = base_scores[i] - detox_score
+                            improvements.append(improvement)
+                
+                if improvements:
+                    fig_dist.add_trace(
+                        go.Histogram(
+                            x=improvements,
+                            name=f'Epoch {model_epochs[detox_model]}',
+                            opacity=0.7,
+                            nbinsx=20
+                        )
+                    )
+            
+            fig_dist.update_layout(
+                title=f'Distribution of Toxicity Improvements: {classifier} - {text_type}',
+                xaxis_title='Improvement (Base - Detoxified)',
+                yaxis_title='Count',
+                barmode='overlay',
+                showlegend=True
+            )
+            
+            # Save distribution plot
+            dist_path = output_path / f"interactive_distribution_{classifier}_{text_type}.html"
+            fig_dist.write_html(str(dist_path))
+            logger.info(f"    Saved distribution plot to {dist_path}")
+            
+            # 2. Scatter plot: Base vs Detoxified (interactive selection)
+            fig_scatter = make_subplots(
+                rows=1, cols=1,
+                subplot_titles=[f'Base vs Detoxified Toxicity: {classifier} - {text_type}']
+            )
+            
+            # Add base scores on x-axis
+            fig_scatter.add_trace(
+                go.Scatter(
+                    x=base_scores,
+                    y=base_scores,
+                    mode='markers',
+                    name='Base (reference line)',
+                    line=dict(color='gray', dash='dash'),
+                    showlegend=True
+                )
+            )
+            
+            # Add detoxified models
+            for detox_model in detox_models:
+                detox_df = model_dfs[detox_model]
+                detox_col = f"{text_type}_{classifier}_results"
+                detox_scores = []
+                
+                if detox_col in detox_df.columns:
+                    for i, (_, row) in enumerate(detox_df.iterrows()):
+                        if i < len(base_scores) and isinstance(row[detox_col], dict):
+                            if classifier == "toxic_bert":
+                                score = row[detox_col].get('toxic', 0.0)
+                            elif classifier == "roberta_toxicity":
+                                score = row[detox_col].get('toxic', 0.0)
+                            elif classifier == "dynabench_hate":
+                                score = row[detox_col].get('hate', 0.0)
+                            else:
+                                score = 0.0
+                            detox_scores.append(score)
+                
+                if detox_scores:
+                    fig_scatter.add_trace(
+                        go.Scatter(
+                            x=base_scores,
+                            y=detox_scores,
+                            mode='markers',
+                            name=f'Epoch {model_epochs[detox_model]}',
+                            marker=dict(size=8, opacity=0.7),
+                            hovertemplate='<b>Prompt %{text}</b><br>Base: %{x:.3f}<br>Detoxified: %{y:.3f}<extra></extra>',
+                            text=[f"{i+1}" for i in range(len(base_scores))]
+                        )
+                    )
+            
+            fig_scatter.update_layout(
+                title=f'Base vs Detoxified Toxicity: {classifier} - {text_type}',
+                xaxis_title='Base Toxicity Score',
+                yaxis_title='Detoxified Toxicity Score',
+                showlegend=True
+            )
+            
+            # Add diagonal line for reference
+            max_score = max(max(base_scores) if base_scores else 0, 1.0)
+            fig_scatter.add_trace(
+                go.Scatter(
+                    x=[0, max_score],
+                    y=[0, max_score],
+                    mode='lines',
+                    name='No Change',
+                    line=dict(color='red', dash='dash'),
+                    showlegend=True
+                )
+            )
+            
+            # Save scatter plot
+            scatter_path = output_path / f"interactive_scatter_{classifier}_{text_type}.html"
+            fig_scatter.write_html(str(scatter_path))
+            logger.info(f"    Saved scatter plot to {scatter_path}")
+            
+            # 3. Tracking plot: Toxicity over epochs for each prompt
+            fig_tracking = make_subplots(
+                rows=1, cols=1,
+                subplot_titles=[f'Toxicity Tracking Over Epochs: {classifier} - {text_type}']
+            )
+            
+            # Plot each prompt's progression
+            for prompt_idx in range(min(20, len(base_scores))):  # Show first 20 prompts
+                prompt_scores = []
+                prompt_epochs = []
+                
+                for model_name in model_names:
+                    if model_name in model_dfs:
+                        df = model_dfs[model_name]
+                        col_name = f"{text_type}_{classifier}_results"
+                        
+                        if col_name in df.columns and prompt_idx < len(df):
+                            row = df.iloc[prompt_idx]
+                            if isinstance(row[col_name], dict):
+                                if classifier == "toxic_bert":
+                                    score = row[col_name].get('toxic', 0.0)
+                                elif classifier == "roberta_toxicity":
+                                    score = row[col_name].get('toxic', 0.0)
+                                elif classifier == "dynabench_hate":
+                                    score = row[col_name].get('hate', 0.0)
+                                else:
+                                    score = 0.0
+                                
+                                prompt_scores.append(score)
+                                prompt_epochs.append(model_epochs[model_name])
+                
+                if prompt_scores:
+                    fig_tracking.add_trace(
+                        go.Scatter(
+                            x=prompt_epochs,
+                            y=prompt_scores,
+                            mode='lines+markers',
+                            name=f'Prompt {prompt_idx + 1}',
+                            line=dict(width=2),
+                            marker=dict(size=6),
+                            hovertemplate='<b>Prompt %{fullData.name}</b><br>Epoch: %{x}<br>Toxicity: %{y:.3f}<extra></extra>'
+                        )
+                    )
+            
+            fig_tracking.update_layout(
+                title=f'Toxicity Tracking Over Epochs: {classifier} - {text_type}',
+                xaxis_title='Epoch',
+                yaxis_title='Toxicity Score',
+                showlegend=True,
+                legend=dict(
+                    yanchor="top",
+                    y=0.99,
+                    xanchor="left",
+                    x=0.01
+                )
+            )
+            
+            # Save tracking plot
+            tracking_path = output_path / f"interactive_tracking_{classifier}_{text_type}.html"
+            fig_tracking.write_html(str(tracking_path))
+            logger.info(f"    Saved tracking plot to {tracking_path}")
+    
+    # Create a comprehensive dashboard
+    logger.info("  Creating comprehensive dashboard")
+    fig_dashboard = make_subplots(
+        rows=2, cols=3,
+        subplot_titles=[
+            'Toxic-Bert Output', 'Roberta Output', 'Dynabench Output',
+            'Toxic-Bert Full Text', 'Roberta Full Text', 'Dynabench Full Text'
+        ],
+        specs=[[{"secondary_y": False}, {"secondary_y": False}, {"secondary_y": False}],
+               [{"secondary_y": False}, {"secondary_y": False}, {"secondary_y": False}]]
+    )
+    
+    # Add mean toxicity progression for each classifier and text type
+    for i, classifier in enumerate(classifiers):
+        for j, text_type in enumerate(text_types):
+            row = j + 1
+            col = i + 1
+            
+            mean_scores = []
+            for model_name in model_names:
+                if model_name in model_dfs:
+                    df = model_dfs[model_name]
+                    col_name = f"{text_type}_{classifier}_results"
+                    
+                    if col_name in df.columns:
+                        scores = []
+                        for _, row_data in df.iterrows():
+                            if isinstance(row_data[col_name], dict):
+                                if classifier == "toxic_bert":
+                                    scores.append(row_data[col_name].get('toxic', 0.0))
+                                elif classifier == "roberta_toxicity":
+                                    scores.append(row_data[col_name].get('toxic', 0.0))
+                                elif classifier == "dynabench_hate":
+                                    scores.append(row_data[col_name].get('hate', 0.0))
+                        
+                        if scores:
+                            mean_scores.append(np.mean(scores))
+                        else:
+                            mean_scores.append(0.0)
+                    else:
+                        mean_scores.append(0.0)
+                else:
+                    mean_scores.append(0.0)
+            
+            if mean_scores:
+                fig_dashboard.add_trace(
+                    go.Scatter(
+                        x=epochs,
+                        y=mean_scores,
+                        mode='lines+markers',
+                        name=f'{classifier} {text_type}',
+                        line=dict(width=3),
+                        marker=dict(size=8),
+                        showlegend=False
+                    ),
+                    row=row, col=col
+                )
+                
+                # Add improvement annotation
+                if len(mean_scores) > 1:
+                    improvement = mean_scores[0] - mean_scores[-1]
+                    improvement_pct = (improvement / mean_scores[0]) * 100 if mean_scores[0] > 0 else 0
+                    fig_dashboard.add_annotation(
+                        x=epochs[-1],
+                        y=mean_scores[-1],
+                        text=f'{improvement_pct:.1f}%',
+                        showarrow=True,
+                        arrowhead=2,
+                        arrowsize=1,
+                        arrowwidth=2,
+                        arrowcolor="red",
+                        ax=20,
+                        ay=-30,
+                        row=row, col=col
+                    )
+    
+    fig_dashboard.update_layout(
+        title='Comprehensive Toxicity Reduction Dashboard',
+        height=800,
+        showlegend=False
+    )
+    
+    # Update axes labels
+    for i in range(1, 3):
+        for j in range(1, 4):
+            fig_dashboard.update_xaxes(title_text="Epoch", row=i, col=j)
+            fig_dashboard.update_yaxes(title_text="Mean Toxicity", row=i, col=j)
+    
+    # Save dashboard
+    dashboard_path = output_path / f"comprehensive_dashboard.html"
+    fig_dashboard.write_html(str(dashboard_path))
+    logger.info(f"    Saved comprehensive dashboard to {dashboard_path}")
+    
+    logger.info("✅ All interactive plots created!")
+
+
 def main():
     """Run real end-to-end test with actual models and classifiers."""
     logger.info("🚀 Starting Real End-to-End Model Test")
@@ -993,6 +1332,9 @@ def main():
         
         # Create prompt comparison plots
         create_prompt_comparison_plots(model_dfs, output_path)
+        
+        # Create interactive plots
+        create_interactive_plots(model_dfs, output_path)
         
         # Print classifier summary for first model
         first_model_df = list(model_dfs.values())[0]
