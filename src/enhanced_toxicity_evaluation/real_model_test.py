@@ -353,34 +353,30 @@ def save_results(model_dfs, model_outputs, output_dir="real_model_results"):
     output_path = Path(output_dir)
     output_path.mkdir(exist_ok=True)
     
-    # Save separate CSV files for each model with generic column names
+    # Save separate CSV files for each model with model names
     for model_name, model_df in model_dfs.items():
-        model_num = list(model_outputs.keys()).index(model_name) + 1
-        
         # Convert dictionaries to strings for CSV
         model_df_csv = model_df.copy()
         for col in model_df_csv.columns:
             if col.endswith('_results'):
                 model_df_csv[col] = model_df_csv[col].apply(lambda x: str(x) if isinstance(x, dict) else x)
         
-        # Save model-specific CSV with generic column names
-        model_csv_path = output_path / f"model_{model_num}_results.csv"
+        # Save model-specific CSV with model name
+        model_csv_path = output_path / f"{model_name}_results.csv"
         model_df_csv.to_csv(model_csv_path, index=False)
-        logger.info(f"✅ Saved model {model_num} ({model_name}) results to {model_csv_path}")
+        logger.info(f"✅ Saved {model_name} results to {model_csv_path}")
         
-        # Save model-specific JSON with generic column names
-        model_json_path = output_path / f"model_{model_num}_results.json"
+        # Save model-specific JSON with model name
+        model_json_path = output_path / f"{model_name}_results.json"
         model_df.to_json(model_json_path, orient='records', indent=2)
-        logger.info(f"✅ Saved model {model_num} ({model_name}) results to {model_json_path}")
+        logger.info(f"✅ Saved {model_name} results to {model_json_path}")
     
     # Create comprehensive DataFrame for comparison (optional)
     comprehensive_data = []
     for model_name, model_df in model_dfs.items():
-        model_num = list(model_outputs.keys()).index(model_name) + 1
         for _, row in model_df.iterrows():
             comprehensive_row = {
-                "model": f"model_{model_num}",
-                "model_name": model_name,
+                "model": model_name,
                 "prompt": row["prompt"],
                 "prompt_index": row["prompt_index"],
                 "output": row["output"],
@@ -406,16 +402,15 @@ def save_results(model_dfs, model_outputs, output_dir="real_model_results"):
     comprehensive_df.to_json(json_path, orient='records', indent=2)
     logger.info(f"✅ Saved comprehensive results to {json_path}")
     
-    # Save model outputs separately with consistent naming
+    # Save model outputs separately with model names
     for model_name, outputs in model_outputs.items():
-        model_num = list(model_outputs.keys()).index(model_name) + 1
-        model_output_path = output_path / f"model_{model_num}_outputs.txt"
+        model_output_path = output_path / f"{model_name}_outputs.txt"
         with open(model_output_path, 'w', encoding='utf-8') as f:
             f.write(f"Model: {model_name}\n")
             f.write("=" * 50 + "\n\n")
             for i, output in enumerate(outputs):
                 f.write(f"Output {i+1}:\n{output}\n\n")
-        logger.info(f"✅ Saved model {model_num} ({model_name}) outputs to {model_output_path}")
+        logger.info(f"✅ Saved {model_name} outputs to {model_output_path}")
     
     # Save prompts
     prompts_path = output_path / "prompts.txt"
@@ -429,8 +424,10 @@ def save_results(model_dfs, model_outputs, output_dir="real_model_results"):
     # Save model mapping for reference
     model_mapping = {}
     for model_name in model_outputs.keys():
-        model_num = list(model_outputs.keys()).index(model_name) + 1
-        model_mapping[f"model_{model_num}"] = model_name
+        model_mapping[model_name] = {
+            "name": model_name,
+            "description": f"Model: {model_name}"
+        }
     
     mapping_path = output_path / "model_mapping.json"
     with open(mapping_path, 'w', encoding='utf-8') as f:
@@ -440,8 +437,7 @@ def save_results(model_dfs, model_outputs, output_dir="real_model_results"):
     # Save classification summary
     summary_data = {}
     for model_name, model_df in model_dfs.items():
-        model_num = list(model_outputs.keys()).index(model_name) + 1
-        summary_data[f"model_{model_num}"] = {}
+        summary_data[model_name] = {}
         
         for col in model_df.columns:
             if col.endswith('_results'):
@@ -451,11 +447,11 @@ def save_results(model_dfs, model_outputs, output_dir="real_model_results"):
                     text_type = parts[0]  # prompt, output, or full_text
                     classifier = parts[1]  # classifier name
                     
-                    if classifier not in summary_data[f"model_{model_num}"]:
-                        summary_data[f"model_{model_num}"][classifier] = {}
+                    if classifier not in summary_data[model_name]:
+                        summary_data[model_name][classifier] = {}
                     
-                    if text_type not in summary_data[f"model_{model_num}"][classifier]:
-                        summary_data[f"model_{model_num}"][classifier][text_type] = {}
+                    if text_type not in summary_data[model_name][classifier]:
+                        summary_data[model_name][classifier][text_type] = {}
                     
                     # Calculate average scores for each category
                     valid_results = [r for r in model_df[col] if isinstance(r, dict) and r]
@@ -466,7 +462,7 @@ def save_results(model_dfs, model_outputs, output_dir="real_model_results"):
                         
                         for category in all_categories:
                             scores = [result.get(category, 0.0) for result in valid_results]
-                            summary_data[f"model_{model_num}"][classifier][text_type][category] = {
+                            summary_data[model_name][classifier][text_type][category] = {
                                 "mean": np.mean(scores),
                                 "std": np.std(scores),
                                 "min": np.min(scores),
@@ -627,10 +623,9 @@ def main():
         logger.info(f"\n📁 All results saved to: {output_path}")
         logger.info(f"📄 Separate files created for each model:")
         for model_name in model_outputs.keys():
-            model_num = list(model_outputs.keys()).index(model_name) + 1
-            logger.info(f"  - model_{model_num}_results.csv")
-            logger.info(f"  - model_{model_num}_results.json")
-            logger.info(f"  - model_{model_num}_outputs.txt")
+            logger.info(f"  - {model_name}_results.csv")
+            logger.info(f"  - {model_name}_results.json")
+            logger.info(f"  - {model_name}_outputs.txt")
         logger.info("\n" + "=" * 60)
         logger.info("🎉 REAL END-TO-END TEST COMPLETED!")
         logger.info("=" * 60)

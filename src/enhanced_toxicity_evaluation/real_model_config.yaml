@@ -6,8 +6,24 @@ models:
     path: "EleutherAI/pythia-70m"  # Base Pythia-70m model
     description: "Original Pythia-70m model"
   
-  detoxified:
-    path: "ajagota71/pythia-70m-s-nlp-detox-checkpoint-epoch-100"  # Detoxified model at epoch 100
+  detox_epoch_20:
+    path: "ajagota71/pythia-70m-s-nlp-detox-checkpoint-epoch-20"
+    description: "Detoxified Pythia-70m model (epoch 20)"
+    
+  detox_epoch_40:
+    path: "ajagota71/pythia-70m-s-nlp-detox-checkpoint-epoch-40"
+    description: "Detoxified Pythia-70m model (epoch 40)"
+    
+  detox_epoch_60:
+    path: "ajagota71/pythia-70m-s-nlp-detox-checkpoint-epoch-60"
+    description: "Detoxified Pythia-70m model (epoch 60)"
+    
+  detox_epoch_80:
+    path: "ajagota71/pythia-70m-s-nlp-detox-checkpoint-epoch-80"
+    description: "Detoxified Pythia-70m model (epoch 80)"
+    
+  detox_epoch_100:
+    path: "ajagota71/pythia-70m-s-nlp-detox-checkpoint-epoch-100"
     description: "Detoxified Pythia-70m model (epoch 100)"
 
 # Generation parameters
