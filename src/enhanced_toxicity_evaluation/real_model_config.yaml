@@ -37,7 +37,9 @@ generation:
 dataset:
   name: "allenai/real-toxicity-prompts"
   split: "train"
-  sample_size: 20  # Increased sample size for better testing
+  sample_size: 100  # Increased to 100 prompts
+  filter_toxic: true  # Filter for more toxic prompts
+  min_toxicity_score: 0.5  # Minimum toxicity score to include
 
 # Classifiers
 classifiers:

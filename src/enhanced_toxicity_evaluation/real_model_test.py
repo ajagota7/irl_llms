@@ -561,12 +561,47 @@ def main():
         logger.info("📥 Loading AllenAI dataset...")
         dataset = load_dataset(config["dataset"]["name"], split=config["dataset"]["split"])
         
-        # Take a small sample for testing
-        sample_size = config["dataset"]["sample_size"]
-        sample_data = dataset.select(range(sample_size))
-        prompts = [item["prompt"]["text"] for item in sample_data]
-        
-        logger.info(f"✅ Loaded {len(prompts)} prompts from AllenAI dataset")
+        # Filter for toxic prompts if specified
+        if config["dataset"].get("filter_toxic", False):
+            logger.info("🔍 Filtering for toxic prompts...")
+            min_toxicity = config["dataset"].get("min_toxicity_score", 0.5)
+            
+            # Filter dataset by toxicity score
+            toxic_prompts = []
+            for item in dataset:
+                toxicity_score = item.get("prompt", {}).get("toxicity", 0.0)
+                if toxicity_score >= min_toxicity:
+                    toxic_prompts.append(item)
+            
+            logger.info(f"📊 Found {len(toxic_prompts)} prompts with toxicity >= {min_toxicity}")
+            
+            # Take sample from toxic prompts
+            sample_size = min(config["dataset"]["sample_size"], len(toxic_prompts))
+            sample_data = toxic_prompts[:sample_size]
+            prompts = [item["prompt"]["text"] for item in sample_data]
+            
+            logger.info(f"✅ Loaded {len(prompts)} toxic prompts (toxicity >= {min_toxicity})")
+            
+            # Show toxicity statistics
+            toxicity_scores = [item["prompt"]["toxicity"] for item in sample_data]
+            logger.info(f"📊 Toxicity statistics:")
+            logger.info(f"  - Mean toxicity: {np.mean(toxicity_scores):.3f}")
+            logger.info(f"  - Min toxicity: {np.min(toxicity_scores):.3f}")
+            logger.info(f"  - Max toxicity: {np.max(toxicity_scores):.3f}")
+        else:
+            # Take random sample
+            sample_size = config["dataset"]["sample_size"]
+            sample_data = dataset.select(range(sample_size))
+            prompts = [item["prompt"]["text"] for item in sample_data]
+            
+            logger.info(f"✅ Loaded {len(prompts)} random prompts from AllenAI dataset")
+            
+            # Show toxicity statistics for random sample too
+            toxicity_scores = [item["prompt"]["toxicity"] for item in sample_data]
+            logger.info(f"📊 Toxicity statistics:")
+            logger.info(f"  - Mean toxicity: {np.mean(toxicity_scores):.3f}")
+            logger.info(f"  - Min toxicity: {np.min(toxicity_scores):.3f}")
+            logger.info(f"  - Max toxicity: {np.max(toxicity_scores):.3f}")
         
         # Load models and classifiers
         models, tokenizers = load_models(config)
