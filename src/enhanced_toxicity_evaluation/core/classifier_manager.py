@@ -276,9 +276,12 @@ class ClassifierManager:
                             category_score = pred.get(category.lower(), 0.0)
                             scores.append(category_score)
                         else:
-                            # Single prediction case
-                            if hasattr(pred, "label") and pred["label"].lower() == category.lower():
-                                scores.append(pred["score"])
+                            # Single prediction case - handle different formats
+                            if isinstance(pred, dict):
+                                if "label" in pred and pred["label"].lower() == category.lower():
+                                    scores.append(pred["score"])
+                                else:
+                                    scores.append(0.0)
                             else:
                                 scores.append(0.0)
                     
@@ -299,12 +302,15 @@ class ClassifierManager:
                         # Dictionary format with score
                         scores.append(pred["score"])
                     else:
-                        # Single label
-                        label = pred["label"].lower()
-                        if any(word in label for word in ["toxic", "hate", "harassment"]):
-                            scores.append(pred["score"])
+                        # Single label - handle different formats
+                        if isinstance(pred, dict) and "label" in pred:
+                            label = pred["label"].lower()
+                            if any(word in label for word in ["toxic", "hate", "harassment"]):
+                                scores.append(pred["score"])
+                            else:
+                                scores.append(1.0 - pred["score"])
                         else:
-                            scores.append(1.0 - pred["score"])
+                            scores.append(0.0)
                 
                 detailed_scores[f"{classifier_name}_score"] = scores
         
