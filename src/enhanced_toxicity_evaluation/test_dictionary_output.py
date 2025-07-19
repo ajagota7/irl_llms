@@ -259,18 +259,27 @@ def test_dictionary_classification_output():
         logger.info(f"Toxic-bert output results: {first_row['outputs_toxic_bert_results']}")
         logger.info(f"Toxic-bert full text results: {first_row['full_texts_toxic_bert_results']}")
         
+        # Debug: Show all available keys in toxic-bert results
+        if first_row['prompts_toxic_bert_results']:
+            logger.info(f"Available toxic-bert keys: {list(first_row['prompts_toxic_bert_results'].keys())}")
+        
         # Test 4: Extract specific categories
         logger.info("\n📈 EXTRACTING SPECIFIC CATEGORIES:")
         logger.info("=" * 35)
         
-        # Extract toxic-bert categories for analysis
-        toxic_bert_categories = ["toxic", "severe_toxic", "obscene", "threat", "insult", "identity_attack"]
+        # Extract toxic-bert categories for analysis (using actual model labels)
+        toxic_bert_categories = ["toxic", "severe_toxic", "obscene", "threat", "insult", "identity_hate"]
         
         for category in toxic_bert_categories:
+            # Check if category exists in results
+            if not any(category in row['prompts_toxic_bert_results'] for _, row in df.iterrows()):
+                logger.warning(f"⚠️ Category '{category}' not found in toxic-bert results, skipping...")
+                continue
+                
             # Extract category scores for prompts
-            prompt_scores = [row['prompts_toxic_bert_results'][category] for _, row in df.iterrows()]
-            output_scores = [row['outputs_toxic_bert_results'][category] for _, row in df.iterrows()]
-            full_scores = [row['full_texts_toxic_bert_results'][category] for _, row in df.iterrows()]
+            prompt_scores = [row['prompts_toxic_bert_results'].get(category, 0.0) for _, row in df.iterrows()]
+            output_scores = [row['outputs_toxic_bert_results'].get(category, 0.0) for _, row in df.iterrows()]
+            full_scores = [row['full_texts_toxic_bert_results'].get(category, 0.0) for _, row in df.iterrows()]
             
             logger.info(f"\n{category.upper()}:")
             logger.info(f"  Prompts: {prompt_scores}")
@@ -288,8 +297,12 @@ def test_dictionary_classification_output():
         summary_stats = {}
         
         for category in toxic_bert_categories:
-            prompt_scores = [row['prompts_toxic_bert_results'][category] for _, row in df.iterrows()]
-            output_scores = [row['outputs_toxic_bert_results'][category] for _, row in df.iterrows()]
+            # Check if category exists
+            if not any(category in row['prompts_toxic_bert_results'] for _, row in df.iterrows()):
+                continue
+                
+            prompt_scores = [row['prompts_toxic_bert_results'].get(category, 0.0) for _, row in df.iterrows()]
+            output_scores = [row['outputs_toxic_bert_results'].get(category, 0.0) for _, row in df.iterrows()]
             
             summary_stats[f"{category}_prompt_mean"] = np.mean(prompt_scores)
             summary_stats[f"{category}_output_mean"] = np.mean(output_scores)
@@ -370,6 +383,9 @@ def _classify_texts(classifier, texts, classifier_type):
                     for pred in predictions[0]:  # Take first (and only) prediction
                         label = pred["label"].lower()
                         score = pred["score"]
+                        
+                        # Keep toxic-bert labels as they are (no mapping needed)
+                        
                         result[label] = score
                     results.append(result)
                 else:
@@ -404,7 +420,7 @@ def _create_mock_results(prompts, mock_outputs, full_texts):
     logger.info("🔄 Creating mock results for testing...")
     
     # Mock toxic-bert results (multi-label)
-    toxic_bert_categories = ["toxic", "severe_toxic", "obscene", "threat", "insult", "identity_attack"]
+    toxic_bert_categories = ["toxic", "severe_toxic", "obscene", "threat", "insult", "identity_hate"]
     
     results = {
         "prompts": {},
