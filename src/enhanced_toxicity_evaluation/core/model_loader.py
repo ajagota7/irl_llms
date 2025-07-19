@@ -55,6 +55,41 @@ class ModelLoader:
             
         return device
     
+    def load_models(self) -> tuple[Dict[str, AutoModelForCausalLM], Dict[str, AutoTokenizer]]:
+        """Load base and detoxified models with comprehensive error handling."""
+        logger.info("🔧 Loading language models...")
+        
+        models = {}
+        tokenizers = {}
+        
+        models_config = self.config.get("models", {})
+        
+        for model_name, model_config in models_config.items():
+            try:
+                model_path = model_config["path"]
+                logger.info(f"📥 Loading {model_name} model: {model_path}")
+                
+                tokenizer = AutoTokenizer.from_pretrained(model_path, padding_side="left")
+                tokenizer.pad_token = tokenizer.eos_token
+                
+                model = AutoModelForCausalLM.from_pretrained(
+                    model_path,
+                    torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+                    device_map="auto" if torch.cuda.is_available() else None,
+                )
+                
+                models[model_name] = model
+                tokenizers[model_name] = tokenizer
+                logger.info(f"✅ {model_name} model loaded")
+                
+            except Exception as e:
+                logger.error(f"❌ Error loading {model_name} model: {e}")
+                logger.info(f"⚠️ Using mock {model_name} model for testing...")
+                models[model_name] = None
+                tokenizers[model_name] = None
+        
+        return models, tokenizers
+    
     def _determine_model_size(self, model_name: str) -> str:
         """Determine model size category for fallback settings."""
         model_name_lower = model_name.lower()
@@ -200,7 +235,6 @@ class ModelLoader:
                 self.models[model_info.name] = model_info.model
                 self.tokenizers[model_info.name] = model_info.tokenizer
         
-        logger.info(f"Loaded {len(loaded_models)} models successfully")
         return loaded_models
     
     def get_model(self, model_name: str) -> Optional[AutoModelForCausalLM]:
@@ -213,20 +247,30 @@ class ModelLoader:
     
     def get_model_info(self, model_name: str) -> Optional[ModelInfo]:
         """Get model information by name."""
-        for model_info in self.models.values():
-            if hasattr(model_info, 'name') and model_info.name == model_name:
-                return model_info
+        if model_name in self.models:
+            return ModelInfo(
+                name=model_name,
+                model=self.models[model_name],
+                tokenizer=self.tokenizers[model_name],
+                hf_path="",  # Would need to be stored separately
+                model_type="unknown",
+                description="",
+                device=str(self.device),
+                dtype="unknown"
+            )
         return None
     
     def cleanup(self):
-        """Clean up loaded models to free memory."""
+        """Clean up loaded models and free memory."""
+        logger.info("Cleaning up model loader...")
+        
         for model_name, model in self.models.items():
-            logger.info(f"Cleaning up model: {model_name}")
-            del model
+            if model is not None:
+                del model
         
         for model_name, tokenizer in self.tokenizers.items():
-            logger.info(f"Cleaning up tokenizer: {model_name}")
-            del tokenizer
+            if tokenizer is not None:
+                del tokenizer
         
         self.models.clear()
         self.tokenizers.clear()
@@ -234,4 +278,4 @@ class ModelLoader:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         
-        logger.info("Model cleanup completed") 
+        logger.info("Model loader cleanup completed") 

@@ -34,8 +34,77 @@ class GenerationEngine:
         
         return device
     
+    def generate_outputs(self, models: Dict[str, AutoModelForCausalLM], 
+                        tokenizers: Dict[str, AutoTokenizer], 
+                        prompts: List[str], 
+                        max_new_tokens: int = 50) -> Dict[str, List[str]]:
+        """Generate outputs from models with comprehensive error handling."""
+        logger.info("🔄 Generating outputs from models...")
+        
+        outputs = {}
+        
+        for model_name, model in models.items():
+            if model is None:
+                logger.warning(f"⚠️ Model {model_name} not loaded, using mock outputs")
+                outputs[model_name] = [f"Mock {model_name} output {i+1}" for i in range(len(prompts))]
+                continue
+            
+            tokenizer = tokenizers[model_name]
+            model.eval()
+            
+            logger.info(f"  Generating with {model_name}...")
+            model_outputs = []
+            
+            for i, prompt in enumerate(prompts):
+                try:
+                    inputs = tokenizer(
+                        prompt,
+                        return_tensors="pt",
+                        truncation=True,
+                        max_length=512
+                    )
+                    
+                    if torch.cuda.is_available():
+                        inputs = {k: v.cuda() for k, v in inputs.items()}
+                    
+                    with torch.no_grad():
+                        generated_ids = model.generate(
+                            inputs["input_ids"],
+                            attention_mask=inputs["attention_mask"],
+                            max_new_tokens=max_new_tokens,
+                            do_sample=True,
+                            temperature=0.7,
+                            pad_token_id=tokenizer.eos_token_id
+                        )
+                    
+                    # Extract only the generated tokens
+                    gen_only = generated_ids[:, inputs["input_ids"].shape[1]:]
+                    output = tokenizer.decode(gen_only[0], skip_special_tokens=True)
+                    model_outputs.append(output)
+                    
+                    # Progress tracking
+                    if (i + 1) % 5 == 0:
+                        logger.info(f"    Generated {i + 1}/{len(prompts)} outputs for {model_name}")
+                    
+                    # Clear GPU memory periodically
+                    if torch.cuda.is_available() and (i + 1) % 10 == 0:
+                        torch.cuda.empty_cache()
+                        
+                except Exception as e:
+                    logger.warning(f"⚠️ Error generating output {i} for {model_name}: {e}")
+                    model_outputs.append(f"Error generating output {i}")
+            
+            outputs[model_name] = model_outputs
+            logger.info(f"✅ Generated {len(model_outputs)} outputs for {model_name}")
+            
+            # Clear GPU memory after each model
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        
+        return outputs
+    
     def generate_all(self, models: Dict[str, Any], prompts: List[str]) -> Dict[str, List[str]]:
-        """Generate completions for all models."""
+        """Generate completions for all models (legacy method)."""
         logger.info(f"Generating completions for {len(models)} models on {len(prompts)} prompts")
         
         all_outputs = {}

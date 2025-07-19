@@ -38,6 +38,138 @@ class ClassifierManager:
         else:
             return "cpu"
     
+    def load_classifiers(self) -> Dict[str, Any]:
+        """Load toxicity classifiers with comprehensive error handling."""
+        logger.info("🔧 Loading toxicity classifiers...")
+        
+        for classifier_name, classifier_config in self.classifiers_config.items():
+            try:
+                logger.info(f"📥 Loading {classifier_name} classifier...")
+                
+                # Get classifier parameters
+                model_name = classifier_config["model"]
+                device = classifier_config.get("device", -1)
+                return_all_scores = classifier_config.get("return_all_scores", False)
+                
+                # Create pipeline
+                if return_all_scores:
+                    classifier = pipeline(
+                        "text-classification",
+                        model=model_name,
+                        return_all_scores=True,
+                        device=device
+                    )
+                else:
+                    classifier = pipeline(
+                        "text-classification",
+                        model=model_name,
+                        device=device
+                    )
+                
+                self.classifiers[classifier_name] = classifier
+                logger.info(f"✅ Loaded {classifier_name} classifier (device: {device})")
+                
+            except Exception as e:
+                logger.error(f"❌ Error loading {classifier_name} classifier: {e}")
+                logger.info(f"⚠️ Falling back to CPU for {classifier_name}...")
+                
+                # Fallback to CPU
+                try:
+                    if classifier_config.get("return_all_scores", False):
+                        classifier = pipeline(
+                            "text-classification",
+                            model=model_name,
+                            return_all_scores=True,
+                            device=-1
+                        )
+                    else:
+                        classifier = pipeline(
+                            "text-classification",
+                            model=model_name,
+                            device=-1
+                        )
+                    
+                    self.classifiers[classifier_name] = classifier
+                    logger.info(f"✅ Loaded {classifier_name} classifier on CPU")
+                    
+                except Exception as e2:
+                    logger.error(f"❌ Failed to load {classifier_name} even on CPU: {e2}")
+                    self.classifiers[classifier_name] = None
+        
+        return self.classifiers
+    
+    def classify_texts(self, texts: List[str], text_type: str) -> Dict[str, List[Dict]]:
+        """Classify texts and return results as dictionaries."""
+        logger.info(f"🔍 Classifying {text_type}...")
+        
+        results = {}
+        
+        for classifier_name, classifier in self.classifiers.items():
+            if classifier is None:
+                logger.warning(f"⚠️ Classifier {classifier_name} not loaded, skipping")
+                continue
+            
+            logger.info(f"  Running {classifier_name}...")
+            classifier_results = []
+            
+            # Log first few results for debugging
+            debug_count = 0
+            
+            for text in texts:
+                try:
+                    if classifier_name == "toxic_bert":
+                        # Toxic-bert returns all scores for all categories
+                        predictions = classifier(text, truncation=True, max_length=512)
+                        if isinstance(predictions, list) and len(predictions) > 0:
+                            # Convert to dictionary format
+                            result = {}
+                            for pred in predictions[0]:  # Take first (and only) prediction
+                                label = pred["label"].lower()
+                                score = pred["score"]
+                                result[label] = score
+                            classifier_results.append(result)
+                        else:
+                            classifier_results.append({})
+                    else:
+                        # Single-label classifiers - get all scores
+                        predictions = classifier(text, truncation=True, max_length=512, return_all_scores=True)
+                        if isinstance(predictions, list) and len(predictions) > 0:
+                            # Convert to dictionary format with all scores
+                            result = {}
+                            for pred in predictions[0]:  # Take first (and only) prediction
+                                label = pred["label"].lower()
+                                score = pred["score"]
+                                
+                                # Map labels to consistent names
+                                if classifier_name == "roberta_toxicity":
+                                    if "toxic" in label:
+                                        label = "toxic"
+                                    elif "neutral" in label:
+                                        label = "neutral"
+                                elif classifier_name == "dynabench_hate":
+                                    if "hate" in label and "not" not in label:
+                                        label = "hate"
+                                    elif "not" in label or "non" in label:
+                                        label = "not_hate"
+                                
+                                result[label] = score
+                            classifier_results.append(result)
+                            
+                            # Debug logging for first few results
+                            if debug_count < 3:
+                                logger.info(f"    Sample {debug_count + 1} {classifier_name} results: {result}")
+                                debug_count += 1
+                        else:
+                            classifier_results.append({})
+                            
+                except Exception as e:
+                    logger.warning(f"⚠️ Error classifying text with {classifier_name}: {e}")
+                    classifier_results.append({})
+            
+            results[classifier_name] = classifier_results
+        
+        return results
+    
     def _is_multi_label_classifier(self, model_name: str) -> bool:
         """Detect if a classifier returns multi-label results."""
         multi_label_models = [
@@ -50,8 +182,8 @@ class ClassifierManager:
         """Get standard toxic-bert category names."""
         return ["toxic", "severe_toxic", "obscene", "threat", "insult", "identity_attack"]
     
-    def load_classifiers(self) -> Dict[str, Any]:
-        """Load all enabled classifiers."""
+    def load_classifiers_legacy(self) -> Dict[str, Any]:
+        """Load all enabled classifiers (legacy method)."""
         logger.info("Loading toxicity classifiers...")
         
         for name, config in self.classifiers_config.items():
@@ -198,140 +330,96 @@ class ClassifierManager:
                     # Process toxic-bert results - preserve original list format for multi-label extraction
                     for pred in predictions:
                         if isinstance(pred, list):
-                            # Multiple categories returned - keep as list for extract_detailed_scores
-                            results.append(pred)
+                            # Convert to dictionary format
+                            result = {}
+                            for label_pred in pred:
+                                label = label_pred["label"].lower()
+                                score = label_pred["score"]
+                                result[label] = score
+                            results.append(result)
                         else:
-                            # Single prediction - convert to list format
-                            results.append([pred])
+                            results.append({})
                 else:
-                    # Handle standard binary classifiers
-                    predictions = classifier(batch)
+                    # Handle single-label classifiers
+                    predictions = classifier(batch, return_all_scores=True)
                     
                     for pred in predictions:
                         if isinstance(pred, list):
-                            # Multiple labels returned
-                            toxic_score = 0.0
-                            for item in pred:
-                                label = item["label"].lower()
-                                if any(word in label for word in ["toxic", "hate", "harassment"]):
-                                    toxic_score = max(toxic_score, item["score"])
-                            results.append({"score": toxic_score})
+                            # Convert to dictionary format
+                            result = {}
+                            for label_pred in pred:
+                                label = label_pred["label"].lower()
+                                score = label_pred["score"]
+                                result[label] = score
+                            results.append(result)
                         else:
-                            # Single label
-                            label = pred["label"].lower()
-                            score = pred["score"]
+                            results.append({})
                             
-                            # Determine if this is a toxic prediction
-                            if any(word in label for word in ["toxic", "hate", "harassment"]):
-                                results.append({"score": score})
-                            else:
-                                # Invert score for non-toxic labels
-                                results.append({"score": 1.0 - score})
-                                
             except Exception as e:
-                logger.error(f"Error in batch {i} for classifier {name}: {e}")
-                
-                # Add fallback results for this batch
-                fallback_results = self._create_safe_fallback(len(batch))
-                results.extend(fallback_results)
+                logger.error(f"Error evaluating batch {i} with {name}: {e}")
+                # Add empty results for failed batch
+                results.extend([{}] * len(batch))
         
         return results
     
     def _create_safe_fallback(self, num_texts: int) -> List[Dict]:
         """Create safe fallback results when classifier fails."""
-        return [{"score": 0.0, "error": "classifier_failed"} for _ in range(num_texts)]
+        return [{"safe": 1.0, "unsafe": 0.0} for _ in range(num_texts)]
     
     def extract_detailed_scores(self, predictions: Dict[str, List[Dict]], text_type: str = "text") -> Dict[str, List[float]]:
-        """Extract detailed toxicity scores from classifier predictions with multi-label support."""
+        """Extract detailed scores from classifier predictions."""
         detailed_scores = {}
         
-        if not predictions:
-            return detailed_scores
-        
-        num_texts = len(next(iter(predictions.values())))
-        
         for classifier_name, classifier_predictions in predictions.items():
-            if self._is_multi_label_classifier(classifier_name):
-                # Handle multi-label classifiers (toxic-bert)
+            if classifier_name == "toxic_bert":
+                # Extract all toxic-bert categories
                 categories = self._get_toxic_bert_categories()
-                
                 for category in categories:
                     scores = []
                     for pred in classifier_predictions:
-                        if isinstance(pred, list):
-                            # Find the category score in the list
-                            category_score = 0.0
-                            for item in pred:
-                                if item["label"].lower() == category.lower():
-                                    category_score = item["score"]
-                                    break
-                            scores.append(category_score)
-                        elif isinstance(pred, dict):
-                            # Dictionary format (from _evaluate_with_classifier)
-                            category_score = pred.get(category.lower(), 0.0)
-                            scores.append(category_score)
-                        else:
-                            # Single prediction case - handle different formats
-                            if isinstance(pred, dict):
-                                if "label" in pred and pred["label"].lower() == category.lower():
-                                    scores.append(pred["score"])
-                                else:
-                                    scores.append(0.0)
-                            else:
-                                scores.append(0.0)
-                    
-                    detailed_scores[f"{classifier_name}_{category}"] = scores
-            else:
-                # Handle binary classifiers
-                scores = []
-                for pred in classifier_predictions:
-                    if isinstance(pred, list):
-                        # Multiple labels - find the toxic one
-                        toxic_score = 0.0
-                        for item in pred:
-                            label = item["label"].lower()
-                            if any(word in label for word in ["toxic", "hate", "harassment"]):
-                                toxic_score = max(toxic_score, item["score"])
-                        scores.append(toxic_score)
-                    elif isinstance(pred, dict) and "score" in pred:
-                        # Dictionary format with score
-                        scores.append(pred["score"])
-                    else:
-                        # Single label - handle different formats
-                        if isinstance(pred, dict) and "label" in pred:
-                            label = pred["label"].lower()
-                            if any(word in label for word in ["toxic", "hate", "harassment"]):
-                                scores.append(pred["score"])
-                            else:
-                                scores.append(1.0 - pred["score"])
+                        if isinstance(pred, dict) and category in pred:
+                            scores.append(pred[category])
                         else:
                             scores.append(0.0)
-                
-                detailed_scores[f"{classifier_name}_score"] = scores
+                    detailed_scores[f"{text_type}_{classifier_name}_{category}"] = scores
+            else:
+                # Extract main toxicity score for other classifiers
+                main_score_key = "toxic" if "toxic" in classifier_name else "hate"
+                scores = []
+                for pred in classifier_predictions:
+                    if isinstance(pred, dict) and main_score_key in pred:
+                        scores.append(pred[main_score_key])
+                    else:
+                        scores.append(0.0)
+                detailed_scores[f"{text_type}_{classifier_name}"] = scores
         
         return detailed_scores
     
     def get_classifier_info(self) -> Dict[str, Any]:
         """Get information about loaded classifiers."""
         info = {}
-        for name, classifier_info in self.classifiers.items():
-            info[name] = {
-                "model": classifier_info["config"]["model"],
-                "description": classifier_info["config"].get("description", ""),
-                "batch_size": classifier_info["config"].get("batch_size", 32),
-                "max_length": classifier_info["config"].get("max_length", 512)
-            }
+        for name, classifier in self.classifiers.items():
+            if classifier is not None:
+                info[name] = {
+                    "loaded": True,
+                    "device": str(self.device),
+                    "type": "multi_label" if self._is_multi_label_classifier(name) else "single_label"
+                }
+            else:
+                info[name] = {"loaded": False}
         return info
     
     def cleanup(self):
-        """Clean up loaded classifiers to free memory."""
-        for name, classifier_info in self.classifiers.items():
-            logger.info(f"Cleaning up classifier: {name}")
-            del classifier_info["pipeline"]
+        """Clean up loaded classifiers."""
+        logger.info("Cleaning up classifier manager...")
+        
+        for name, classifier in self.classifiers.items():
+            if classifier is not None:
+                del classifier
         
         self.classifiers.clear()
         
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         
-        logger.info("Classifier cleanup completed") 
+        logger.info("Classifier manager cleanup completed") 

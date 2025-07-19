@@ -1,0 +1,156 @@
+# Modular Configuration for Enhanced Toxicity Evaluation Pipeline
+# Supports separate classification and evaluation phases
+
+# Models configuration
+models:
+  base:
+    path: "EleutherAI/pythia-70m"  # Base Pythia-70m model
+    description: "Original Pythia-70m model"
+  
+  detox_epoch_20:
+    path: "ajagota71/pythia-70m-s-nlp-detox-checkpoint-epoch-20"
+    description: "Detoxified Pythia-70m model (epoch 20)"
+    
+  detox_epoch_40:
+    path: "ajagota71/pythia-70m-s-nlp-detox-checkpoint-epoch-40"
+    description: "Detoxified Pythia-70m model (epoch 40)"
+    
+  detox_epoch_60:
+    path: "ajagota71/pythia-70m-s-nlp-detox-checkpoint-epoch-60"
+    description: "Detoxified Pythia-70m model (epoch 60)"
+    
+  detox_epoch_80:
+    path: "ajagota71/pythia-70m-s-nlp-detox-checkpoint-epoch-80"
+    description: "Detoxified Pythia-70m model (epoch 80)"
+    
+  detox_epoch_100:
+    path: "ajagota71/pythia-70m-s-nlp-detox-checkpoint-epoch-100"
+    description: "Detoxified Pythia-70m model (epoch 100)"
+
+# Model loading settings
+model_loading:
+  device_map: "auto"
+  trust_remote_code: true
+  low_cpu_mem_usage: true
+  torch_dtype: "auto"
+
+# Fallback settings for different model sizes
+fallback_settings:
+  large_models:
+    load_in_8bit: false
+    load_in_4bit: false
+  medium_models:
+    load_in_8bit: false
+    load_in_4bit: false
+  small_models:
+    load_in_8bit: false
+    load_in_4bit: false
+
+# Generation parameters
+generation:
+  max_new_tokens: 50
+  temperature: 0.7
+  do_sample: true
+  top_p: 0.9
+  batch_size: 16
+  max_length: 1024
+  use_cache: true
+
+# Dataset configuration
+dataset:
+  name: "allenai/real-toxicity-prompts"
+  split: "train"
+  max_prompts: 100
+  filtering:
+    strategy: "toxicity_threshold"
+    toxicity_threshold: 0.5
+    metrics: ["toxicity"]
+  shuffle_seed: null
+
+# Processing settings
+processing:
+  max_length: 512
+  truncation: true
+  padding: true
+
+# Caching settings
+caching:
+  use_cache: true
+  cache_dir: "datasets/cache"
+  cache_name: "real_toxicity_filtered"
+  force_regenerate: false
+
+# Classifiers configuration
+classifiers:
+  toxic_bert:
+    model: "unitary/toxic-bert"
+    return_all_scores: true
+    device: 0  # GPU
+    enabled: true
+    batch_size: 32
+    max_length: 512
+  
+  roberta_toxicity:
+    model: "s-nlp/roberta_toxicity_classifier"
+    return_all_scores: true
+    device: 0  # GPU
+    enabled: true
+    batch_size: 32
+    max_length: 512
+  
+  dynabench_hate:
+    model: "facebook/roberta-hate-speech-dynabench-r4-target"
+    return_all_scores: true
+    device: 0  # GPU
+    enabled: true
+    batch_size: 32
+    max_length: 512
+
+# Evaluation settings
+evaluation:
+  parallel: true
+  max_workers: 4
+  timeout: 300
+
+# Error handling
+error_handling:
+  skip_failed_classifiers: true
+  fallback_to_safe: true
+
+# Output format
+output_format:
+  include_raw_predictions: true
+  include_processed_scores: true
+
+# Output settings
+output:
+  directory: "modular_results"
+  save_formats: ["csv", "json", "txt"]
+  include_summary: true
+
+# Device configuration
+device: "auto"  # "auto", "cuda", "cpu"
+
+# Logging configuration
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+# Visualization settings
+visualization:
+  create_plots: true
+  save_format: "png"
+  dpi: 300
+  style: "default"
+
+# WandB integration (optional)
+wandb:
+  use_wandb: false
+  project: "toxicity-evaluation"
+  entity: null
+  tags: []
+
+# Experiment settings
+experiment:
+  name: "modular_evaluation"
+  description: "Modular toxicity evaluation pipeline" 
