@@ -9,6 +9,7 @@ dataset:
   detoxified_model_name: "ajagota71/pythia-70M-detox-epoch-100"
   original_dataset_path: null
   detoxified_dataset_path: null
+  # custom_dataset_name: "my_custom_dataset"  # Uncomment to use custom name instead of default
 
 model:
   reward_model_base: "EleutherAI/pythia-70M"

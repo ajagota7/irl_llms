@@ -5,6 +5,7 @@ dataset:
   detoxified_model_name: "ajagota71/gpt-neo-125m-detox-epoch-100"
   original_dataset_path: "${hydra:runtime.cwd}/datasets/gpt-neo-125m-original.json"
   detoxified_dataset_path: "${hydra:runtime.cwd}/datasets/gpt-neo-125m-detoxified.json"
+  # custom_dataset_name: "my_custom_dataset"  # Uncomment to use custom name instead of default
 
 model:
   reward_model_base: "EleutherAI/gpt-neo-125m"

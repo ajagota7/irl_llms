@@ -47,7 +47,16 @@ class DatasetGenerator:
         model_type = "original" if is_original else "detoxified"
         
         # Create a unique identifier for this dataset generation
-        self.dataset_id = f"{model_name_safe}_{config.dataset.num_samples}_samples_{model_type}"
+        # Check if custom dataset name is provided
+        if hasattr(config.dataset, 'custom_dataset_name') and config.dataset.custom_dataset_name:
+            # Use custom name with model type suffix
+            base_name = config.dataset.custom_dataset_name
+            self.dataset_id = f"{base_name}_{model_type}"
+        else:
+            # Default naming scheme with temperature and toxicity threshold
+            temp_str = f"temp{config.dataset.temperature}".replace('.', 'p')
+            tox_str = f"tox{config.dataset.toxicity_threshold}".replace('.', 'p')
+            self.dataset_id = f"{model_name_safe}_{config.dataset.num_samples}_samples_{temp_str}_{tox_str}_{model_type}"
         
         # Set random seed
         torch.manual_seed(config.dataset.seed)

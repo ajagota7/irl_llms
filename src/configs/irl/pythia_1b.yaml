@@ -5,6 +5,7 @@ dataset:
   detoxified_model_name: "ajagota71/pythia-1b-detox-epoch-100"
   original_dataset_path: "${hydra:runtime.cwd}/datasets/pythia-1b-original.json"
   detoxified_dataset_path: "${hydra:runtime.cwd}/datasets/pythia-1b-detoxified.json"
+  # custom_dataset_name: "my_custom_dataset"  # Uncomment to use custom name instead of default
 
 model:
   reward_model_base: "EleutherAI/pythia-1b"
