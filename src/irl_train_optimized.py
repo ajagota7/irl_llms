@@ -1,5 +1,5 @@
 """
-Main training script for IRL detoxification.
+Optimized IRL training script with GPU memory optimizations and multi-device support.
 """
 
 import os
@@ -17,6 +17,7 @@ from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 from scipy import stats
 import json
 from datasets import load_dataset
+import gc
 
 from src.irl_utilities import (
     RewardModel, 
@@ -28,14 +29,23 @@ from src.irl_utilities import (
 )
 
 
-class IRLTrainer:
-    """Trainer class for IRL detoxification."""
+class OptimizedIRLTrainer:
+    """Optimized trainer class for IRL detoxification with GPU memory optimizations."""
 
     def __init__(self, config: DictConfig):
-        """Initialize the trainer."""
+        """Initialize the trainer with optimizations."""
         self.config = config
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
+        
+        # Multi-device setup
+        self.devices = self._setup_devices()
+        self.main_device = self.devices[0]  # Primary device for model
+        
+        # Memory optimization settings
+        self.gradient_accumulation_steps = config.training.get('gradient_accumulation_steps', 1)
+        self.max_grad_norm = config.training.get('max_grad_norm', 1.0)
+        self.use_amp = config.training.get('use_amp', True)  # Automatic Mixed Precision
+        self.use_gradient_checkpointing = config.training.get('use_gradient_checkpointing', False)
+        
         # Create a timestamp for this run
         self.timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
@@ -57,6 +67,8 @@ class IRLTrainer:
         # Set random seeds
         torch.manual_seed(config.training.seed)
         np.random.seed(config.training.seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(config.training.seed)
         
         # Initialize the reward model and tokenizer
         self._init_model_and_tokenizer()
@@ -67,8 +79,33 @@ class IRLTrainer:
         # Initialize metrics history
         self.metrics_history = []
         
+        # Initialize AMP scaler
+        if self.use_amp:
+            self.scaler = torch.cuda.amp.GradScaler()
+        
+        print(f"Initialized trainer with {len(self.devices)} devices: {self.devices}")
+        print(f"Gradient accumulation steps: {self.gradient_accumulation_steps}")
+        print(f"Using AMP: {self.use_amp}")
+        print(f"Using gradient checkpointing: {self.use_gradient_checkpointing}")
+    
+    def _setup_devices(self):
+        """Setup available devices for training."""
+        if torch.cuda.is_available():
+            num_devices = torch.cuda.device_count()
+            devices = [f"cuda:{i}" for i in range(num_devices)]
+            print(f"Found {num_devices} CUDA devices: {devices}")
+            
+            # Print device info
+            for i, device in enumerate(devices):
+                props = torch.cuda.get_device_properties(i)
+                print(f"Device {i}: {props.name}, Memory: {props.total_memory / 1024**3:.1f}GB")
+            
+            return devices
+        else:
+            return ["cpu"]
+    
     def _init_model_and_tokenizer(self):
-        """Initialize the reward model and tokenizer."""
+        """Initialize the reward model and tokenizer with optimizations."""
         model_name = self.config.model.reward_model_base
         
         # Check if we should use half precision
@@ -82,23 +119,33 @@ class IRLTrainer:
         self.reward_model = RewardModel(
             model_name=model_name,
             use_half_precision=use_half_precision,
-            device=self.device,
+            device=self.main_device,
             num_unfrozen_layers=self.config.model.num_unfrozen_layers
         )
         
-        # Enable gradient checkpointing for memory efficiency
-        if hasattr(self.reward_model.model, 'gradient_checkpointing_enable'):
+        # Enable gradient checkpointing if requested
+        if self.use_gradient_checkpointing:
             self.reward_model.model.gradient_checkpointing_enable()
-            print("Enabled gradient checkpointing for memory efficiency")
+            print("Enabled gradient checkpointing")
+        
+        # Move to main device
+        self.reward_model = self.reward_model.to(self.main_device)
         
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         self.tokenizer.pad_token = self.tokenizer.eos_token
         self.tokenizer.padding_side = 'left'
         
-        # Print memory usage
-        if torch.cuda.is_available():
-            print(f"GPU Memory after model load: {torch.cuda.memory_allocated() / 1024**3:.2f}GB")
+        # Print model info
+        total_params = sum(p.numel() for p in self.reward_model.parameters())
+        trainable_params = sum(p.numel() for p in self.reward_model.parameters() if p.requires_grad)
+        print(f"Total parameters: {total_params:,}")
+        print(f"Trainable parameters: {trainable_params:,} ({trainable_params/total_params:.2%})")
         
+        # Estimate memory usage
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.reset_peak_memory_stats()
+    
     def _init_true_reward_model(self):
         """Initialize the true reward model for evaluation."""
         print("Loading true reward model for evaluation...")
@@ -106,8 +153,8 @@ class IRLTrainer:
         self.true_reward_tokenizer = RobertaTokenizer.from_pretrained(true_reward_model_name)
         self.true_reward_model = AutoModelForSequenceClassification.from_pretrained(
             true_reward_model_name,
-            torch_dtype=torch.float16
-        ).to(self.device)
+            torch_dtype=torch.float16 if self.config.model.use_half_precision else torch.float32
+        ).to(self.main_device)
         
     def prepare_data(self, original_dataset_path, detoxified_dataset_path):
         """Prepare data for training by calling the utility function."""
@@ -118,7 +165,7 @@ class IRLTrainer:
         )
     
     def data_loader(self, original_data, detoxified_data, batch_size):
-        """Create batches of paired data."""
+        """Create batches of paired data with memory optimization."""
         assert len(original_data) == len(detoxified_data), "Both datasets should have the same length"
         
         indices = np.arange(len(original_data))
@@ -134,8 +181,12 @@ class IRLTrainer:
             
             yield batch_original, batch_detoxified
             
+            # Clear memory after each batch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+    
     def evaluate(self, data, split="test"):
-        """Evaluate the reward model on the given data split."""
+        """Evaluate the reward model on the given data split with memory optimization."""
         self.reward_model.eval()
         self.true_reward_model.eval()
         
@@ -173,10 +224,14 @@ class IRLTrainer:
                     max_length=self.config.training.max_length
                 )
                 # Move to device
-                inputs = {k: v.to(self.device) for k, v in inputs.items()}
+                inputs = {k: v.to(self.main_device) for k, v in inputs.items()}
                 
-                # Get learned rewards
-                rewards = self.reward_model(**inputs)
+                # Get learned rewards with AMP
+                if self.use_amp:
+                    with torch.cuda.amp.autocast():
+                        rewards = self.reward_model(**inputs)
+                else:
+                    rewards = self.reward_model(**inputs)
                 
                 # Convert to list of floats
                 rewards_list = rewards.squeeze().cpu().tolist()
@@ -189,6 +244,11 @@ class IRLTrainer:
                 
                 # Add ground truth labels
                 ground_truth_labels.extend([1] * len(batch))
+                
+                # Clear memory
+                del inputs, rewards
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
             
             # Process detoxified examples in batches
             for i in range(0, len(data['detoxified']), batch_size):
@@ -211,10 +271,14 @@ class IRLTrainer:
                     max_length=self.config.training.max_length
                 )
                 # Move to device
-                inputs = {k: v.to(self.device) for k, v in inputs.items()}
+                inputs = {k: v.to(self.main_device) for k, v in inputs.items()}
                 
-                # Get learned rewards
-                rewards = self.reward_model(**inputs)
+                # Get learned rewards with AMP
+                if self.use_amp:
+                    with torch.cuda.amp.autocast():
+                        rewards = self.reward_model(**inputs)
+                else:
+                    rewards = self.reward_model(**inputs)
                 
                 # Convert to list of floats
                 rewards_list = rewards.squeeze().cpu().tolist()
@@ -227,83 +291,44 @@ class IRLTrainer:
                 
                 # Add ground truth labels
                 ground_truth_labels.extend([0] * len(batch))
+                
+                # Clear memory
+                del inputs, rewards
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
         
-        # Compute true rewards using the ground truth model
-        for i in range(0, len(all_texts), batch_size):
-            batch_texts = all_texts[i:i+batch_size]
-            
-            # Tokenize for the true reward model
-            inputs = self.true_reward_tokenizer(
-                batch_texts,
-                return_tensors="pt",
-                padding=True,
-                truncation=True,
-                max_length=self.config.training.max_length
-            ).to(self.device)
-            
-            # Get true rewards
-            logits = self.true_reward_model(**inputs).logits
-            
-            # Use the first logit (non-toxic) as the reward
-            batch_rewards = logits[:, 0].cpu().tolist()
-            true_rewards.extend(batch_rewards)
+        # Calculate metrics
+        metrics = self._calculate_metrics(original_outputs, detoxified_outputs, ground_truth_labels, split)
         
-        # Get all outputs together
-        all_outputs = original_outputs + detoxified_outputs
-        
-        # Compute metrics
-        metrics = {}
-        
+        return metrics
+    
+    def _calculate_metrics(self, original_outputs, detoxified_outputs, ground_truth_labels, split):
+        """Calculate evaluation metrics."""
         # Convert learned rewards to binary predictions
-        # Higher reward should indicate less toxic (more detoxified)
-        threshold = np.mean(all_outputs)  # Simple threshold
-        learned_predictions = (np.array(all_outputs) > threshold).astype(int)
+        all_scores = original_outputs + detoxified_outputs
+        threshold = np.mean(all_scores)  # Simple threshold
+        learned_predictions = (np.array(all_scores) > threshold).astype(int)
         learned_predictions = 1 - learned_predictions  # Invert to match ground truth (1=toxic)
         
-        # Accuracy
-        metrics[f'{split}_accuracy'] = accuracy_score(ground_truth_labels, learned_predictions)
+        # Calculate metrics
+        metrics = {
+            f'{split}_accuracy': accuracy_score(ground_truth_labels, learned_predictions),
+            f'{split}_f1': f1_score(ground_truth_labels, learned_predictions),
+            f'{split}_auc_roc': roc_auc_score(ground_truth_labels, [-x for x in all_scores]),
+            f'{split}_avg_original_reward': np.mean(original_outputs),
+            f'{split}_avg_detoxified_reward': np.mean(detoxified_outputs),
+            f'{split}_reward_diff': np.mean(detoxified_outputs) - np.mean(original_outputs),
+            f'{split}_std_original_reward': np.std(original_outputs),
+            f'{split}_std_detoxified_reward': np.std(detoxified_outputs),
+            f'{split}_pearson_correlation': stats.pearsonr(original_outputs, detoxified_outputs)[0],
+            f'{split}_spearman_correlation': stats.spearmanr(original_outputs, detoxified_outputs)[0],
+            f'{split}_kendall_tau': stats.kendalltau(original_outputs, detoxified_outputs)[0]
+        }
         
-        # F1 Score
-        metrics[f'{split}_f1'] = f1_score(ground_truth_labels, learned_predictions)
-        
-        # AUC-ROC
-        metrics[f'{split}_auc_roc'] = roc_auc_score(ground_truth_labels, [-x for x in all_outputs])  # Invert for ROC
-        
-        # Correlation with true rewards
-        metrics[f'{split}_pearson_correlation'] = np.corrcoef([x for x in all_outputs], true_rewards)[0, 1]
-        metrics[f'{split}_spearman_correlation'] = stats.spearmanr([x for x in all_outputs], true_rewards).correlation
-        metrics[f'{split}_kendall_tau'] = stats.kendalltau([x for x in all_outputs], true_rewards).correlation
-        
-        # Average predicted rewards
-        metrics[f'{split}_avg_original_reward'] = np.mean(original_outputs)
-        metrics[f'{split}_avg_detoxified_reward'] = np.mean(detoxified_outputs)
-        metrics[f'{split}_reward_diff'] = metrics[f'{split}_avg_detoxified_reward'] - metrics[f'{split}_avg_original_reward']
-        
-        # True reward model metrics
-        # Convert true rewards to binary predictions
-        true_threshold = np.mean(true_rewards)
-        true_predictions = (np.array(true_rewards) > true_threshold).astype(int)
-        true_predictions = 1 - true_predictions  # Invert to match ground truth (1=toxic)
-        
-        # Accuracy against true reward model predictions
-        metrics[f'{split}_true_reward_accuracy'] = accuracy_score(true_predictions, learned_predictions)
-        
-        # F1 Score against true reward model predictions
-        metrics[f'{split}_true_reward_f1'] = f1_score(true_predictions, learned_predictions)
-        
-        # Plot score distribution if it's the test set
-        if split == "test":
-            fig = plot_score_distribution(original_outputs, detoxified_outputs, self.eval_dir)
-            
-            # Log the plot to wandb
-            if self.config.logging.use_wandb and wandb.run is not None:
-                wandb.log({"score_distribution": wandb.Image(fig)})
-        
-        # Return metrics
         return metrics
     
     def train(self, train_data, test_data):
-        """Train the reward model."""
+        """Train the reward model with optimizations."""
         # Record model names for tracking
         original_model = self.config.dataset.original_model_name
         detoxified_model = self.config.dataset.detoxified_model_name
@@ -334,20 +359,11 @@ class IRLTrainer:
             eps=self.config.training.adam_epsilon
         )
         
-        # Initialize AMP scaler for mixed precision training
-        self.use_amp = getattr(self.config.training, 'use_amp', True)
-        if self.use_amp and torch.cuda.is_available():
-            self.scaler = torch.cuda.amp.GradScaler()
-            print("Enabled Automatic Mixed Precision (AMP) for faster training")
-        else:
-            self.scaler = None
-        
-        # Initialize wandb if needed - do this first before any logging
+        # Initialize wandb if needed
         if self.config.logging.use_wandb and wandb.run is not None:
-            # Initialize but don't log anything yet
             pass
         
-        # Evaluate at epoch 0 (before training) and log it as the first thing
+        # Evaluate at epoch 0 (before training)
         print("Evaluating at epoch 0 (before training)...")
         train_metrics = self.evaluate(train_data, split="train")
         test_metrics = self.evaluate(test_data, split="test")
@@ -355,7 +371,7 @@ class IRLTrainer:
         # Combine metrics
         metrics = {**train_metrics, **test_metrics}
         metrics['epoch'] = 0
-        metrics['loss'] = 0.0  # No loss yet
+        metrics['loss'] = 0.0
         self.metrics_history.append(metrics)
         
         # Print metrics
@@ -364,33 +380,32 @@ class IRLTrainer:
             if isinstance(v, (int, float)):
                 print(f"  {k}: {v:.4f}")
         
-        # Log metrics to wandb as the very first thing
+        # Log metrics to wandb
         if self.config.logging.use_wandb and wandb.run is not None:
-            # Force the step counter to 0 and log
             wandb.define_metric("*", step_metric="epoch")
             wandb.log({"epoch": 0, **metrics})
         
-        # Training loop - now starting at epoch 1
+        # Training loop
         print(f"Starting training with {self.config.training.irl_method} IRL...")
         
-        for epoch in range(1, self.config.training.epochs + 1):  # Changed to start at 1 and go to epochs+1
+        for epoch in range(1, self.config.training.epochs + 1):
             self.reward_model.train()
             epoch_losses = []
             
-            # Progress bar for batches - updated to show correct epoch
+            # Progress bar for batches
             progress_bar = tqdm(
                 self.data_loader(
                     train_data['original'],
                     train_data['detoxified'],
                     self.config.training.batch_size
                 ),
-                desc=f"Epoch {epoch}/{self.config.training.epochs}"  # This now shows 1/30 instead of 1/30
+                desc=f"Epoch {epoch}/{self.config.training.epochs}"
             )
             
-            # Process batches
-            for batch_original, batch_detoxified in progress_bar:
-                optimizer.zero_grad()
-                
+            # Process batches with gradient accumulation
+            optimizer.zero_grad()
+            
+            for batch_idx, (batch_original, batch_detoxified) in enumerate(progress_bar):
                 # Determine whether to use prompt+output or just output based on config
                 use_prompt = self.config.training.get('include_prompt', False)
                 
@@ -407,135 +422,115 @@ class IRLTrainer:
                     truncation=True,
                     max_length=self.config.training.max_length
                 )
-                # Move everything to the correct device
-                original_inputs = {k: v.to(self.device) for k, v in original_inputs.items()}
+                original_inputs = {k: v.to(self.main_device) for k, v in original_inputs.items()}
+                
+                # Get detoxified outputs
+                if use_prompt and 'prompt' in batch_detoxified[0]:
+                    detoxified_texts = [item['prompt'] + item['output'] for item in batch_detoxified]
+                else:
+                    detoxified_texts = [item['output'] for item in batch_detoxified]
+                
+                detoxified_inputs = self.tokenizer(
+                    detoxified_texts,
+                    return_tensors="pt",
+                    padding=True,
+                    truncation=True,
+                    max_length=self.config.training.max_length
+                )
+                detoxified_inputs = {k: v.to(self.main_device) for k, v in detoxified_inputs.items()}
                 
                 # Forward pass with AMP
-                if self.scaler is not None:
+                if self.use_amp:
                     with torch.cuda.amp.autocast():
                         original_rewards = self.reward_model(**original_inputs)
-                        
-                        # Get detoxified outputs
-                        if use_prompt and 'prompt' in batch_detoxified[0]:
-                            detoxified_texts = [item['prompt'] + item['output'] for item in batch_detoxified]
-                        else:
-                            detoxified_texts = [item['output'] for item in batch_detoxified]
-                        
-                        detoxified_inputs = self.tokenizer(
-                            detoxified_texts,
-                            return_tensors="pt",
-                            padding=True,
-                            truncation=True,
-                            max_length=self.config.training.max_length
-                        )
-                        # Move everything to the correct device
-                        detoxified_inputs = {k: v.to(self.device) for k, v in detoxified_inputs.items()}
-                        
                         detoxified_rewards = self.reward_model(**detoxified_inputs)
-                        
-                        # Compute loss
                         loss = loss_fn(original_rewards, detoxified_rewards)
+                        loss = loss / self.gradient_accumulation_steps
                 else:
                     original_rewards = self.reward_model(**original_inputs)
-                    
-                    # Get detoxified outputs
-                    if use_prompt and 'prompt' in batch_detoxified[0]:
-                        detoxified_texts = [item['prompt'] + item['output'] for item in batch_detoxified]
-                    else:
-                        detoxified_texts = [item['output'] for item in batch_detoxified]
-                    
-                    detoxified_inputs = self.tokenizer(
-                        detoxified_texts,
-                        return_tensors="pt",
-                        padding=True,
-                        truncation=True,
-                        max_length=self.config.training.max_length
-                    )
-                    # Move everything to the correct device
-                    detoxified_inputs = {k: v.to(self.device) for k, v in detoxified_inputs.items()}
-                    
                     detoxified_rewards = self.reward_model(**detoxified_inputs)
-                    
-                    # Compute loss
                     loss = loss_fn(original_rewards, detoxified_rewards)
+                    loss = loss / self.gradient_accumulation_steps
                 
-                # Check for NaN before backward
-                if torch.isnan(loss).any() or torch.isinf(loss).any():
-                    print(f"Warning: NaN or Inf detected in loss. Skipping batch.")
-                    continue
-                
-                # Backward pass with AMP
-                if self.scaler is not None:
+                # Backward pass
+                if self.use_amp:
                     self.scaler.scale(loss).backward()
+                else:
+                    loss.backward()
+                
+                epoch_losses.append(loss.item() * self.gradient_accumulation_steps)
+                
+                # Gradient accumulation step
+                if (batch_idx + 1) % self.gradient_accumulation_steps == 0:
+                    # Gradient clipping
+                    if self.use_amp:
+                        self.scaler.unscale_(optimizer)
+                        torch.nn.utils.clip_grad_norm_(self.reward_model.parameters(), self.max_grad_norm)
+                        self.scaler.step(optimizer)
+                        self.scaler.update()
+                    else:
+                        torch.nn.utils.clip_grad_norm_(self.reward_model.parameters(), self.max_grad_norm)
+                        optimizer.step()
                     
-                    # Add gradient clipping
+                    optimizer.zero_grad()
+                
+                # Update progress bar
+                progress_bar.set_postfix({
+                    'loss': f"{loss.item() * self.gradient_accumulation_steps:.4f}",
+                    'lr': f"{optimizer.param_groups[0]['lr']:.2e}"
+                })
+                
+                # Clear memory
+                del original_inputs, detoxified_inputs, original_rewards, detoxified_rewards, loss
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            
+            # Final gradient step if needed
+            if len(epoch_losses) % self.gradient_accumulation_steps != 0:
+                if self.use_amp:
                     self.scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm_(
-                        self.reward_model.parameters(),
-                        max_norm=self.config.training.grad_clip
-                    )
-                    
+                    torch.nn.utils.clip_grad_norm_(self.reward_model.parameters(), self.max_grad_norm)
                     self.scaler.step(optimizer)
                     self.scaler.update()
                 else:
-                    loss.backward()
-                    
-                    # Add gradient clipping
-                    torch.nn.utils.clip_grad_norm_(
-                        self.reward_model.parameters(),
-                        max_norm=self.config.training.grad_clip
-                    )
-                    
+                    torch.nn.utils.clip_grad_norm_(self.reward_model.parameters(), self.max_grad_norm)
                     optimizer.step()
-                
-                epoch_losses.append(loss.item())
-                
-                # Update progress bar
-                progress_bar.set_postfix({"loss": f"{loss.item():.4f}"})
-                
-                # Free up memory
-                del original_inputs, detoxified_inputs
-                torch.cuda.empty_cache()
+                optimizer.zero_grad()
             
-            # Calculate average loss for epoch
-            avg_loss = sum(epoch_losses) / len(epoch_losses) if epoch_losses else float('nan')
-            print(f"Epoch {epoch}/{self.config.training.epochs}, Loss: {avg_loss:.4f}")
+            # Evaluate
+            print(f"\nEvaluating at epoch {epoch}...")
+            train_metrics = self.evaluate(train_data, split="train")
+            test_metrics = self.evaluate(test_data, split="test")
             
-            # Evaluate periodically
-            if (epoch + 1) % self.config.training.eval_interval == 0 or epoch == self.config.training.epochs:
-                print(f"Evaluating at epoch {epoch}...")
-                train_metrics = self.evaluate(train_data, split="train")
-                test_metrics = self.evaluate(test_data, split="test")
-                
-                # Combine metrics
-                metrics = {**train_metrics, **test_metrics}
-                metrics['epoch'] = epoch
-                metrics['loss'] = avg_loss
-                self.metrics_history.append(metrics)
-                
-                # Print metrics
-                print(f"Metrics at epoch {epoch}:")
-                for k, v in metrics.items():
-                    if isinstance(v, (int, float)):
-                        print(f"  {k}: {v:.4f}")
-                
-                # Log metrics to wandb
-                if self.config.logging.use_wandb and wandb.run is not None:
-                    wandb.log({"epoch": epoch, **metrics})
-                
-                # Save checkpoint if configured
-                if self.config.output.save_checkpoints:
-                    self.save_checkpoint(epoch)
-            else:
-                # Log just the loss for non-evaluation epochs
-                if self.config.logging.use_wandb and wandb.run is not None:
-                    wandb.log({"loss": avg_loss}, step=epoch)
+            # Combine metrics
+            metrics = {**train_metrics, **test_metrics}
+            metrics['epoch'] = epoch
+            metrics['loss'] = np.mean(epoch_losses)
+            self.metrics_history.append(metrics)
+            
+            # Print metrics
+            print(f"Metrics at epoch {epoch}:")
+            for k, v in metrics.items():
+                if isinstance(v, (int, float)):
+                    print(f"  {k}: {v:.4f}")
+            
+            # Log to wandb
+            if self.config.logging.use_wandb and wandb.run is not None:
+                wandb.log({"epoch": epoch, **metrics})
+            
+            # Save checkpoint
+            if epoch % self.config.training.save_every == 0:
+                self.save_checkpoint(epoch)
+            
+            # Print memory usage
+            if torch.cuda.is_available():
+                print(f"GPU Memory: {torch.cuda.memory_allocated() / 1024**3:.2f}GB allocated, {torch.cuda.memory_reserved() / 1024**3:.2f}GB reserved")
         
-        # Save the final model
+        # Save final model
         self.save_model()
         
-        return self.reward_model, self.metrics_history
-        
+        print(f"Training complete. Model saved to {self.model_dir}")
+    
     def save_checkpoint(self, epoch):
         """Save a model checkpoint."""
         # Create checkpoint directory
@@ -571,7 +566,6 @@ class IRLTrainer:
         
         # Log to wandb if configured
         if self.config.logging.use_wandb and wandb.run is not None:
-            # This will upload the files to wandb
             checkpoint_artifact = wandb.Artifact(
                 f"model-checkpoint-{epoch}",
                 type="model",
@@ -632,10 +626,8 @@ class IRLTrainer:
         
         # Log to wandb if configured
         if self.config.logging.use_wandb and wandb.run is not None:
-            # Log metrics plot
             wandb.log({"training_metrics": wandb.Image(metrics_fig)})
             
-            # Log model as artifact
             model_artifact = wandb.Artifact(
                 f"model-final",
                 type="model",
@@ -655,56 +647,20 @@ class IRLTrainer:
 
 
 @hydra.main(config_path="configs", config_name="config", version_base=None)
-def train_irl(cfg: DictConfig) -> None:
-    """Main training function."""
-    # Get the IRL config
-    config = cfg.irl if hasattr(cfg, 'irl') else cfg
-    
-    print(f"Configuration:\n{OmegaConf.to_yaml(config)}")
-    
-    # Set up wandb if enabled
-    if config.logging.use_wandb:
-        original_model = config.dataset.original_model_name.split('/')[-1]
-        detoxified_model = config.dataset.detoxified_model_name.split('/')[-1]
-        run_name = f"irl_{config.training.irl_method}_{original_model}_to_{detoxified_model}"
-        
-        wandb.init(
-            project=config.logging.project_name,
-            name=run_name,
-            config=OmegaConf.to_container(config, resolve=True),
-            mode=config.logging.wandb_mode
-        )
-    
+def train_irl_optimized(cfg: DictConfig) -> None:
+    """Main training function with optimizations."""
     # Initialize trainer
-    trainer = IRLTrainer(config)
+    trainer = OptimizedIRLTrainer(cfg)
     
     # Prepare data
     train_data, test_data = trainer.prepare_data(
-        config.dataset.original_dataset_path,
-        config.dataset.detoxified_dataset_path
+        cfg.dataset.original_dataset_path,
+        cfg.dataset.detoxified_dataset_path
     )
     
-    # Train model
-    reward_model, metrics_history = trainer.train(train_data, test_data)
-    
-    # Save model and metrics
-    trainer.save_model()
-    
-    # Finish wandb run
-    if config.logging.use_wandb and wandb.run is not None:
-        wandb.finish()
-    
-    # Print final metrics
-    print("\nTraining complete!")
-    if metrics_history:
-        print("\nFinal Metrics:")
-        final_metrics = metrics_history[-1]
-        for k, v in final_metrics.items():
-            if isinstance(v, (int, float)):
-                print(f"  {k}: {v:.4f}")
-    
-    return metrics_history[-1] if metrics_history else None
+    # Train
+    trainer.train(train_data, test_data)
 
 
 if __name__ == "__main__":
-    train_irl()
+    train_irl_optimized() 

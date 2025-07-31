@@ -1,0 +1,67 @@
+# Optimized IRL Training Configuration
+# This config includes GPU memory optimizations and multi-device support
+
+model:
+  reward_model_base: "EleutherAI/pythia-70m"
+  use_half_precision: true  # Use FP16 for memory efficiency
+  num_unfrozen_layers: 1
+
+training:
+  # IRL method
+  irl_method: "max_margin"  # Options: max_margin, asymmetric_margin, confidence_margin, max_entropy
+  
+  # Training parameters
+  epochs: 30
+  batch_size: 16  # Reduced for memory efficiency
+  gradient_accumulation_steps: 2  # Effective batch size = 16 * 2 = 32
+  learning_rate: 1e-5
+  weight_decay: 0.01
+  adam_epsilon: 1e-8
+  
+  # Memory optimizations
+  use_amp: true  # Automatic Mixed Precision
+  use_gradient_checkpointing: false  # Enable for very large models
+  max_grad_norm: 1.0  # Gradient clipping
+  
+  # Data processing
+  include_prompt: false  # Set to true for prompt+output training
+  max_length: 512
+  train_test_split: 0.8
+  
+  # IRL-specific parameters
+  margin: 0.1
+  temperature: 0.1
+  positive_penalty: 1.0
+  negative_penalty: 2.0
+  base_margin: 0.1
+  confidence_factor: 0.5
+  
+  # Checkpointing
+  save_every: 5
+  seed: 42
+
+dataset:
+  original_dataset_path: "ajagota71/EleutherAI_pythia-70M_2000_samples_original"
+  detoxified_dataset_path: "ajagota71/ajagota71_pythia-70m-detox-epoch-100_2000_samples_detoxified"
+  original_model_name: "EleutherAI/pythia-70m"
+  detoxified_model_name: "EleutherAI/pythia-70m"
+
+evaluation:
+  true_reward_model: "unitary/toxic-bert"
+
+output:
+  base_dir: "outputs"
+  push_to_hub: true
+  private: false
+  hub_org: "ajagota71"
+  repo_name_prefix: "toxicity-reward-model"
+
+logging:
+  use_wandb: false  # Set to true if using Weights & Biases
+
+# Multi-device settings
+devices:
+  max_concurrent: 2  # Maximum concurrent jobs
+  device_memory_fraction: 0.9  # Use 90% of available GPU memory
+  pin_memory: true
+  num_workers: 4  # For data loading 

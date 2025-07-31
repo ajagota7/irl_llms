@@ -387,6 +387,20 @@ class SimpleRewardAnalyzer:
         print(f"Mean prompt contribution (original): {results_df['prompt_contribution_original'].mean():.4f}")
         print(f"Mean prompt contribution (detoxified): {results_df['prompt_contribution_detoxified'].mean():.4f}")
         
+        # Debug: Show some examples of how prompts affect scoring
+        print("\nDebug: Sample scoring differences:")
+        sample_indices = [0, 100, 500, 1000, 1500]  # Look at a few samples
+        for idx in sample_indices:
+            if idx < len(results_df):
+                row = results_df.iloc[idx]
+                print(f"\nSample {idx}:")
+                print(f"  Prompt: '{row['prompt'][:50]}...'")
+                print(f"  Original output: '{row['original_output'][:50]}...'")
+                print(f"  Detoxified output: '{row['detoxified_output'][:50]}...'")
+                print(f"  Output-only scores: {row['original_output_score']:.4f} -> {row['detoxified_output_score']:.4f} (diff: {row['output_improvement']:.4f})")
+                print(f"  Prompt+output scores: {row['prompt_original_output_score']:.4f} -> {row['prompt_detoxified_output_score']:.4f} (diff: {row['prompt_output_improvement']:.4f})")
+                print(f"  Prompt contribution: {row['prompt_contribution_original']:.4f} (orig), {row['prompt_contribution_detoxified']:.4f} (detox)")
+        
         return results_df
 
 

@@ -121,6 +121,13 @@ class RewardModel(torch.nn.Module):
                 values = self.v_head(last_hidden_states)
 
             return values
+        
+        # Clear intermediate tensors to save memory
+        del outputs, hidden_states
+        if attention_mask is not None:
+            del expanded_mask, masked_hidden, sum_hidden, token_count, pooled_hidden
+        else:
+            del last_token_indices, batch_indices, last_hidden_states
 
     def save(self, path):
         """Save the model to disk."""
