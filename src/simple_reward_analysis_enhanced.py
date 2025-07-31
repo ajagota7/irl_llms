@@ -633,15 +633,9 @@ def main():
     if args.output_file is None:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         model_name = args.model.split('/')[-1]
-        model_type_str = args.model_type or "auto"
+        detoxified_name = args.detoxified_dataset.split('/')[-1]
         
-        # Extract dataset info for filename
-        original_info = analyzer.extract_dataset_info(args.original_dataset)
-        size_str = original_info['model_size']
-        tox_str = original_info['toxicity_threshold']
-        temp_str = original_info['temperature']
-        
-        args.output_file = f"reward_analysis_{model_type_str}_{model_name}_size{size_str}_tox{tox_str}_temp{temp_str}_{timestamp}.csv"
+        args.output_file = f"reward_analysis_{model_name}_{detoxified_name}_{timestamp}.csv"
     
     # Save results
     results_df.to_csv(args.output_file, index=False)
