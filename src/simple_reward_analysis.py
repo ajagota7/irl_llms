@@ -41,28 +41,106 @@ class SimpleRewardAnalyzer:
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(self.seed)
     
-    def load_reward_model(self, model_id: str) -> Tuple[RewardModel, AutoTokenizer]:
-        """Load a reward model and tokenizer."""
-        print(f"Loading reward model: {model_id}")
+    def load_reward_model(self, model_path: str) -> Tuple[RewardModel, AutoTokenizer]:
+        """
+        Load a trained reward model from a local path or HuggingFace Hub.
         
-        try:
-            # Create reward model
+        Args:
+            model_path: Path to the model directory or HuggingFace model ID
+            device: Device to load the model on ('cuda', 'cpu', or None for auto-detection)
+            seed: Random seed for deterministic behavior
+            
+        Returns:
+            Tuple of (reward_model, tokenizer)
+        """
+        # Set seeds for reproducibility
+        torch.manual_seed(self.seed)
+        np.random.seed(self.seed)
+        random.seed(self.seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(self.seed)
+        
+        print(f"Loading reward model from {model_path} on {self.device}...")
+        
+        # Check if this is a local path or HuggingFace model ID
+        is_local_path = os.path.exists(model_path)
+        
+        if is_local_path:
+            # Load from local path
+            model_file = os.path.join(model_path, "model.pt")
+            if not os.path.exists(model_file):
+                # Try to find model.pt in subdirectories
+                for root, dirs, files in os.walk(model_path):
+                    if "model.pt" in files:
+                        model_file = os.path.join(root, "model.pt")
+                        break
+            
+            if not os.path.exists(model_file):
+                raise FileNotFoundError(f"Could not find model.pt in {model_path}")
+            
+            # Load the model state dict
+            state_dict = torch.load(model_file, map_location=self.device)
+            
+            # Get the base model name from the config
+            if 'config' in state_dict and 'model_name' in state_dict['config']:
+                base_model_name = state_dict['config']['model_name']
+            else:
+                # Try to find training_info.json
+                info_file = os.path.join(model_path, "training_info.json")
+                if os.path.exists(info_file):
+                    with open(info_file, 'r') as f:
+                        info = json.load(f)
+                        base_model_name = info.get('model_name')
+                else:
+                    raise ValueError("Could not determine base model name from model files")
+            
+            # Create the reward model
             reward_model = RewardModel(
-                model_name=model_id,
+                model_name=base_model_name,
+                use_half_precision=state_dict.get('config', {}).get('use_half_precision', False),
                 device=self.device,
-                num_unfrozen_layers=0  # For inference
+                num_unfrozen_layers=0  # For inference, keep all layers frozen
             )
             
-            # Load tokenizer
-            tokenizer = AutoTokenizer.from_pretrained(model_id)
+            # Load the value head weights
+            reward_model.v_head.load_state_dict(state_dict['v_head'])
+            
+            # Load the tokenizer
+            tokenizer = AutoTokenizer.from_pretrained(os.path.join(model_path))
             tokenizer.pad_token = tokenizer.eos_token
             tokenizer.padding_side = 'left'
             
-            return reward_model, tokenizer
-            
-        except Exception as e:
-            print(f"Error loading model {model_id}: {e}")
-            raise
+        else:
+            # Assume it's a HuggingFace model ID
+            try:
+                # Load the model directly using the class method
+                reward_model = RewardModel.load(model_path, device=self.device)
+                
+                # Get the base model name
+                base_model_name = reward_model.model_name
+                
+                # Load the tokenizer
+                tokenizer = AutoTokenizer.from_pretrained(base_model_name)
+                tokenizer.pad_token = tokenizer.eos_token
+                tokenizer.padding_side = 'left'
+                
+            except Exception as e:
+                # If that fails, try loading as a regular HuggingFace model
+                print(f"Failed to load as a reward model: {e}")
+                print("Attempting to load as a regular HuggingFace model...")
+                
+                tokenizer = AutoTokenizer.from_pretrained(model_path)
+                tokenizer.pad_token = tokenizer.eos_token
+                tokenizer.padding_side = 'left'
+                
+                reward_model = RewardModel(
+                    model_name=model_path,
+                    device=self.device,
+                    num_unfrozen_layers=0  # For inference, keep all layers frozen
+                )
+        
+        print(f"Successfully loaded reward model based on {reward_model.model_name}")
+        return reward_model, tokenizer
     
     def load_dataset(self, dataset_id: str) -> List[Dict]:
         """Load a dataset from HuggingFace."""
