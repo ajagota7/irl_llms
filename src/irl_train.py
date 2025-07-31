@@ -374,8 +374,15 @@ class IRLTrainer:
             for batch_original, batch_detoxified in progress_bar:
                 optimizer.zero_grad()
                 
+                # Determine whether to use prompt+output or just output based on config
+                use_prompt = self.config.training.get('include_prompt', False)
+                
                 # Get original outputs
-                original_texts = [item['output'] for item in batch_original]
+                if use_prompt and 'prompt' in batch_original[0]:
+                    original_texts = [item['prompt'] + item['output'] for item in batch_original]
+                else:
+                    original_texts = [item['output'] for item in batch_original]
+                
                 original_inputs = self.tokenizer(
                     original_texts,
                     return_tensors="pt",
@@ -389,7 +396,11 @@ class IRLTrainer:
                 original_rewards = self.reward_model(**original_inputs)
                 
                 # Get detoxified outputs
-                detoxified_texts = [item['output'] for item in batch_detoxified]
+                if use_prompt and 'prompt' in batch_detoxified[0]:
+                    detoxified_texts = [item['prompt'] + item['output'] for item in batch_detoxified]
+                else:
+                    detoxified_texts = [item['output'] for item in batch_detoxified]
+                
                 detoxified_inputs = self.tokenizer(
                     detoxified_texts,
                     return_tensors="pt",

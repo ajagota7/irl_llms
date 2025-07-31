@@ -169,6 +169,20 @@ class SimpleRewardAnalyzer:
                         reward_model.v_head.load_state_dict(v_head_state_dict)
                         print(f"Successfully loaded value head weights for {model_path}")
                         
+                        # Debug: Print the actual value head weights
+                        print(f"Value head weights loaded:")
+                        print(f"  Keys in state dict: {list(v_head_state_dict.keys())}")
+                        for key, tensor in v_head_state_dict.items():
+                            print(f"  {key}: shape={tensor.shape}, mean={tensor.mean().item():.6f}, std={tensor.std().item():.6f}")
+                        
+                        # Also print the first few values to see if they're different
+                        if 'weight' in v_head_state_dict:
+                            weight = v_head_state_dict['weight']
+                            print(f"  First 5 weight values: {weight.flatten()[:5].tolist()}")
+                        if 'bias' in v_head_state_dict:
+                            bias = v_head_state_dict['bias']
+                            print(f"  Bias values: {bias.tolist()}")
+                        
                         # Load the tokenizer
                         tokenizer = AutoTokenizer.from_pretrained(base_model_name)
                         tokenizer.pad_token = tokenizer.eos_token
@@ -200,6 +214,16 @@ class SimpleRewardAnalyzer:
         print(f"Value head weight shape: {reward_model.v_head.weight.shape}")
         print(f"Value head weight mean: {reward_model.v_head.weight.mean().item():.6f}")
         print(f"Value head weight std: {reward_model.v_head.weight.std().item():.6f}")
+        
+        # Test the model on a simple input to see if it's working
+        print("Testing model on sample input...")
+        test_text = "This is a test sentence."
+        test_inputs = tokenizer([test_text], return_tensors="pt", padding=True, truncation=True, max_length=512)
+        test_inputs = {k: v.to(reward_model.device) for k, v in test_inputs.items()}
+        
+        with torch.no_grad():
+            test_score = reward_model(**test_inputs)
+            print(f"Test score for '{test_text}': {test_score.item():.6f}")
         
         return reward_model, tokenizer
     
