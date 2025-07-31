@@ -310,7 +310,11 @@ class IRLTrainer:
         loss_fn = get_loss_function(
             method=self.config.training.irl_method,
             temperature=self.config.training.temperature,
-            margin=self.config.training.margin
+            margin=self.config.training.margin,
+            positive_penalty=self.config.training.get('positive_penalty', 1.0),
+            negative_penalty=self.config.training.get('negative_penalty', 2.0),
+            base_margin=self.config.training.get('base_margin', 0.1),
+            confidence_factor=self.config.training.get('confidence_factor', 0.5)
         )
         
         # Initialize optimizer

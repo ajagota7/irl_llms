@@ -219,6 +219,60 @@ def max_margin_loss(original_rewards, detoxified_rewards, margin=0.1):
     return loss.mean()
 
 
+def asymmetric_margin_loss(original_rewards, detoxified_rewards, 
+                          positive_penalty=1.0, negative_penalty=2.0):
+    """
+    Asymmetric max-margin loss with different penalties for each direction.
+    
+    Args:
+        original_rewards: Rewards for original (toxic) samples
+        detoxified_rewards: Rewards for detoxified (non-toxic) samples
+        positive_penalty: Penalty weight when detoxified > original (good case)
+        negative_penalty: Penalty weight when original > detoxified (bad case)
+        
+    Returns:
+        Loss value
+    """
+    diff = detoxified_rewards - original_rewards
+    
+    # Apply different penalties based on direction
+    loss = torch.where(
+        diff > 0,
+        -positive_penalty * diff,  # Good case: detoxified > original
+        -negative_penalty * diff   # Bad case: original > detoxified
+    )
+    
+    # Check for NaN and replace with zeros
+    loss = torch.where(torch.isnan(loss), torch.zeros_like(loss), loss)
+    
+    return loss.mean()
+
+
+def confidence_margin_loss(original_rewards, detoxified_rewards, 
+                          base_margin=0.1, confidence_factor=0.5):
+    """
+    Confidence-based margin loss where margin increases with prediction confidence.
+    
+    Args:
+        original_rewards: Rewards for original (toxic) samples
+        detoxified_rewards: Rewards for detoxified (non-toxic) samples
+        base_margin: Base margin value
+        confidence_factor: Factor to scale the dynamic margin
+        
+    Returns:
+        Loss value
+    """
+    diff = detoxified_rewards - original_rewards
+    # Margin increases with the magnitude of the difference
+    dynamic_margin = base_margin + confidence_factor * torch.abs(diff)
+    loss = torch.clamp(dynamic_margin - diff, min=0)
+    
+    # Check for NaN and replace with zeros
+    loss = torch.where(torch.isnan(loss), torch.zeros_like(loss), loss)
+    
+    return loss.mean()
+
+
 def max_entropy_loss(original_rewards, detoxified_rewards, temperature=0.1):
     """
     Compute Maximum Entropy IRL loss.
@@ -259,13 +313,21 @@ def get_loss_function(method="max_margin", **kwargs):
     Get the appropriate loss function based on the specified method.
     
     Args:
-        method: The IRL method to use ("max_margin" or "max_entropy")
+        method: The IRL method to use ("max_margin", "asymmetric_margin", "confidence_margin", or "max_entropy")
         **kwargs: Additional arguments to pass to the loss function
         
     Returns:
         A loss function that takes original_rewards and detoxified_rewards
     """
-    if method == "max_entropy":
+    if method == "asymmetric_margin":
+        positive_penalty = kwargs.get("positive_penalty", 1.0)
+        negative_penalty = kwargs.get("negative_penalty", 2.0)
+        return lambda orig, detox: asymmetric_margin_loss(orig, detox, positive_penalty, negative_penalty)
+    elif method == "confidence_margin":
+        base_margin = kwargs.get("base_margin", 0.1)
+        confidence_factor = kwargs.get("confidence_factor", 0.5)
+        return lambda orig, detox: confidence_margin_loss(orig, detox, base_margin, confidence_factor)
+    elif method == "max_entropy":
         temperature = kwargs.get("temperature", 0.1)
         return lambda orig, detox: max_entropy_loss(orig, detox, temperature)
     else:  # Default to max_margin

@@ -1,0 +1,35 @@
+# Configuration for Pythia-70M IRL with Confidence-Based Margin Loss
+
+# Mode to run
+mode: "train"  # "generate_dataset", "train", or "all"
+
+# Dataset settings
+dataset:
+  original_model_name: "EleutherAI/pythia-70M"
+  detoxified_model_name: "ajagota71/pythia-70M-detox-epoch-100"
+  original_dataset_path: null
+  detoxified_dataset_path: null
+  # custom_dataset_name: "my_custom_dataset"  # Uncomment to use custom name instead of default
+
+model:
+  reward_model_base: "EleutherAI/pythia-70M"
+  use_half_precision: false
+  num_unfrozen_layers: 1
+
+training:
+  # Confidence-based margin loss: margin increases with prediction confidence
+  irl_method: "confidence_margin"
+  
+  # Confidence margin parameters:
+  # - base_margin: base margin value
+  # - confidence_factor: factor to scale the dynamic margin based on prediction confidence
+  base_margin: 0.1        # base margin value
+  confidence_factor: 0.5  # factor to scale the dynamic margin
+  
+  learning_rate: 1e-5
+  epochs: 20
+  batch_size: 8
+  eval_interval: 5
+
+output:
+  repo_name_prefix: "irl-pythia-70m-confidence" 

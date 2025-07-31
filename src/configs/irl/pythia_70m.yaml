@@ -17,7 +17,27 @@ model:
   num_unfrozen_layers: 1
 
 training:
+  # IRL method options:
+  # - "max_margin": Symmetric margin loss (default)
+  # - "asymmetric_margin": Asymmetric margin with different penalties for each direction
+  # - "confidence_margin": Dynamic margin that increases with prediction confidence
+  # - "max_entropy": Maximum entropy IRL
   irl_method: "max_margin"
+  
+  # Parameters for max_margin (symmetric)
+  margin: 0.1
+  
+  # Parameters for asymmetric_margin
+  # positive_penalty: 1.0  # penalty when detoxified > original (good case)
+  # negative_penalty: 2.0  # penalty when original > detoxified (bad case)
+  
+  # Parameters for confidence_margin
+  # base_margin: 0.1       # base margin value
+  # confidence_factor: 0.5 # factor to scale the dynamic margin
+  
+  # Parameters for max_entropy
+  # temperature: 0.1
+  
   learning_rate: 1e-5
   epochs: 20
   batch_size: 8

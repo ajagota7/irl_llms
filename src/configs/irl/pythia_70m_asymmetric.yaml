@@ -1,0 +1,35 @@
+# Configuration for Pythia-70M IRL with Asymmetric Margin Loss
+
+# Mode to run
+mode: "train"  # "generate_dataset", "train", or "all"
+
+# Dataset settings
+dataset:
+  original_model_name: "EleutherAI/pythia-70M"
+  detoxified_model_name: "ajagota71/pythia-70M-detox-epoch-100"
+  original_dataset_path: null
+  detoxified_dataset_path: null
+  # custom_dataset_name: "my_custom_dataset"  # Uncomment to use custom name instead of default
+
+model:
+  reward_model_base: "EleutherAI/pythia-70M"
+  use_half_precision: false
+  num_unfrozen_layers: 1
+
+training:
+  # Asymmetric margin loss: penalizes violations more heavily when R assigns higher rewards to toxic outputs
+  irl_method: "asymmetric_margin"
+  
+  # Asymmetric margin parameters:
+  # - positive_penalty: penalty when detoxified > original (good case)
+  # - negative_penalty: penalty when original > detoxified (bad case) - penalized more heavily
+  positive_penalty: 1.0  # penalty when detoxified > original (good case)
+  negative_penalty: 2.0  # penalty when original > detoxified (bad case) - 2x penalty for safety
+  
+  learning_rate: 1e-5
+  epochs: 20
+  batch_size: 8
+  eval_interval: 5
+
+output:
+  repo_name_prefix: "irl-pythia-70m-asymmetric" 
