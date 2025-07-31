@@ -342,6 +342,53 @@ class IRLTrainer:
         else:
             self.scaler = None
         
+        # Optimize for maximum GPU utilization
+        if torch.cuda.is_available():
+            # Set memory fraction to use more GPU memory
+            torch.cuda.set_per_process_memory_fraction(0.95)  # Use 95% of available GPU memory
+            print(f"Set GPU memory fraction to 95%")
+            
+            # Enable memory efficient attention if available
+            if hasattr(torch.backends, 'flash_attention_2'):
+                torch.backends.flash_attention_2 = True
+                print("Enabled Flash Attention 2 for memory efficiency")
+            
+            # Dynamic batch size optimization for maximum GPU utilization
+            base_batch_size = self.config.training.batch_size
+            max_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3
+            
+            # Estimate optimal batch size based on available memory
+            if max_memory >= 15:  # 15GB+ GPU (like V100, A100)
+                optimal_batch_size = min(base_batch_size * 4, 64)  # 4x larger batch
+            elif max_memory >= 8:  # 8GB+ GPU (like RTX 3080, T4)
+                optimal_batch_size = min(base_batch_size * 2, 32)  # 2x larger batch
+            else:
+                optimal_batch_size = base_batch_size
+            
+            print(f"GPU Memory: {max_memory:.1f}GB, Base batch size: {base_batch_size}")
+            print(f"Using optimal batch size: {optimal_batch_size} for maximum GPU utilization")
+            
+            # Update config with optimal batch size
+            self.config.training.batch_size = optimal_batch_size
+            
+            # Add gradient accumulation for even larger effective batch size
+            if max_memory >= 15:
+                self.gradient_accumulation_steps = 2  # Effective batch size = batch_size * 2
+            elif max_memory >= 8:
+                self.gradient_accumulation_steps = 1  # No accumulation needed
+            else:
+                self.gradient_accumulation_steps = 1
+            
+            print(f"Gradient accumulation steps: {self.gradient_accumulation_steps}")
+            print(f"Effective batch size: {optimal_batch_size * self.gradient_accumulation_steps}")
+            
+            # Print current GPU memory info
+            total_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3
+            allocated_memory = torch.cuda.memory_allocated() / 1024**3
+            print(f"GPU Memory: {allocated_memory:.2f}GB / {total_memory:.2f}GB allocated")
+        else:
+            self.gradient_accumulation_steps = 1
+        
         # Initialize wandb if needed - do this first before any logging
         if self.config.logging.use_wandb and wandb.run is not None:
             # Initialize but don't log anything yet
@@ -388,8 +435,10 @@ class IRLTrainer:
             )
             
             # Process batches
-            for batch_original, batch_detoxified in progress_bar:
-                optimizer.zero_grad()
+            for batch_idx, (batch_original, batch_detoxified) in enumerate(progress_bar):
+                # Zero gradients only at the start of accumulation cycle
+                if batch_idx % self.gradient_accumulation_steps == 0:
+                    optimizer.zero_grad()
                 
                 # Determine whether to use prompt+output or just output based on config
                 use_prompt = self.config.training.get('include_prompt', False)
@@ -464,29 +513,37 @@ class IRLTrainer:
                     print(f"Warning: NaN or Inf detected in loss. Skipping batch.")
                     continue
                 
-                # Backward pass with AMP
+                # Backward pass with AMP and gradient accumulation
                 if self.scaler is not None:
-                    self.scaler.scale(loss).backward()
+                    # Scale loss by accumulation steps
+                    scaled_loss = loss / self.gradient_accumulation_steps
+                    self.scaler.scale(scaled_loss).backward()
                     
-                    # Add gradient clipping
-                    self.scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm_(
-                        self.reward_model.parameters(),
-                        max_norm=self.config.training.grad_clip
-                    )
-                    
-                    self.scaler.step(optimizer)
-                    self.scaler.update()
+                    # Only step optimizer at the end of accumulation cycle
+                    if (batch_idx + 1) % self.gradient_accumulation_steps == 0:
+                        # Add gradient clipping
+                        self.scaler.unscale_(optimizer)
+                        torch.nn.utils.clip_grad_norm_(
+                            self.reward_model.parameters(),
+                            max_norm=self.config.training.grad_clip
+                        )
+                        
+                        self.scaler.step(optimizer)
+                        self.scaler.update()
                 else:
-                    loss.backward()
+                    # Scale loss by accumulation steps
+                    scaled_loss = loss / self.gradient_accumulation_steps
+                    scaled_loss.backward()
                     
-                    # Add gradient clipping
-                    torch.nn.utils.clip_grad_norm_(
-                        self.reward_model.parameters(),
-                        max_norm=self.config.training.grad_clip
-                    )
-                    
-                    optimizer.step()
+                    # Only step optimizer at the end of accumulation cycle
+                    if (batch_idx + 1) % self.gradient_accumulation_steps == 0:
+                        # Add gradient clipping
+                        torch.nn.utils.clip_grad_norm_(
+                            self.reward_model.parameters(),
+                            max_norm=self.config.training.grad_clip
+                        )
+                        
+                        optimizer.step()
                 
                 epoch_losses.append(loss.item())
                 
