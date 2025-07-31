@@ -113,20 +113,78 @@ class SimpleRewardAnalyzer:
         else:
             # Assume it's a HuggingFace model ID
             try:
-                # Load the model directly using the class method
-                reward_model = RewardModel.load(model_path, device=self.device)
+                # First, try to download and load the model files from HuggingFace
+                from huggingface_hub import hf_hub_download
+                import tempfile
                 
-                # Get the base model name
-                base_model_name = reward_model.model_name
+                print(f"Attempting to download model files from HuggingFace: {model_path}")
                 
-                # Load the tokenizer
-                tokenizer = AutoTokenizer.from_pretrained(base_model_name)
-                tokenizer.pad_token = tokenizer.eos_token
-                tokenizer.padding_side = 'left'
-                
+                # Create a temporary directory to download files
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    # Try to download the model.pt file
+                    try:
+                        model_file = hf_hub_download(
+                            repo_id=model_path,
+                            filename="model.pt",
+                            cache_dir=temp_dir
+                        )
+                        print(f"Downloaded model.pt to: {model_file}")
+                        
+                        # Load the model state dict
+                        state_dict = torch.load(model_file, map_location=self.device)
+                        
+                        # Get the base model name from the config
+                        if 'config' in state_dict and 'model_name' in state_dict['config']:
+                            base_model_name = state_dict['config']['model_name']
+                        else:
+                            # Try to download training_info.json
+                            try:
+                                info_file = hf_hub_download(
+                                    repo_id=model_path,
+                                    filename="training_info.json",
+                                    cache_dir=temp_dir
+                                )
+                                with open(info_file, 'r') as f:
+                                    info = json.load(f)
+                                    base_model_name = info.get('model_name')
+                            except:
+                                # Fallback: extract from model path
+                                if 'pythia-70m' in model_path:
+                                    base_model_name = "EleutherAI/pythia-70m"
+                                elif 'pythia-410m' in model_path:
+                                    base_model_name = "EleutherAI/pythia-410m"
+                                elif 'pythia-1b' in model_path:
+                                    base_model_name = "EleutherAI/pythia-1b"
+                                elif 'llama-3.2-1b' in model_path:
+                                    base_model_name = "meta-llama/Llama-3.2-1B"
+                                else:
+                                    raise ValueError(f"Could not determine base model name for {model_path}")
+                        
+                        print(f"Using base model: {base_model_name}")
+                        
+                        # Create the reward model
+                        reward_model = RewardModel(
+                            model_name=base_model_name,
+                            use_half_precision=state_dict.get('config', {}).get('use_half_precision', False),
+                            device=self.device,
+                            num_unfrozen_layers=0  # For inference, keep all layers frozen
+                        )
+                        
+                        # Load the value head weights
+                        reward_model.v_head.load_state_dict(state_dict['v_head'])
+                        print(f"Successfully loaded value head weights for {model_path}")
+                        
+                        # Load the tokenizer
+                        tokenizer = AutoTokenizer.from_pretrained(base_model_name)
+                        tokenizer.pad_token = tokenizer.eos_token
+                        tokenizer.padding_side = 'left'
+                        
+                    except Exception as e:
+                        print(f"Failed to download model.pt: {e}")
+                        raise
+                        
             except Exception as e:
-                # If that fails, try loading as a regular HuggingFace model
-                print(f"Failed to load as a reward model: {e}")
+                print(f"Failed to load as a reward model from HuggingFace: {e}")
                 print("Attempting to load as a regular HuggingFace model...")
                 
                 tokenizer = AutoTokenizer.from_pretrained(model_path)
@@ -140,6 +198,14 @@ class SimpleRewardAnalyzer:
                 )
         
         print(f"Successfully loaded reward model based on {reward_model.model_name}")
+        
+        # Debug: Print some info about the loaded model
+        print(f"Model device: {reward_model.device}")
+        print(f"Value head device: {reward_model.v_head.weight.device}")
+        print(f"Value head weight shape: {reward_model.v_head.weight.shape}")
+        print(f"Value head weight mean: {reward_model.v_head.weight.mean().item():.6f}")
+        print(f"Value head weight std: {reward_model.v_head.weight.std().item():.6f}")
+        
         return reward_model, tokenizer
     
     def load_dataset(self, dataset_id: str) -> List[Dict]:
