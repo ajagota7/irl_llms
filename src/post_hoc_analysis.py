@@ -600,9 +600,9 @@ def get_experiment_configs() -> List[ExperimentConfig]:
     # Input types
     input_types = ["prompt_output", "output_only"]
     
-    # Dataset and model mappings
+    # Dataset and model mappings - CORRECTED to match model-specific datasets
     dataset_mappings = {
-        # Tox 0.3 datasets
+        # Tox 0.3 datasets - each model uses its own dataset
         ("70m", 0.3): (
             "ajagota71/EleutherAI_pythia-70M_2000_samples_original",
             "ajagota71/ajagota71_pythia-70m-detox-epoch-100_2000_samples_detoxified"
@@ -620,7 +620,7 @@ def get_experiment_configs() -> List[ExperimentConfig]:
             "ajagota71/ajagota71_llama-3-2-1b-rlhf-kl-p5-target-2p5-lr-3e-6_2000_samples_temp0p7_tox0p3_detoxified"
         ),
         
-        # Tox 0.8 datasets
+        # Tox 0.8 datasets - each model uses its own dataset
         ("70m", 0.8): (
             "ajagota71/EleutherAI_pythia-70m_2000_samples_temp0p7_tox0p8_original",
             "ajagota71/ajagota71_pythia-70m-s-nlp-detox-checkpoint-epoch-100_2000_samples_temp0p7_tox0p8_detoxified"
