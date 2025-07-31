@@ -121,57 +121,52 @@ class SimpleRewardAnalyzer:
                 
                 # Create a temporary directory to download files
                 with tempfile.TemporaryDirectory() as temp_dir:
-                    # Try to download the model.pt file
+                    # Try to download the v_head.pt file first
                     try:
-                        model_file = hf_hub_download(
+                        v_head_file = hf_hub_download(
                             repo_id=model_path,
-                            filename="model.pt",
+                            filename="v_head.pt",
                             cache_dir=temp_dir
                         )
-                        print(f"Downloaded model.pt to: {model_file}")
+                        print(f"Downloaded v_head.pt to: {v_head_file}")
                         
-                        # Load the model state dict
-                        state_dict = torch.load(model_file, map_location=self.device)
+                        # Load the value head weights
+                        v_head_state_dict = torch.load(v_head_file, map_location=self.device)
                         
-                        # Get the base model name from the config
-                        if 'config' in state_dict and 'model_name' in state_dict['config']:
-                            base_model_name = state_dict['config']['model_name']
-                        else:
-                            # Try to download training_info.json
-                            try:
-                                info_file = hf_hub_download(
-                                    repo_id=model_path,
-                                    filename="training_info.json",
-                                    cache_dir=temp_dir
-                                )
-                                with open(info_file, 'r') as f:
-                                    info = json.load(f)
-                                    base_model_name = info.get('model_name')
-                            except:
-                                # Fallback: extract from model path
-                                if 'pythia-70m' in model_path:
-                                    base_model_name = "EleutherAI/pythia-70m"
-                                elif 'pythia-410m' in model_path:
-                                    base_model_name = "EleutherAI/pythia-410m"
-                                elif 'pythia-1b' in model_path:
-                                    base_model_name = "EleutherAI/pythia-1b"
-                                elif 'llama-3.2-1b' in model_path:
-                                    base_model_name = "meta-llama/Llama-3.2-1B"
-                                else:
-                                    raise ValueError(f"Could not determine base model name for {model_path}")
+                        # Try to download reward_model_config.json for base model info
+                        try:
+                            config_file = hf_hub_download(
+                                repo_id=model_path,
+                                filename="reward_model_config.json",
+                                cache_dir=temp_dir
+                            )
+                            with open(config_file, 'r') as f:
+                                config = json.load(f)
+                                base_model_name = config.get('base_model')
+                        except:
+                            # Fallback: extract from model path
+                            if 'pythia-70m' in model_path:
+                                base_model_name = "EleutherAI/pythia-70m"
+                            elif 'pythia-410m' in model_path:
+                                base_model_name = "EleutherAI/pythia-410m"
+                            elif 'pythia-1b' in model_path:
+                                base_model_name = "EleutherAI/pythia-1b"
+                            elif 'llama-3.2-1b' in model_path:
+                                base_model_name = "meta-llama/Llama-3.2-1B"
+                            else:
+                                raise ValueError(f"Could not determine base model name for {model_path}")
                         
                         print(f"Using base model: {base_model_name}")
                         
                         # Create the reward model
                         reward_model = RewardModel(
                             model_name=base_model_name,
-                            use_half_precision=state_dict.get('config', {}).get('use_half_precision', False),
                             device=self.device,
                             num_unfrozen_layers=0  # For inference, keep all layers frozen
                         )
                         
                         # Load the value head weights
-                        reward_model.v_head.load_state_dict(state_dict['v_head'])
+                        reward_model.v_head.load_state_dict(v_head_state_dict)
                         print(f"Successfully loaded value head weights for {model_path}")
                         
                         # Load the tokenizer
@@ -180,7 +175,7 @@ class SimpleRewardAnalyzer:
                         tokenizer.padding_side = 'left'
                         
                     except Exception as e:
-                        print(f"Failed to download model.pt: {e}")
+                        print(f"Failed to download v_head.pt: {e}")
                         raise
                         
             except Exception as e:
