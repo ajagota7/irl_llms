@@ -20,6 +20,7 @@ from transformers import AutoTokenizer, AutoModel, AutoModelForSequenceClassific
 from tqdm import tqdm
 import warnings
 warnings.filterwarnings('ignore')
+import re # Added for dataset info extraction
 
 # Add the parent directory to the path so we can import from src
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -495,11 +496,24 @@ class EnhancedRewardAnalyzer:
         original_output_scores = all_scores['original_output']
         detoxified_output_scores = all_scores['detoxified_output']
         
+        # Extract dataset information
+        original_info = self.extract_dataset_info(original_dataset_id)
+        detoxified_info = self.extract_dataset_info(detoxified_dataset_id)
+
+        print(f"Dataset info - Model size: {original_info['model_size']}, "
+              f"Toxicity threshold: {original_info['toxicity_threshold']}, "
+              f"Temperature: {original_info['temperature']}, "
+              f"Samples: {original_info['sample_count']}")
+        
         # Create results dataframe
         results_data = []
         for i in range(min_len):
             results_data.append({
                 'sample_index': i,
+                'model_size': original_info['model_size'],
+                'toxicity_threshold': original_info['toxicity_threshold'],
+                'temperature': original_info['temperature'],
+                'sample_count': original_info['sample_count'],
                 'prompt': prompts[i],
                 'original_output': original_outputs[i],
                 'detoxified_output': detoxified_outputs[i],
@@ -538,6 +552,43 @@ class EnhancedRewardAnalyzer:
                 print(f"  Prompt contribution: {row['prompt_contribution_original']:.4f} (orig), {row['prompt_contribution_detoxified']:.4f} (detox)")
         
         return results_df
+
+    def extract_dataset_info(self, dataset_id: str) -> Dict[str, str]:
+        """Extract model size and toxicity threshold from dataset name."""
+        info = {
+            'model_size': 'unknown',
+            'toxicity_threshold': 'unknown',
+            'temperature': 'unknown',
+            'sample_count': 'unknown'
+        }
+        
+        # Extract model size (e.g., pythia-70m, pythia-410m, pythia-1b)
+        size_match = re.search(r'pythia-(\d+[mb])', dataset_id.lower())
+        if size_match:
+            info['model_size'] = size_match.group(1)
+        
+        # Extract toxicity threshold (e.g., tox0p8 -> 0.8)
+        tox_match = re.search(r'tox(\d+p\d+)', dataset_id.lower())
+        if tox_match:
+            tox_str = tox_match.group(1)
+            # Convert 0p8 to 0.8
+            tox_value = tox_str.replace('p', '.')
+            info['toxicity_threshold'] = tox_value
+        
+        # Extract temperature (e.g., temp0p7 -> 0.7)
+        temp_match = re.search(r'temp(\d+p\d+)', dataset_id.lower())
+        if temp_match:
+            temp_str = temp_match.group(1)
+            # Convert 0p7 to 0.7
+            temp_value = temp_str.replace('p', '.')
+            info['temperature'] = temp_value
+        
+        # Extract sample count (e.g., 2000_samples)
+        sample_match = re.search(r'(\d+)_samples', dataset_id.lower())
+        if sample_match:
+            info['sample_count'] = sample_match.group(1)
+        
+        return info
 
 
 def main():
@@ -583,7 +634,14 @@ def main():
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         model_name = args.model.split('/')[-1]
         model_type_str = args.model_type or "auto"
-        args.output_file = f"reward_analysis_enhanced_{model_type_str}_{model_name}_{timestamp}.csv"
+        
+        # Extract dataset info for filename
+        original_info = analyzer.extract_dataset_info(args.original_dataset)
+        size_str = original_info['model_size']
+        tox_str = original_info['toxicity_threshold']
+        temp_str = original_info['temperature']
+        
+        args.output_file = f"reward_analysis_{model_type_str}_{model_name}_size{size_str}_tox{tox_str}_temp{temp_str}_{timestamp}.csv"
     
     # Save results
     results_df.to_csv(args.output_file, index=False)
