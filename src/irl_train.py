@@ -86,10 +86,14 @@ class IRLTrainer:
             num_unfrozen_layers=self.config.model.num_unfrozen_layers
         )
         
-        # Enable gradient checkpointing for memory efficiency
+        # Enable gradient checkpointing for memory efficiency (only if we have trainable parameters)
         if hasattr(self.reward_model.model, 'gradient_checkpointing_enable'):
-            self.reward_model.model.gradient_checkpointing_enable()
-            print("Enabled gradient checkpointing for memory efficiency")
+            # Only enable if we have unfrozen layers
+            if self.config.model.num_unfrozen_layers > 0:
+                self.reward_model.model.gradient_checkpointing_enable()
+                print("Enabled gradient checkpointing for memory efficiency")
+            else:
+                print("Skipping gradient checkpointing (no unfrozen layers)")
         
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         self.tokenizer.pad_token = self.tokenizer.eos_token
@@ -344,9 +348,16 @@ class IRLTrainer:
         
         # Optimize for maximum GPU utilization
         if torch.cuda.is_available():
-            # Set memory fraction to use more GPU memory
-            torch.cuda.set_per_process_memory_fraction(0.95)  # Use 95% of available GPU memory
-            print(f"Set GPU memory fraction to 95%")
+            # Check if optimizations are disabled
+            disable_optimizations = getattr(self.config.training, 'disable_gpu_optimizations', False)
+            
+            if disable_optimizations:
+                print("GPU optimizations disabled by config")
+                self.gradient_accumulation_steps = 1
+            else:
+                # Set memory fraction to use more GPU memory
+                torch.cuda.set_per_process_memory_fraction(0.95)  # Use 95% of available GPU memory
+                print(f"Set GPU memory fraction to 95%")
             
             # Enable memory efficient attention if available
             if hasattr(torch.backends, 'flash_attention_2'):
@@ -356,14 +367,36 @@ class IRLTrainer:
             # Dynamic batch size optimization for maximum GPU utilization
             base_batch_size = self.config.training.batch_size
             max_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3
+            model_name = self.config.model.reward_model_base.lower()
             
-            # Estimate optimal batch size based on available memory
-            if max_memory >= 15:  # 15GB+ GPU (like V100, A100)
-                optimal_batch_size = min(base_batch_size * 4, 64)  # 4x larger batch
-            elif max_memory >= 8:  # 8GB+ GPU (like RTX 3080, T4)
-                optimal_batch_size = min(base_batch_size * 2, 32)  # 2x larger batch
+            # Model-specific batch size scaling (some models are more memory-intensive)
+            if 'llama' in model_name or 'llama-3' in model_name:
+                # Llama models are more memory-intensive, be more conservative
+                if max_memory >= 15:  # 15GB+ GPU
+                    optimal_batch_size = min(base_batch_size * 2, 32)  # 2x instead of 4x
+                elif max_memory >= 8:  # 8GB+ GPU
+                    optimal_batch_size = min(base_batch_size * 1.5, 16)  # 1.5x instead of 2x
+                else:
+                    optimal_batch_size = base_batch_size
+                print(f"Llama model detected - using conservative batch scaling")
+            elif 'pythia' in model_name or 'gpt-neo' in model_name:
+                # Pythia/GPT-Neo models are more memory-efficient
+                if max_memory >= 15:  # 15GB+ GPU
+                    optimal_batch_size = min(base_batch_size * 4, 64)  # 4x larger batch
+                elif max_memory >= 8:  # 8GB+ GPU
+                    optimal_batch_size = min(base_batch_size * 2, 32)  # 2x larger batch
+                else:
+                    optimal_batch_size = base_batch_size
+                print(f"Pythia/GPT-Neo model detected - using aggressive batch scaling")
             else:
-                optimal_batch_size = base_batch_size
+                # Default conservative scaling for unknown models
+                if max_memory >= 15:  # 15GB+ GPU
+                    optimal_batch_size = min(base_batch_size * 2, 32)  # Conservative 2x
+                elif max_memory >= 8:  # 8GB+ GPU
+                    optimal_batch_size = min(base_batch_size * 1.5, 16)  # Conservative 1.5x
+                else:
+                    optimal_batch_size = base_batch_size
+                print(f"Unknown model type - using conservative batch scaling")
             
             print(f"GPU Memory: {max_memory:.1f}GB, Base batch size: {base_batch_size}")
             print(f"Using optimal batch size: {optimal_batch_size} for maximum GPU utilization")
@@ -372,12 +405,21 @@ class IRLTrainer:
             self.config.training.batch_size = optimal_batch_size
             
             # Add gradient accumulation for even larger effective batch size
-            if max_memory >= 15:
-                self.gradient_accumulation_steps = 2  # Effective batch size = batch_size * 2
-            elif max_memory >= 8:
-                self.gradient_accumulation_steps = 1  # No accumulation needed
-            else:
+            if 'llama' in model_name or 'llama-3' in model_name:
+                # Llama models: no accumulation (they're already memory-intensive)
                 self.gradient_accumulation_steps = 1
+                print(f"Llama model - no gradient accumulation (memory-intensive)")
+            elif 'pythia' in model_name or 'gpt-neo' in model_name:
+                # Pythia/GPT-Neo models: can use accumulation
+                if max_memory >= 15:
+                    self.gradient_accumulation_steps = 2  # Effective batch size = batch_size * 2
+                else:
+                    self.gradient_accumulation_steps = 1
+                print(f"Pythia/GPT-Neo model - gradient accumulation enabled")
+            else:
+                # Default: conservative approach
+                self.gradient_accumulation_steps = 1
+                print(f"Unknown model - no gradient accumulation (conservative)")
             
             print(f"Gradient accumulation steps: {self.gradient_accumulation_steps}")
             print(f"Effective batch size: {optimal_batch_size * self.gradient_accumulation_steps}")
@@ -461,7 +503,7 @@ class IRLTrainer:
                 
                 # Forward pass with AMP
                 if self.scaler is not None:
-                    with torch.cuda.amp.autocast():
+                    with torch.amp.autocast('cuda'):
                         original_rewards = self.reward_model(**original_inputs)
                         
                         # Get detoxified outputs
@@ -586,7 +628,7 @@ class IRLTrainer:
             else:
                 # Log just the loss for non-evaluation epochs
                 if self.config.logging.use_wandb and wandb.run is not None:
-                    wandb.log({"loss": avg_loss}, step=epoch)
+                    wandb.log({"loss": avg_loss, "epoch": epoch})
         
         # Save the final model
         self.save_model()

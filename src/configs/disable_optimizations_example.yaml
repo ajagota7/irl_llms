@@ -1,0 +1,11 @@
+# Example config to disable GPU optimizations if they cause issues
+# Add this to your training config if you experience slower training
+
+training:
+  # ... your existing training config ...
+  
+  # Disable GPU optimizations if they cause issues
+  disable_gpu_optimizations: true  # Set to true to disable all GPU optimizations
+  
+  # Or keep optimizations but be more conservative
+  # disable_gpu_optimizations: false  # Keep optimizations enabled (default) 

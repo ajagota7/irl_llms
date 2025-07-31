@@ -86,6 +86,15 @@ class RewardModel(torch.nn.Module):
         trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
         print(f"Total parameters: {total_params:,}")
         print(f"Trainable parameters: {trainable_params:,} ({trainable_params / total_params:.2%})")
+        
+        # Debug: Show what's actually trainable
+        if trainable_params > 0:
+            print("Trainable components:")
+            for name, param in self.named_parameters():
+                if param.requires_grad:
+                    print(f"  - {name}: {param.numel():,} parameters")
+        else:
+            print("WARNING: No trainable parameters found! Only the value head should be trainable.")
 
     def forward(self, input_ids, attention_mask=None):
         """Forward pass through the model."""
@@ -95,7 +104,7 @@ class RewardModel(torch.nn.Module):
             attention_mask = attention_mask.to(self.device)
 
         # Use autocast for mixed precision if needed
-        with torch.amp.autocast(device_type=self.device_type, enabled=self.use_half_precision):
+        with torch.amp.autocast('cuda', enabled=self.use_half_precision):
             # Get the hidden states from the base model
             outputs = self.model(input_ids, attention_mask=attention_mask, output_hidden_states=True)
             hidden_states = outputs.hidden_states[-1]  # Use the last hidden state
