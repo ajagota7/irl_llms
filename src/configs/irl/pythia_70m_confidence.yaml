@@ -32,7 +32,4 @@ training:
   eval_interval: 5
 
 output:
-  repo_name_prefix: "irl-pythia-70m-confidence"
-  push_to_hub: true
-  push_checkpoints_to_hub: true  # Whether to push checkpoints during training
-  checkpoint_push_freq: 5  # How often to push checkpoints (in epochs) 
+  repo_name_prefix: "irl-pythia-70m-confidence" 

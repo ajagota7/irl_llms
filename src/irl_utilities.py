@@ -578,37 +578,10 @@ def push_to_hub(reward_model, tokenizer, config, checkpoint_suffix=None):
         # Create README with proper metadata
         with open(os.path.join(output_dir, "README.md"), "w") as f:
             f.write(f"# {repo_name}\n\n")
-            
-            # Add checkpoint information if this is a checkpoint
-            if checkpoint_suffix:
-                f.write(f"**This is a training checkpoint: {checkpoint_suffix}**\n\n")
-            
             f.write(f"This model was trained using {config.training.irl_method} IRL to learn toxicity reward signals.\n\n")
             f.write(f"Base model: {config.model.reward_model_base}\n")
             f.write(f"Original model: {config.dataset.original_model_name}\n")
             f.write(f"Detoxified model: {config.dataset.detoxified_model_name}\n\n")
-            
-            # Add training parameters
-            f.write("## Training Parameters\n")
-            f.write(f"- IRL Method: {config.training.irl_method}\n")
-            f.write(f"- Learning Rate: {config.training.learning_rate}\n")
-            f.write(f"- Epochs: {config.training.epochs}\n")
-            f.write(f"- Batch Size: {config.training.batch_size}\n")
-            
-            # Add method-specific parameters
-            if config.training.irl_method == "max_margin":
-                f.write(f"- Margin: {config.training.margin}\n")
-            elif config.training.irl_method == "asymmetric_margin":
-                f.write(f"- Positive Penalty: {config.training.positive_penalty}\n")
-                f.write(f"- Negative Penalty: {config.training.negative_penalty}\n")
-            elif config.training.irl_method == "confidence_margin":
-                f.write(f"- Base Margin: {config.training.base_margin}\n")
-                f.write(f"- Confidence Factor: {config.training.confidence_factor}\n")
-            elif config.training.irl_method == "max_entropy":
-                f.write(f"- Temperature: {config.training.temperature}\n")
-            
-            f.write("\n")
-            
             # Proper metadata section
             f.write("---\n")
             f.write("language: en\n")
@@ -616,8 +589,6 @@ def push_to_hub(reward_model, tokenizer, config, checkpoint_suffix=None):
             f.write("- toxicity\n")
             f.write("- reward-model\n")
             f.write("- irl\n")
-            if checkpoint_suffix:
-                f.write("- checkpoint\n")
             f.write("library_name: transformers\n")
             f.write(f"base_model: {model_short_name}\n")
             f.write("pipeline_tag: text-classification\n")
@@ -640,17 +611,10 @@ def push_to_hub(reward_model, tokenizer, config, checkpoint_suffix=None):
         
         # Upload files
         print(f"Uploading files to {repo_id}")
-        
-        # Create informative commit message
-        if checkpoint_suffix:
-            commit_message = f"Upload IRL reward model checkpoint: {checkpoint_suffix}"
-        else:
-            commit_message = "Upload IRL reward model"
-        
         api.upload_folder(
             folder_path=output_dir,
             repo_id=repo_id,
-            commit_message=commit_message
+            commit_message="Upload IRL reward model"
         )
         
         print(f"Successfully uploaded model to {repo_id}")

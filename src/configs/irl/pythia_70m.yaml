@@ -45,6 +45,6 @@ training:
 
 output:
   repo_name_prefix: "irl-pythia-70m"
-  push_to_hub: true
-  push_checkpoints_to_hub: true  # Whether to push checkpoints during training
-  checkpoint_push_freq: 5  # How often to push checkpoints (in epochs)
+  save_checkpoints: true
+  checkpoint_interval: 5  # Save checkpoints at epoch 0 and every 5 epochs
+  push_checkpoints_to_hub: true  # Push checkpoints to hub

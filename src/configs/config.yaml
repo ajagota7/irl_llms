@@ -67,7 +67,7 @@ dataset:
 output:
   push_to_hub: true
   push_checkpoints_to_hub: true  # Whether to push checkpoints during training
-  checkpoint_push_freq: 5  # How often to push checkpoints (in epochs)
+  checkpoint_push_freq: 20  # How often to push checkpoints (in epochs)
   organization: null
   repository_name: null
   private: false  # Whether repositories should be private
@@ -137,9 +137,9 @@ irl:
   output:
     base_dir: ${hydra:runtime.cwd}/outputs/irl
     save_checkpoints: true
-    push_to_hub: true
-    push_checkpoints_to_hub: true  # Whether to push checkpoints during training
-    checkpoint_push_freq: 5  # How often to push checkpoints (in epochs)
+    checkpoint_interval: 5  # Save checkpoints at epoch 0 and every N epochs
+    push_to_hub: false
+    push_checkpoints_to_hub: true  # Whether to push checkpoints to hub
     hub_org: "ajagota71"
     repo_name_prefix: "irl-reward-model"
     private: false
