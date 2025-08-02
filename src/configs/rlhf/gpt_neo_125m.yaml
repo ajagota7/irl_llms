@@ -30,7 +30,7 @@ ratio_threshold: 10.0
 
 # Dataset and reward settings
 query_dataset: "allenai/real-toxicity-prompts"
-reward_model: "facebook/roberta-hate-speech-dynabench-r4-target"
+reward_model: "s-nlp/roberta_toxicity_classifier"
 input_min_text_length: 15
 input_max_text_length: 20
 output_min_length: 15

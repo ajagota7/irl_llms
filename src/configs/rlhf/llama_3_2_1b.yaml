@@ -17,7 +17,7 @@ model:
   mini_batch_size: 2
   forward_batch_size: 2
   gradient_accumulation_steps: 16
-  reward_model: "facebook/roberta-hate-speech-dynabench-r4-target"
+  reward_model: "s-nlp/roberta_toxicity_classifier"
   use_raw_logits: true
   
   # Generation parameters

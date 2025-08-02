@@ -67,7 +67,7 @@ dataset:
 output:
   push_to_hub: true
   push_checkpoints_to_hub: true  # Whether to push checkpoints during training
-  checkpoint_push_freq: 20  # How often to push checkpoints (in epochs)
+  checkpoint_push_freq: 5  # How often to push checkpoints (in epochs)
   organization: null
   repository_name: null
   private: false  # Whether repositories should be private
@@ -131,13 +131,15 @@ irl:
   
   # Evaluation settings
   evaluation:
-    true_reward_model: "facebook/roberta-hate-speech-dynabench-r4-target"
+    true_reward_model: "s-nlp/roberta_toxicity_classifier"
   
   # Output settings
   output:
     base_dir: ${hydra:runtime.cwd}/outputs/irl
     save_checkpoints: true
-    push_to_hub: false
+    push_to_hub: true
+    push_checkpoints_to_hub: true  # Whether to push checkpoints during training
+    checkpoint_push_freq: 5  # How often to push checkpoints (in epochs)
     hub_org: "ajagota71"
     repo_name_prefix: "irl-reward-model"
     private: false

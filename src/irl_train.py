@@ -680,7 +680,12 @@ class IRLTrainer:
             wandb.log_artifact(checkpoint_artifact)
         
         # Push to hub if configured
-        if self.config.output.push_to_hub and epoch == self.config.training.epochs:
+        push_checkpoints = getattr(self.config.output, 'push_checkpoints_to_hub', False)
+        checkpoint_freq = getattr(self.config.output, 'checkpoint_push_freq', 5)
+        
+        # Push checkpoints during training if enabled
+        if (push_checkpoints and 
+            (epoch % checkpoint_freq == 0 or epoch == self.config.training.epochs)):
             hub_repo_id = push_to_hub(
                 self.reward_model, 
                 self.tokenizer, 
@@ -689,7 +694,19 @@ class IRLTrainer:
             )
             
             if hub_repo_id:
-                print(f"Checkpoint pushed to HuggingFace: {hub_repo_id}")
+                print(f"Checkpoint {epoch} pushed to HuggingFace: {hub_repo_id}")
+        
+        # Also push final model if configured (for backward compatibility)
+        elif self.config.output.push_to_hub and epoch == self.config.training.epochs:
+            hub_repo_id = push_to_hub(
+                self.reward_model, 
+                self.tokenizer, 
+                self.config, 
+                f"checkpoint-{epoch}"
+            )
+            
+            if hub_repo_id:
+                print(f"Final checkpoint pushed to HuggingFace: {hub_repo_id}")
     
     def save_model(self):
         """Save the final model."""
