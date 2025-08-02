@@ -697,6 +697,11 @@ class IRLTrainer:
             
             if hub_repo_id:
                 print(f"Checkpoint {epoch} pushed to HuggingFace: {hub_repo_id}")
+        
+        # Clean up local checkpoint directory
+        import shutil
+        shutil.rmtree(checkpoint_dir)
+        print(f"Local checkpoint directory cleaned up: {checkpoint_dir}")
     
     def save_model(self):
         """Save the final model."""
