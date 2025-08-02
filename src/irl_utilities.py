@@ -619,6 +619,11 @@ def push_to_hub(reward_model, tokenizer, config, checkpoint_suffix=None):
         
         print(f"Successfully uploaded model to {repo_id}")
         
+        # Clean up temporary directory
+        import shutil
+        shutil.rmtree(output_dir)
+        print(f"Temporary upload directory cleaned up: {output_dir}")
+        
         # Add message indicating whether it was uploaded to the explicitly set hub_org
         if hasattr(config.output, 'hub_org') and config.output.hub_org:
             print(f"Model pushed to HuggingFace: {repo_id} (using explicitly set hub_org)")
