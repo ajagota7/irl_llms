@@ -627,9 +627,8 @@ class IRLTrainer:
                 if self.config.logging.use_wandb and wandb.run is not None:
                     wandb.log({"epoch": epoch, **metrics})
                 
-                # Save checkpoint if configured
-                checkpoint_interval = getattr(self.config.output, 'checkpoint_interval', 5)
-                if self.config.output.save_checkpoints and (epoch % checkpoint_interval == 0):
+                # Save checkpoint if configured (at same time as evaluation)
+                if self.config.output.save_checkpoints:
                     print(f"Saving checkpoint at epoch {epoch}...")
                     self.save_checkpoint(epoch)
             else:
