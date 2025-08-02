@@ -625,6 +625,15 @@ class IRLTrainer:
                 # Save checkpoint if configured
                 if self.config.output.save_checkpoints:
                     self.save_checkpoint(epoch)
+                
+                # Also save checkpoints for HuggingFace pushing at the correct frequency
+                push_checkpoints = getattr(self.config.output, 'push_checkpoints_to_hub', False)
+                checkpoint_freq = getattr(self.config.output, 'checkpoint_push_freq', 5)
+                
+                if (push_checkpoints and epoch % checkpoint_freq == 0 and 
+                    epoch != self.config.training.epochs):  # Don't duplicate final save
+                    print(f"Creating checkpoint for HuggingFace push at epoch {epoch}")
+                    self.save_checkpoint(epoch)
             else:
                 # Log just the loss for non-evaluation epochs
                 if self.config.logging.use_wandb and wandb.run is not None:
@@ -683,9 +692,15 @@ class IRLTrainer:
         push_checkpoints = getattr(self.config.output, 'push_checkpoints_to_hub', False)
         checkpoint_freq = getattr(self.config.output, 'checkpoint_push_freq', 5)
         
+        print(f"DEBUG: push_checkpoints={push_checkpoints}, checkpoint_freq={checkpoint_freq}, epoch={epoch}")
+        print(f"DEBUG: epoch % checkpoint_freq = {epoch % checkpoint_freq}")
+        print(f"DEBUG: epoch == self.config.training.epochs = {epoch == self.config.training.epochs}")
+        
         # Push checkpoints during training if enabled
+        # Changed logic: push whenever a checkpoint is saved and it matches the frequency
         if (push_checkpoints and 
             (epoch % checkpoint_freq == 0 or epoch == self.config.training.epochs)):
+            print(f"DEBUG: Attempting to push checkpoint {epoch} to HuggingFace...")
             hub_repo_id = push_to_hub(
                 self.reward_model, 
                 self.tokenizer, 
@@ -695,9 +710,12 @@ class IRLTrainer:
             
             if hub_repo_id:
                 print(f"Checkpoint {epoch} pushed to HuggingFace: {hub_repo_id}")
+            else:
+                print(f"WARNING: Failed to push checkpoint {epoch} to HuggingFace")
         
         # Also push final model if configured (for backward compatibility)
         elif self.config.output.push_to_hub and epoch == self.config.training.epochs:
+            print(f"DEBUG: Attempting to push final checkpoint {epoch} to HuggingFace...")
             hub_repo_id = push_to_hub(
                 self.reward_model, 
                 self.tokenizer, 
@@ -707,6 +725,8 @@ class IRLTrainer:
             
             if hub_repo_id:
                 print(f"Final checkpoint pushed to HuggingFace: {hub_repo_id}")
+            else:
+                print(f"WARNING: Failed to push final checkpoint {epoch} to HuggingFace")
     
     def save_model(self):
         """Save the final model."""
