@@ -434,7 +434,7 @@ class EnhancedRewardAnalyzer:
     
     def analyze_dataset_pair_with_epoch(self, original_dataset_id: str, detoxified_dataset_id: str,
                                        reward_model_id: str, epoch: Optional[int] = None,
-                                       batch_size: int = 64, max_length: int = 512) -> pd.DataFrame:
+                                       batch_size: int = 64, max_length: int = 512) -> Tuple[pd.DataFrame, RewardModel, AutoTokenizer]:
         """Analyze a dataset pair with detailed scoring breakdown (enhanced with epoch support)."""
         epoch_str = f"epoch-{epoch}" if epoch is not None else "final"
         print(f"\nAnalyzing dataset pair with {epoch_str} model:")
@@ -546,7 +546,7 @@ class EnhancedRewardAnalyzer:
                 print(f"  Prompt+output scores: {row['prompt_original_output_score']:.4f} -> {row['prompt_detoxified_output_score']:.4f} (diff: {row['prompt_output_improvement']:.4f})")
                 print(f"  Prompt contribution: {row['prompt_contribution_original']:.4f} (orig), {row['prompt_contribution_detoxified']:.4f} (detox)")
         
-        return results_df
+        return results_df, reward_model, tokenizer
     
     def push_results_to_huggingface(self, results_df: pd.DataFrame, dataset_name: str, 
                                    hub_org: str = None, private: bool = False) -> str:
@@ -684,6 +684,19 @@ dataset = load_dataset("{dataset_id}")
         
         return combined_df
 
+    def cleanup_model(self, reward_model, tokenizer):
+        """Clean up model and tokenizer to free memory."""
+        if hasattr(reward_model, 'model'):
+            del reward_model.model
+        if hasattr(reward_model, 'v_head'):
+            del reward_model.v_head
+        del reward_model
+        del tokenizer
+        
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            print(f"Model cleaned up. Available memory: {torch.cuda.memory_allocated() / 1024**3:.2f}GB / {torch.cuda.get_device_properties(0).total_memory / 1024**3:.2f}GB")
+
 
 def main():
     parser = argparse.ArgumentParser(description="Enhanced reward analysis for dataset pairs with epoch support and HuggingFace upload")
@@ -741,7 +754,12 @@ def main():
             print(f"Analyzing epoch {epoch}")
             print(f"{'='*50}")
             
-            epoch_results = analyzer.analyze_dataset_pair_with_epoch(
+            # Clear GPU memory before loading new model
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                print(f"Cleared GPU cache. Available memory: {torch.cuda.memory_allocated() / 1024**3:.2f}GB / {torch.cuda.get_device_properties(0).total_memory / 1024**3:.2f}GB")
+            
+            epoch_results, reward_model, tokenizer = analyzer.analyze_dataset_pair_with_epoch(
                 args.original_dataset,
                 args.detoxified_dataset,
                 args.reward_model,
@@ -750,6 +768,14 @@ def main():
                 args.max_length
             )
             all_results.append(epoch_results)
+            
+            # Clean up model and tokenizer
+            analyzer.cleanup_model(reward_model, tokenizer)
+            
+            # Clear GPU memory after processing
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                print(f"Cleared GPU cache after epoch {epoch}. Available memory: {torch.cuda.memory_allocated() / 1024**3:.2f}GB / {torch.cuda.get_device_properties(0).total_memory / 1024**3:.2f}GB")
         
         # Save individual epoch results if requested
         if args.save_individual_epochs:
