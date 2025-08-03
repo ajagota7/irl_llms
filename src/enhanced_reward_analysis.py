@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 import json
 import random
+import re
 from datetime import datetime
 from typing import Dict, List, Tuple, Optional
 from transformers import AutoTokenizer
@@ -47,6 +48,56 @@ class EnhancedRewardAnalyzer:
         random.seed(self.seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(self.seed)
+    
+    def extract_epoch_from_model_name(self, model_path: str) -> Optional[int]:
+        """
+        Extract epoch number from model name if it's embedded in the name.
+        
+        Args:
+            model_path: Model path that may contain epoch information
+            
+        Returns:
+            Epoch number if found, None otherwise
+        """
+        # Look for patterns like "checkpoint-40", "epoch-40", "-40", etc.
+        patterns = [
+            r'checkpoint-(\d+)',
+            r'epoch-(\d+)',
+            r'-(\d+)$',  # Number at the end
+            r'-(\d+)-',  # Number in the middle
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, model_path)
+            if match:
+                return int(match.group(1))
+        
+        return None
+    
+    def replace_epoch_in_model_name(self, model_path: str, new_epoch: int) -> str:
+        """
+        Replace the epoch number in a model name with a new epoch number.
+        
+        Args:
+            model_path: Original model path
+            new_epoch: New epoch number to use
+            
+        Returns:
+            Model path with updated epoch number
+        """
+        # First, try to replace existing epoch patterns
+        patterns_and_replacements = [
+            (r'checkpoint-(\d+)', f'checkpoint-{new_epoch}'),
+            (r'epoch-(\d+)', f'epoch-{new_epoch}'),
+            (r'-(\d+)$', f'-{new_epoch}'),  # Number at the end
+        ]
+        
+        for pattern, replacement in patterns_and_replacements:
+            if re.search(pattern, model_path):
+                return re.sub(pattern, replacement, model_path)
+        
+        # If no epoch found, append it at the end
+        return f"{model_path}-checkpoint-{new_epoch}"
     
     def load_reward_model_with_epoch(self, model_path: str, epoch: Optional[int] = None) -> Tuple[RewardModel, AutoTokenizer]:
         """
@@ -141,14 +192,19 @@ class EnhancedRewardAnalyzer:
             try:
                 # Handle epoch-specific HuggingFace models
                 if epoch is not None:
-                    # For HuggingFace models, epoch is typically in the model name
-                    # Try different naming patterns
-                    epoch_model_paths = [
-                        f"{model_path}-checkpoint-{epoch}",
-                        f"{model_path}-epoch-{epoch}",
-                        f"{model_path}-{epoch}",
-                        model_path  # Fallback to original path
-                    ]
+                    # Check if the model path already contains an epoch
+                    current_epoch = self.extract_epoch_from_model_name(model_path)
+                    
+                    if current_epoch is not None:
+                        # Replace the epoch in the existing model name
+                        epoch_model_path = self.replace_epoch_in_model_name(model_path, epoch)
+                        print(f"Replacing epoch {current_epoch} with {epoch} in model name: {epoch_model_path}")
+                    else:
+                        # No epoch found, try appending it
+                        epoch_model_path = f"{model_path}-checkpoint-{epoch}"
+                        print(f"No epoch found in model name, appending: {epoch_model_path}")
+                    
+                    epoch_model_paths = [epoch_model_path]
                 else:
                     epoch_model_paths = [model_path]
                 
