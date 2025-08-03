@@ -700,6 +700,8 @@ def main():
                         help="Comma-separated list of epochs to analyze (e.g., '5,10,15,20')")
     parser.add_argument("--combine_epochs", action="store_true",
                         help="Combine results from multiple epochs into a single dataset")
+    parser.add_argument("--save_individual_epochs", action="store_true",
+                        help="Save individual epoch results as separate CSV files")
     parser.add_argument("--output_file", type=str, default=None,
                         help="Output CSV file path (default: auto-generated)")
     parser.add_argument("--push_to_hf", action="store_true",
@@ -710,6 +712,8 @@ def main():
                         help="HuggingFace organization/username (default: ajagota71)")
     parser.add_argument("--hf_private", action="store_true",
                         help="Make HuggingFace dataset private")
+    parser.add_argument("--manual_dataset_name", type=str, default=None,
+                        help="Manual short name for HuggingFace dataset (overrides auto-generation)")
     parser.add_argument("--device", type=str, default=None,
                         help="Device to run models on (cuda or cpu)")
     parser.add_argument("--batch_size", type=int, default=64,
@@ -747,6 +751,14 @@ def main():
             )
             all_results.append(epoch_results)
         
+        # Save individual epoch results if requested
+        if args.save_individual_epochs:
+            print(f"\nSaving individual epoch results...")
+            for i, (epoch_results, epoch) in enumerate(zip(all_results, epoch_list)):
+                epoch_filename = f"reward_analysis_epoch_{epoch}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+                epoch_results.to_csv(epoch_filename, index=False)
+                print(f"Saved epoch {epoch} results to: {epoch_filename}")
+        
         # Combine results if requested
         if args.combine_epochs:
             print(f"\nCombining results from {len(epoch_list)} epochs...")
@@ -754,6 +766,7 @@ def main():
         else:
             # Use the last epoch's results (or you could save each separately)
             results_df = all_results[-1]
+            print(f"Using results from last epoch ({epoch_list[-1]}) only")
     else:
         # Single epoch analysis
         results_df = analyzer.analyze_dataset_pair_with_epoch(
@@ -772,6 +785,9 @@ def main():
         base_model_name = analyzer.extract_base_model_name(args.reward_model)
         base_model_short = base_model_name.split('/')[-1]
         
+        # Clean up the model name for filename
+        base_model_short = re.sub(r'[^a-zA-Z0-9_-]', '', base_model_short)
+        
         if args.epochs is not None and args.combine_epochs:
             # Multiple epochs combined
             epoch_list = [int(e.strip()) for e in args.epochs.split(',')]
@@ -784,7 +800,7 @@ def main():
             # Single epoch
             epoch_str = f"epoch_{args.epoch}" if args.epoch is not None else "final"
         
-        args.output_file = f"reward_analysis_enhanced_{base_model_short}_{epoch_str}_{timestamp}.csv"
+        args.output_file = f"reward_analysis_{base_model_short}_{epoch_str}_{timestamp}.csv"
     
     # Save results locally
     results_df.to_csv(args.output_file, index=False)
@@ -793,25 +809,41 @@ def main():
     # Push to HuggingFace if requested
     if args.push_to_hf:
         # Generate dataset name if not provided
-        if args.hf_dataset_name is None:
+        if args.manual_dataset_name is not None:
+            # Use manual dataset name
+            args.hf_dataset_name = args.manual_dataset_name
+            print(f"Using manual dataset name: {args.hf_dataset_name}")
+        elif args.hf_dataset_name is None:
+            # Generate a shorter, cleaner dataset name
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             # Extract base model name for cleaner dataset names
             base_model_name = analyzer.extract_base_model_name(args.reward_model)
             base_model_short = base_model_name.split('/')[-1]
             
+            # Clean up the model name to make it shorter and valid
+            base_model_short = re.sub(r'[^a-zA-Z0-9_-]', '', base_model_short)
+            base_model_short = base_model_short.replace('_', '-')
+            
             if args.epochs is not None and args.combine_epochs:
                 # Multiple epochs combined
                 epoch_list = [int(e.strip()) for e in args.epochs.split(',')]
-                epoch_str = f"epochs_{min(epoch_list)}-{max(epoch_list)}"
+                epoch_str = f"e{min(epoch_list)}-{max(epoch_list)}"
             elif args.epochs is not None:
                 # Multiple epochs, use the last one
                 epoch_list = [int(e.strip()) for e in args.epochs.split(',')]
-                epoch_str = f"epoch_{epoch_list[-1]}"
+                epoch_str = f"e{epoch_list[-1]}"
             else:
                 # Single epoch
-                epoch_str = f"epoch_{args.epoch}" if args.epoch is not None else "final"
+                epoch_str = f"e{args.epoch}" if args.epoch is not None else "final"
             
-            args.hf_dataset_name = f"reward-analysis-{base_model_short}-{epoch_str}-{timestamp}"
+            # Create a shorter name that fits within HuggingFace limits
+            args.hf_dataset_name = f"reward-{base_model_short}-{epoch_str}-{timestamp}"
+            
+            # Ensure it's not too long (HuggingFace limit is 96 chars)
+            if len(args.hf_dataset_name) > 90:  # Leave some room for org name
+                args.hf_dataset_name = f"reward-{epoch_str}-{timestamp}"
+        
+        print(f"Dataset name: {args.hf_dataset_name}")
         
         dataset_id = analyzer.push_results_to_huggingface(
             results_df, 
