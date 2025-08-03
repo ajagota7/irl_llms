@@ -110,8 +110,10 @@ class EnhancedRewardAnalyzer:
         """Detect the type of model based on the path or name."""
         model_path_lower = model_path.lower()
         
-        # Check for specific model types
-        if any(name in model_path_lower for name in ['roberta', 'roberta-base', 'roberta-large']):
+        # Check for specific model types - prioritize classification models
+        if any(name in model_path_lower for name in ['toxicity', 'toxic', 'classifier', 'sequence_classification']):
+            return "sequence_classification"
+        elif any(name in model_path_lower for name in ['roberta', 'roberta-base', 'roberta-large']):
             return "roberta"
         elif any(name in model_path_lower for name in ['bert', 'bert-base', 'bert-large']):
             return "bert"
