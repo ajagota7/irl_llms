@@ -74,30 +74,41 @@ class EnhancedRewardAnalyzer:
         
         return None
     
-    def replace_epoch_in_model_name(self, model_path: str, new_epoch: int) -> str:
+    def get_epoch_model_name(self, base_model_path: str, epoch: int) -> str:
         """
-        Replace the epoch number in a model name with a new epoch number.
+        Get the full model name for a specific epoch by appending checkpoint suffix.
         
         Args:
-            model_path: Original model path
-            new_epoch: New epoch number to use
+            base_model_path: Base model path without epoch suffix
+            epoch: Epoch number to append
             
         Returns:
-            Model path with updated epoch number
+            Full model name with epoch suffix
         """
-        # First, try to replace existing epoch patterns
-        patterns_and_replacements = [
-            (r'checkpoint-(\d+)', f'checkpoint-{new_epoch}'),
-            (r'epoch-(\d+)', f'epoch-{new_epoch}'),
-            (r'-(\d+)$', f'-{new_epoch}'),  # Number at the end
+        return f"{base_model_path}-checkpoint-{epoch}"
+    
+    def extract_base_model_name(self, model_path: str) -> str:
+        """
+        Extract the base model name by removing epoch suffixes.
+        
+        Args:
+            model_path: Model path that may contain epoch information
+            
+        Returns:
+            Base model name without epoch suffix
+        """
+        # Remove epoch patterns from the end
+        patterns = [
+            r'-checkpoint-\d+$',
+            r'-epoch-\d+$',
+            r'-\d+$',  # Number at the end
         ]
         
-        for pattern, replacement in patterns_and_replacements:
-            if re.search(pattern, model_path):
-                return re.sub(pattern, replacement, model_path)
+        base_name = model_path
+        for pattern in patterns:
+            base_name = re.sub(pattern, '', base_name)
         
-        # If no epoch found, append it at the end
-        return f"{model_path}-checkpoint-{new_epoch}"
+        return base_name
     
     def load_reward_model_with_epoch(self, model_path: str, epoch: Optional[int] = None) -> Tuple[RewardModel, AutoTokenizer]:
         """
@@ -192,18 +203,11 @@ class EnhancedRewardAnalyzer:
             try:
                 # Handle epoch-specific HuggingFace models
                 if epoch is not None:
-                    # Check if the model path already contains an epoch
-                    current_epoch = self.extract_epoch_from_model_name(model_path)
-                    
-                    if current_epoch is not None:
-                        # Replace the epoch in the existing model name
-                        epoch_model_path = self.replace_epoch_in_model_name(model_path, epoch)
-                        print(f"Replacing epoch {current_epoch} with {epoch} in model name: {epoch_model_path}")
-                    else:
-                        # No epoch found, try appending it
-                        epoch_model_path = f"{model_path}-checkpoint-{epoch}"
-                        print(f"No epoch found in model name, appending: {epoch_model_path}")
-                    
+                    # Extract base model name and create epoch-specific model name
+                    base_model_name = self.extract_base_model_name(model_path)
+                    epoch_model_path = self.get_epoch_model_name(base_model_name, epoch)
+                    print(f"Using base model: {base_model_name}")
+                    print(f"Loading epoch {epoch} model: {epoch_model_path}")
                     epoch_model_paths = [epoch_model_path]
                 else:
                     epoch_model_paths = [model_path]
@@ -514,7 +518,10 @@ class EnhancedRewardAnalyzer:
         results_df = pd.DataFrame(results_data)
         
         # Add metadata columns
-        results_df['model_id'] = reward_model_id
+        # Extract base model name for cleaner metadata
+        base_model_name = self.extract_base_model_name(reward_model_id)
+        results_df['base_model_id'] = base_model_name
+        results_df['full_model_id'] = reward_model_id
         results_df['epoch'] = epoch if epoch is not None else -1  # -1 indicates final model
         results_df['analysis_timestamp'] = datetime.now().isoformat()
         
@@ -594,7 +601,8 @@ class EnhancedRewardAnalyzer:
 This dataset contains reward model analysis results for IRL training.
 
 ## Dataset Information
-- **Model ID**: {results_df['model_id'].iloc[0] if len(results_df) > 0 else 'Unknown'}
+- **Base Model ID**: {results_df['base_model_id'].iloc[0] if len(results_df) > 0 else 'Unknown'}
+- **Full Model ID**: {results_df['full_model_id'].iloc[0] if len(results_df) > 0 else 'Unknown'}
 - **Epoch**: {results_df['epoch'].iloc[0] if len(results_df) > 0 else 'Unknown'}
 - **Analysis Timestamp**: {results_df['analysis_timestamp'].iloc[0] if len(results_df) > 0 else 'Unknown'}
 - **Number of Samples**: {len(results_df)}
@@ -613,7 +621,8 @@ This dataset contains reward model analysis results for IRL training.
 - `prompt_output_improvement`: Improvement in prompt+output scores
 - `prompt_contribution_original`: Prompt contribution to original scores
 - `prompt_contribution_detoxified`: Prompt contribution to detoxified scores
-- `model_id`: ID of the reward model used
+- `base_model_id`: Base model ID without epoch suffix
+- `full_model_id`: Full model ID with epoch suffix
 - `epoch`: Training epoch of the model (-1 for final model)
 - `analysis_timestamp`: When the analysis was performed
 
@@ -641,6 +650,39 @@ dataset = load_dataset("{dataset_id}")
             import traceback
             traceback.print_exc()
             return None
+    
+    def combine_epoch_results(self, results_list: List[pd.DataFrame], epochs: List[int]) -> pd.DataFrame:
+        """
+        Combine results from multiple epochs into a single DataFrame.
+        
+        Args:
+            results_list: List of DataFrames from different epochs
+            epochs: List of epoch numbers corresponding to the results
+            
+        Returns:
+            Combined DataFrame with all epoch results
+        """
+        combined_results = []
+        
+        for i, (df, epoch) in enumerate(zip(results_list, epochs)):
+            # Create a copy to avoid modifying the original
+            epoch_df = df.copy()
+            
+            # Update epoch column to the correct epoch number
+            epoch_df['epoch'] = epoch
+            
+            # Add epoch index for sorting
+            epoch_df['epoch_index'] = i
+            
+            combined_results.append(epoch_df)
+        
+        # Combine all DataFrames
+        combined_df = pd.concat(combined_results, ignore_index=True)
+        
+        # Sort by epoch and sample index
+        combined_df = combined_df.sort_values(['epoch', 'sample_index']).reset_index(drop=True)
+        
+        return combined_df
 
 
 def main():
@@ -654,6 +696,10 @@ def main():
                         help="HuggingFace model ID for reward model")
     parser.add_argument("--epoch", type=int, default=None,
                         help="Specific epoch to analyze (if None, analyzes final model)")
+    parser.add_argument("--epochs", type=str, default=None,
+                        help="Comma-separated list of epochs to analyze (e.g., '5,10,15,20')")
+    parser.add_argument("--combine_epochs", action="store_true",
+                        help="Combine results from multiple epochs into a single dataset")
     parser.add_argument("--output_file", type=str, default=None,
                         help="Output CSV file path (default: auto-generated)")
     parser.add_argument("--push_to_hf", action="store_true",
@@ -678,22 +724,67 @@ def main():
     # Initialize analyzer
     analyzer = EnhancedRewardAnalyzer(device=args.device, seed=args.seed)
     
-    # Analyze dataset pair
-    results_df = analyzer.analyze_dataset_pair_with_epoch(
-        args.original_dataset,
-        args.detoxified_dataset,
-        args.reward_model,
-        args.epoch,
-        args.batch_size,
-        args.max_length
-    )
+    # Handle multiple epochs if specified
+    if args.epochs is not None:
+        # Parse epochs list
+        epoch_list = [int(e.strip()) for e in args.epochs.split(',')]
+        print(f"Analyzing multiple epochs: {epoch_list}")
+        
+        # Analyze each epoch
+        all_results = []
+        for epoch in epoch_list:
+            print(f"\n{'='*50}")
+            print(f"Analyzing epoch {epoch}")
+            print(f"{'='*50}")
+            
+            epoch_results = analyzer.analyze_dataset_pair_with_epoch(
+                args.original_dataset,
+                args.detoxified_dataset,
+                args.reward_model,
+                epoch,
+                args.batch_size,
+                args.max_length
+            )
+            all_results.append(epoch_results)
+        
+        # Combine results if requested
+        if args.combine_epochs:
+            print(f"\nCombining results from {len(epoch_list)} epochs...")
+            results_df = analyzer.combine_epoch_results(all_results, epoch_list)
+        else:
+            # Use the last epoch's results (or you could save each separately)
+            results_df = all_results[-1]
+    else:
+        # Single epoch analysis
+        results_df = analyzer.analyze_dataset_pair_with_epoch(
+            args.original_dataset,
+            args.detoxified_dataset,
+            args.reward_model,
+            args.epoch,
+            args.batch_size,
+            args.max_length
+        )
     
     # Generate output filename if not provided
     if args.output_file is None:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        model_name = args.reward_model.split('/')[-1]
-        epoch_str = f"epoch_{args.epoch}" if args.epoch is not None else "final"
-        args.output_file = f"reward_analysis_enhanced_{model_name}_{epoch_str}_{timestamp}.csv"
+        # Extract base model name for cleaner filenames
+        base_model_name = analyzer.extract_base_model_name(args.reward_model)
+        base_model_short = base_model_name.split('/')[-1]
+        
+        if args.epochs is not None and args.combine_epochs:
+            # Multiple epochs combined
+            epoch_list = [int(e.strip()) for e in args.epochs.split(',')]
+            epoch_str = f"epochs_{min(epoch_list)}-{max(epoch_list)}"
+        elif args.epochs is not None:
+            # Multiple epochs, use the last one
+            epoch_list = [int(e.strip()) for e in args.epochs.split(',')]
+            epoch_str = f"epoch_{epoch_list[-1]}"
+        else:
+            # Single epoch
+            epoch_str = f"epoch_{args.epoch}" if args.epoch is not None else "final"
+        
+        args.output_file = f"reward_analysis_enhanced_{base_model_short}_{epoch_str}_{timestamp}.csv"
     
     # Save results locally
     results_df.to_csv(args.output_file, index=False)
@@ -704,9 +795,23 @@ def main():
         # Generate dataset name if not provided
         if args.hf_dataset_name is None:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            model_name = args.reward_model.split('/')[-1]
-            epoch_str = f"epoch_{args.epoch}" if args.epoch is not None else "final"
-            args.hf_dataset_name = f"reward-analysis-{model_name}-{epoch_str}-{timestamp}"
+            # Extract base model name for cleaner dataset names
+            base_model_name = analyzer.extract_base_model_name(args.reward_model)
+            base_model_short = base_model_name.split('/')[-1]
+            
+            if args.epochs is not None and args.combine_epochs:
+                # Multiple epochs combined
+                epoch_list = [int(e.strip()) for e in args.epochs.split(',')]
+                epoch_str = f"epochs_{min(epoch_list)}-{max(epoch_list)}"
+            elif args.epochs is not None:
+                # Multiple epochs, use the last one
+                epoch_list = [int(e.strip()) for e in args.epochs.split(',')]
+                epoch_str = f"epoch_{epoch_list[-1]}"
+            else:
+                # Single epoch
+                epoch_str = f"epoch_{args.epoch}" if args.epoch is not None else "final"
+            
+            args.hf_dataset_name = f"reward-analysis-{base_model_short}-{epoch_str}-{timestamp}"
         
         dataset_id = analyzer.push_results_to_huggingface(
             results_df, 
