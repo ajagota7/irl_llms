@@ -698,6 +698,295 @@ dataset = load_dataset("{dataset_id}")
             print(f"Model cleaned up. Available memory: {torch.cuda.memory_allocated() / 1024**3:.2f}GB / {torch.cuda.get_device_properties(0).total_memory / 1024**3:.2f}GB")
 
 
+def load_base_model_once(self, model_path: str) -> Tuple[RewardModel, AutoTokenizer]:
+    """
+    Load the base model and tokenizer once (to be reused across epochs).
+    Only the value head weights will change between epochs.
+    
+    Args:
+        model_path: Path to the model directory or HuggingFace model ID
+        
+    Returns:
+        Tuple of (reward_model, tokenizer)
+    """
+    print(f"Loading base model once from {model_path}...")
+    
+    # Check if this is a local path or HuggingFace model ID
+    is_local_path = os.path.exists(model_path)
+    
+    if is_local_path:
+        # For local paths, we need to determine the base model name
+        # Try to find any model.pt file to get the config
+        model_file = None
+        for root, dirs, files in os.walk(model_path):
+            if "model.pt" in files:
+                model_file = os.path.join(root, "model.pt")
+                break
+        
+        if not model_file:
+            raise FileNotFoundError(f"Could not find model.pt in {model_path}")
+        
+        # Load the model state dict to get base model name
+        state_dict = torch.load(model_file, map_location=self.device)
+        
+        # Get the base model name from the config
+        if 'config' in state_dict and 'model_name' in state_dict['config']:
+            base_model_name = state_dict['config']['model_name']
+        else:
+            # Try to find training_info.json
+            info_file = os.path.join(model_path, "training_info.json")
+            if os.path.exists(info_file):
+                with open(info_file, 'r') as f:
+                    info = json.load(f)
+                    base_model_name = info.get('model_name')
+            else:
+                raise ValueError("Could not determine base model name from model files")
+        
+        # Create the reward model
+        reward_model = RewardModel(
+            model_name=base_model_name,
+            use_half_precision=state_dict.get('config', {}).get('use_half_precision', False),
+            device=self.device,
+            num_unfrozen_layers=0  # For inference, keep all layers frozen
+        )
+        
+        # Load the tokenizer
+        tokenizer = AutoTokenizer.from_pretrained(model_path)
+        tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.padding_side = 'left'
+        
+    else:
+        # For HuggingFace models, extract base model name
+        base_model_name = self.extract_base_model_name(model_path)
+        
+        # Try to get base model info from any epoch
+        try:
+            from huggingface_hub import hf_hub_download
+            import tempfile
+            
+            # Try epoch 0 first
+            epoch_model_path = self.get_epoch_model_name(base_model_name, 0)
+            
+            with tempfile.TemporaryDirectory() as temp_dir:
+                try:
+                    config_file = hf_hub_download(
+                        repo_id=epoch_model_path,
+                        filename="reward_model_config.json",
+                        cache_dir=temp_dir
+                    )
+                    with open(config_file, 'r') as f:
+                        config = json.load(f)
+                        actual_base_model_name = config.get('base_model')
+                except:
+                    # Fallback: extract from model path
+                    if 'llama-3.2-1b' in base_model_name:
+                        actual_base_model_name = "meta-llama/Llama-3.2-1B"
+                    elif 'pythia-70m' in base_model_name:
+                        actual_base_model_name = "EleutherAI/pythia-70m"
+                    elif 'pythia-410m' in base_model_name:
+                        actual_base_model_name = "EleutherAI/pythia-410m"
+                    elif 'pythia-1b' in base_model_name:
+                        actual_base_model_name = "EleutherAI/pythia-1b"
+                    else:
+                        raise ValueError(f"Could not determine base model name for {base_model_name}")
+            
+            print(f"Using base model: {actual_base_model_name}")
+            
+            # Create the reward model
+            reward_model = RewardModel(
+                model_name=actual_base_model_name,
+                device=self.device,
+                num_unfrozen_layers=0  # For inference, keep all layers frozen
+            )
+            
+            # Load the tokenizer
+            tokenizer = AutoTokenizer.from_pretrained(actual_base_model_name)
+            tokenizer.pad_token = tokenizer.eos_token
+            tokenizer.padding_side = 'left'
+            
+        except Exception as e:
+            print(f"Error loading base model: {e}")
+            raise
+    
+    print(f"Base model loaded successfully: {reward_model.model_name}")
+    return reward_model, tokenizer
+
+def load_value_head_weights(self, reward_model: RewardModel, model_path: str, epoch: int) -> None:
+    """
+    Load only the value head weights for a specific epoch.
+    
+    Args:
+        reward_model: The reward model with base model already loaded
+        model_path: Path to the model directory or HuggingFace model ID
+        epoch: Epoch number to load
+    """
+    print(f"Loading value head weights for epoch {epoch}...")
+    
+    # Check if this is a local path or HuggingFace model ID
+    is_local_path = os.path.exists(model_path)
+    
+    if is_local_path:
+        # Load from local path
+        checkpoint_dir = os.path.join(model_path, f"checkpoint-{epoch}")
+        if not os.path.exists(checkpoint_dir):
+            raise FileNotFoundError(f"Checkpoint directory not found: {checkpoint_dir}")
+        model_file = os.path.join(checkpoint_dir, "model.pt")
+        
+        if not os.path.exists(model_file):
+            raise FileNotFoundError(f"Could not find model.pt in {checkpoint_dir}")
+        
+        # Load the model state dict
+        state_dict = torch.load(model_file, map_location=self.device)
+        
+        # Load only the value head weights
+        reward_model.v_head.load_state_dict(state_dict['v_head'])
+        
+    else:
+        # Load from HuggingFace
+        try:
+            from huggingface_hub import hf_hub_download
+            import tempfile
+            
+            # Get epoch-specific model path
+            base_model_name = self.extract_base_model_name(model_path)
+            epoch_model_path = self.get_epoch_model_name(base_model_name, epoch)
+            
+            with tempfile.TemporaryDirectory() as temp_dir:
+                # Download the v_head.pt file
+                v_head_file = hf_hub_download(
+                    repo_id=epoch_model_path,
+                    filename="v_head.pt",
+                    cache_dir=temp_dir
+                )
+                
+                # Load the value head weights
+                v_head_state_dict = torch.load(v_head_file, map_location=self.device)
+                reward_model.v_head.load_state_dict(v_head_state_dict)
+                
+        except Exception as e:
+            print(f"Error loading value head weights for epoch {epoch}: {e}")
+            raise
+    
+    print(f"Value head weights loaded for epoch {epoch}")
+
+def analyze_dataset_pair_with_epoch_optimized(self, original_dataset_id: str, detoxified_dataset_id: str,
+                                           reward_model_id: str, reward_model: RewardModel, tokenizer: AutoTokenizer,
+                                           epoch: int, batch_size: int = 64, max_length: int = 512) -> pd.DataFrame:
+    """Analyze a dataset pair with pre-loaded base model (optimized for multiple epochs)."""
+    epoch_str = f"epoch-{epoch}"
+    print(f"\nAnalyzing dataset pair with {epoch_str} model:")
+    print(f"Original: {original_dataset_id}")
+    print(f"Detoxified: {detoxified_dataset_id}")
+    print(f"Model: {reward_model_id}")
+    
+    # Load value head weights for this epoch
+    self.load_value_head_weights(reward_model, reward_model_id, epoch)
+    
+    # Load datasets
+    original_data = self.load_dataset(original_dataset_id)
+    detoxified_data = self.load_dataset(detoxified_dataset_id)
+    
+    # Ensure datasets have same length
+    min_len = min(len(original_data), len(detoxified_data))
+    original_data = original_data[:min_len]
+    detoxified_data = detoxified_data[:min_len]
+    
+    print(f"Analyzing {min_len} samples")
+    
+    # Extract texts
+    original_outputs = [item.get('output', item.get('text', '')) for item in original_data]
+    detoxified_outputs = [item.get('output', item.get('text', '')) for item in detoxified_data]
+    
+    # Extract prompts if available
+    prompts = []
+    for item in original_data:
+        if 'prompt' in item:
+            prompts.append(item['prompt'])
+        elif 'input' in item:
+            prompts.append(item['input'])
+        else:
+            prompts.append("")  # No prompt available
+    
+    # Create different text combinations for scoring
+    prompt_only_texts = prompts
+    prompt_original_texts = [f"{prompt} {output}" if prompt else output 
+                           for prompt, output in zip(prompts, original_outputs)]
+    prompt_detoxified_texts = [f"{prompt} {output}" if prompt else output 
+                             for prompt, output in zip(prompts, detoxified_outputs)]
+    original_output_only_texts = original_outputs
+    detoxified_output_only_texts = detoxified_outputs
+    
+    # Use optimized scoring that processes all combinations in a single pass
+    print("Scoring all text combinations in a single optimized pass...")
+    text_combinations = {
+        'prompt_only': prompt_only_texts,
+        'prompt_original': prompt_original_texts,
+        'prompt_detoxified': prompt_detoxified_texts,
+        'original_output': original_output_only_texts,
+        'detoxified_output': detoxified_output_only_texts
+    }
+    
+    all_scores = self.score_texts_optimized(text_combinations, reward_model, tokenizer, batch_size, max_length)
+    
+    # Extract individual score lists
+    prompt_scores = all_scores['prompt_only']
+    prompt_original_scores = all_scores['prompt_original']
+    prompt_detoxified_scores = all_scores['prompt_detoxified']
+    original_output_scores = all_scores['original_output']
+    detoxified_output_scores = all_scores['detoxified_output']
+    
+    # Create results dataframe
+    results_data = []
+    for i in range(min_len):
+        results_data.append({
+            'sample_index': i,
+            'prompt': prompts[i],
+            'original_output': original_outputs[i],
+            'detoxified_output': detoxified_outputs[i],
+            'prompt_score': prompt_scores[i],
+            'prompt_original_output_score': prompt_original_scores[i],
+            'prompt_detoxified_output_score': prompt_detoxified_scores[i],
+            'original_output_score': original_output_scores[i],
+            'detoxified_output_score': detoxified_output_scores[i],
+            'output_improvement': detoxified_output_scores[i] - original_output_scores[i],
+            'prompt_output_improvement': prompt_detoxified_scores[i] - prompt_original_scores[i],
+            'prompt_contribution_original': prompt_original_scores[i] - original_output_scores[i],
+            'prompt_contribution_detoxified': prompt_detoxified_scores[i] - detoxified_output_scores[i]
+        })
+    
+    results_df = pd.DataFrame(results_data)
+    
+    # Add metadata columns
+    base_model_name = self.extract_base_model_name(reward_model_id)
+    results_df['base_model_id'] = base_model_name
+    results_df['full_model_id'] = reward_model_id
+    results_df['epoch'] = epoch
+    results_df['analysis_timestamp'] = datetime.now().isoformat()
+    
+    # Add summary statistics
+    print("\nSummary Statistics:")
+    print(f"Mean output improvement: {results_df['output_improvement'].mean():.4f}")
+    print(f"Mean prompt+output improvement: {results_df['prompt_output_improvement'].mean():.4f}")
+    print(f"Mean prompt contribution (original): {results_df['prompt_contribution_original'].mean():.4f}")
+    print(f"Mean prompt contribution (detoxified): {results_df['prompt_contribution_detoxified'].mean():.4f}")
+    
+    # Debug: Show some examples of how prompts affect scoring
+    print("\nDebug: Sample scoring differences:")
+    sample_indices = [0, 100, 500, 1000, 1500]  # Look at a few samples
+    for idx in sample_indices:
+        if idx < len(results_df):
+            row = results_df.iloc[idx]
+            print(f"\nSample {idx}:")
+            print(f"  Prompt: '{row['prompt'][:50]}...'")
+            print(f"  Original output: '{row['original_output'][:50]}...'")
+            print(f"  Detoxified output: '{row['detoxified_output'][:50]}...'")
+            print(f"  Output-only scores: {row['original_output_score']:.4f} -> {row['detoxified_output_score']:.4f} (diff: {row['output_improvement']:.4f})")
+            print(f"  Prompt+output scores: {row['prompt_original_output_score']:.4f} -> {row['prompt_detoxified_output_score']:.4f} (diff: {row['prompt_output_improvement']:.4f})")
+            print(f"  Prompt contribution: {row['prompt_contribution_original']:.4f} (orig), {row['prompt_contribution_detoxified']:.4f} (detox)")
+    
+    return results_df
+
+
 def main():
     parser = argparse.ArgumentParser(description="Enhanced reward analysis for dataset pairs with epoch support and HuggingFace upload")
     
@@ -747,6 +1036,13 @@ def main():
         epoch_list = [int(e.strip()) for e in args.epochs.split(',')]
         print(f"Analyzing multiple epochs: {epoch_list}")
         
+        # Load base model once (optimized approach)
+        print(f"\n{'='*50}")
+        print("Loading base model once (will be reused for all epochs)...")
+        print(f"{'='*50}")
+        
+        base_reward_model, tokenizer = analyzer.load_base_model_once(args.reward_model)
+        
         # Analyze each epoch
         all_results = []
         for epoch in epoch_list:
@@ -754,28 +1050,31 @@ def main():
             print(f"Analyzing epoch {epoch}")
             print(f"{'='*50}")
             
-            # Clear GPU memory before loading new model
+            # Clear GPU memory before processing
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
                 print(f"Cleared GPU cache. Available memory: {torch.cuda.memory_allocated() / 1024**3:.2f}GB / {torch.cuda.get_device_properties(0).total_memory / 1024**3:.2f}GB")
             
-            epoch_results, reward_model, tokenizer = analyzer.analyze_dataset_pair_with_epoch(
+            # Use optimized analysis (only loads value head weights)
+            epoch_results = analyzer.analyze_dataset_pair_with_epoch_optimized(
                 args.original_dataset,
                 args.detoxified_dataset,
                 args.reward_model,
+                base_reward_model,
+                tokenizer,
                 epoch,
                 args.batch_size,
                 args.max_length
             )
             all_results.append(epoch_results)
             
-            # Clean up model and tokenizer
-            analyzer.cleanup_model(reward_model, tokenizer)
-            
             # Clear GPU memory after processing
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
                 print(f"Cleared GPU cache after epoch {epoch}. Available memory: {torch.cuda.memory_allocated() / 1024**3:.2f}GB / {torch.cuda.get_device_properties(0).total_memory / 1024**3:.2f}GB")
+        
+        # Clean up base model at the end
+        analyzer.cleanup_model(base_reward_model, tokenizer)
         
         # Save individual epoch results if requested
         if args.save_individual_epochs:
@@ -790,12 +1089,12 @@ def main():
             print(f"\nCombining results from {len(epoch_list)} epochs...")
             results_df = analyzer.combine_epoch_results(all_results, epoch_list)
         else:
-            # Use the last epoch's results (or you could save each separately)
+            # Use the last epoch's results
             results_df = all_results[-1]
             print(f"Using results from last epoch ({epoch_list[-1]}) only")
     else:
-        # Single epoch analysis
-        results_df = analyzer.analyze_dataset_pair_with_epoch(
+        # Single epoch analysis (use original method)
+        results_df, reward_model, tokenizer = analyzer.analyze_dataset_pair_with_epoch(
             args.original_dataset,
             args.detoxified_dataset,
             args.reward_model,
