@@ -4,6 +4,7 @@ Enhanced simple reward analysis script with fixed classification model scoring.
 Takes a dataset pair and model, creates a CSV with detailed scoring breakdown.
 Supports multiple model types: reward models, RoBERTa, BERT, and other HuggingFace models.
 Uses index 0 logit for classification models instead of averaging.
+Now includes HuggingFace dataset upload functionality.
 """
 
 import os
@@ -438,6 +439,107 @@ class EnhancedRewardAnalyzer:
         
         return results
     
+    def push_results_to_huggingface(self, results_df: pd.DataFrame, dataset_name: str, 
+                                   hub_org: str = None, private: bool = False) -> str:
+        """
+        Push analysis results to HuggingFace as a dataset.
+        
+        Args:
+            results_df: DataFrame with analysis results
+            dataset_name: Name for the dataset
+            hub_org: HuggingFace organization/username (if None, uses default)
+            private: Whether to make the dataset private
+            
+        Returns:
+            Dataset ID on HuggingFace
+        """
+        try:
+            from huggingface_hub import HfApi, create_repo
+            from datasets import Dataset
+            
+            # Set default organization if not provided
+            if hub_org is None:
+                hub_org = "ajagota71"  # Default username
+            
+            # Create dataset ID
+            dataset_id = f"{hub_org}/{dataset_name}"
+            
+            print(f"Pushing results to HuggingFace dataset: {dataset_id}")
+            
+            # Convert DataFrame to HuggingFace Dataset
+            hf_dataset = Dataset.from_pandas(results_df)
+            
+            # Create repository
+            api = HfApi()
+            try:
+                create_repo(
+                    repo_id=dataset_id,
+                    repo_type="dataset",
+                    private=private,
+                    exist_ok=True
+                )
+                print(f"Created dataset repository: {dataset_id}")
+            except Exception as e:
+                print(f"Repository creation note: {e}")
+            
+            # Push dataset to Hub
+            hf_dataset.push_to_hub(dataset_id, private=private)
+            print(f"Successfully pushed dataset to: {dataset_id}")
+            
+            # Create a README for the dataset
+            readme_content = f"""# {dataset_name}
+
+This dataset contains ground truth classification results for model evaluation.
+
+## Dataset Information
+- **Model ID**: {results_df.get('model_id', ['Unknown'])[0] if len(results_df) > 0 else 'Unknown'}
+- **Model Type**: {results_df.get('model_type', ['Unknown'])[0] if len(results_df) > 0 else 'Unknown'}
+- **Analysis Timestamp**: {results_df['analysis_timestamp'].iloc[0] if len(results_df) > 0 else 'Unknown'}
+- **Number of Samples**: {len(results_df)}
+
+## Columns
+- `sample_index`: Index of the sample
+- `prompt`: Input prompt (if available)
+- `original_output`: Original model output
+- `detoxified_output`: Detoxified model output
+- `prompt_score`: Classification score for prompt only
+- `prompt_original_output_score`: Classification score for prompt + original output
+- `prompt_detoxified_output_score`: Classification score for prompt + detoxified output
+- `original_output_score`: Classification score for original output only
+- `detoxified_output_score`: Classification score for detoxified output only
+- `output_improvement`: Improvement in output-only scores
+- `prompt_output_improvement`: Improvement in prompt+output scores
+- `prompt_contribution_original`: Prompt contribution to original scores
+- `prompt_contribution_detoxified`: Prompt contribution to detoxified scores
+- `model_id`: Model ID used for classification
+- `model_type`: Type of model used for classification
+- `analysis_timestamp`: When the analysis was performed
+
+## Usage
+```python
+from datasets import load_dataset
+
+# Load the dataset
+dataset = load_dataset("{dataset_id}")
+```
+"""
+            
+            # Upload README
+            api.upload_file(
+                path_or_fileobj=readme_content.encode(),
+                path_in_repo="README.md",
+                repo_id=dataset_id,
+                repo_type="dataset"
+            )
+            
+            return dataset_id
+            
+        except Exception as e:
+            print(f"Error pushing to HuggingFace: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+    
     def analyze_dataset_pair(self, original_dataset_id: str, detoxified_dataset_id: str,
                            model_id: str, model_type: str = None, batch_size: int = 64, 
                            max_length: int = 512) -> pd.DataFrame:
@@ -523,6 +625,11 @@ class EnhancedRewardAnalyzer:
         
         results_df = pd.DataFrame(results_data)
         
+        # Add metadata columns
+        results_df['model_id'] = model_id
+        results_df['model_type'] = model_type or self.detect_model_type(model_id)
+        results_df['analysis_timestamp'] = datetime.now().isoformat()
+        
         # Add summary statistics
         print("\nSummary Statistics:")
         print(f"Mean output improvement: {results_df['output_improvement'].mean():.4f}")
@@ -548,7 +655,7 @@ class EnhancedRewardAnalyzer:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Enhanced simple reward analysis for dataset pairs with multi-model support and fixed classification scoring")
+    parser = argparse.ArgumentParser(description="Enhanced simple reward analysis for dataset pairs with multi-model support, fixed classification scoring, and HuggingFace upload")
     
     parser.add_argument("--original_dataset", type=str, required=True,
                         help="HuggingFace dataset ID for original data")
@@ -561,6 +668,16 @@ def main():
                         help="Type of model (auto-detected if not specified)")
     parser.add_argument("--output_file", type=str, default=None,
                         help="Output CSV file path (default: auto-generated)")
+    parser.add_argument("--push_to_hf", action="store_true",
+                        help="Push results to HuggingFace as a dataset")
+    parser.add_argument("--hf_dataset_name", type=str, default=None,
+                        help="Name for HuggingFace dataset (default: auto-generated)")
+    parser.add_argument("--hf_org", type=str, default=None,
+                        help="HuggingFace organization/username (default: ajagota71)")
+    parser.add_argument("--hf_private", action="store_true",
+                        help="Make HuggingFace dataset private")
+    parser.add_argument("--manual_dataset_name", type=str, default=None,
+                        help="Manual short name for HuggingFace dataset (overrides auto-generation)")
     parser.add_argument("--device", type=str, default=None,
                         help="Device to run models on (cuda or cpu)")
     parser.add_argument("--batch_size", type=int, default=64,
@@ -593,9 +710,47 @@ def main():
         
         args.output_file = f"reward_analysis_{model_name}_{detoxified_name}_{timestamp}.csv"
     
-    # Save results
+    # Save results locally
     results_df.to_csv(args.output_file, index=False)
-    print(f"\nResults saved to: {args.output_file}")
+    print(f"\nResults saved locally to: {args.output_file}")
+    
+    # Push to HuggingFace if requested
+    if args.push_to_hf:
+        # Generate dataset name if not provided
+        if args.manual_dataset_name is not None:
+            # Use manual dataset name
+            args.hf_dataset_name = args.manual_dataset_name
+            print(f"Using manual dataset name: {args.hf_dataset_name}")
+        elif args.hf_dataset_name is None:
+            # Generate a shorter, cleaner dataset name
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            # Extract model name for cleaner dataset names
+            model_name = args.model.split('/')[-1]
+            
+            # Clean up the model name to make it shorter and valid
+            model_name = re.sub(r'[^a-zA-Z0-9_-]', '', model_name)
+            model_name = model_name.replace('_', '-')
+            
+            # Create a shorter name that fits within HuggingFace limits
+            args.hf_dataset_name = f"ground-truth-{model_name}-{timestamp}"
+            
+            # Ensure it's not too long (HuggingFace limit is 96 chars)
+            if len(args.hf_dataset_name) > 90:  # Leave some room for org name
+                args.hf_dataset_name = f"ground-truth-{timestamp}"
+        
+        print(f"Dataset name: {args.hf_dataset_name}")
+        
+        dataset_id = analyzer.push_results_to_huggingface(
+            results_df, 
+            args.hf_dataset_name, 
+            args.hf_org, 
+            args.hf_private
+        )
+        
+        if dataset_id:
+            print(f"Results pushed to HuggingFace: {dataset_id}")
+        else:
+            print("Failed to push results to HuggingFace")
     
     # Print top and bottom improvers
     print("\nTop 10 Output Improvers:")
