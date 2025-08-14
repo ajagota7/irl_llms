@@ -216,8 +216,54 @@ def train_rlhf(cfg: DictConfig) -> None:
         query_tensors = batch["input_ids"]
         
         # Get response from policy model - BATCHED GENERATION FOR 5-10x SPEEDUP
-        # Stack all queries for parallel processing
-        stacked_queries = torch.stack([query.squeeze() for query in query_tensors])
+        # Prepare queries with padding for equal sizes
+        device = ppo_trainer.accelerator.device
+        
+        try:
+            # Find the maximum length in the batch
+            max_length = max(len(query.squeeze()) for query in query_tensors)
+            
+            # Pad all queries to the same length
+            padded_queries = []
+            for query in query_tensors:
+                query_squeezed = query.squeeze()
+                if len(query_squeezed) < max_length:
+                    # Pad with pad_token_id
+                    padding_length = max_length - len(query_squeezed)
+                    padding = torch.full((padding_length,), tokenizer.pad_token_id, device=device)
+                    padded_query = torch.cat([query_squeezed, padding], dim=0)
+                else:
+                    padded_query = query_squeezed
+                padded_queries.append(padded_query)
+            
+            # Stack all queries for parallel processing
+            stacked_queries = torch.stack(padded_queries)
+            
+        except Exception as e:
+            print(f"Error in batch preparation: {e}")
+            print("Falling back to sequential generation...")
+            
+            # Fallback to sequential generation if batching fails
+            response_tensors = []
+            for query in query_tensors:
+                gen_len = cfg.model.generation.output_max_length
+                generation_kwargs = {
+                    "min_length": cfg.model.generation.min_length,
+                    "top_k": cfg.model.generation.top_k,
+                    "top_p": cfg.model.generation.top_p,
+                    "do_sample": cfg.model.generation.do_sample,
+                    "pad_token_id": tokenizer.eos_token_id,
+                    "max_new_tokens": gen_len
+                }
+                
+                query_squeezed = query.squeeze()
+                response = ppo_trainer.generate(query_squeezed.unsqueeze(0), **generation_kwargs)
+                response_tensors.append(response.squeeze()[-gen_len:])
+            
+            batch["response"] = [tokenizer.decode(r.squeeze()) for r in response_tensors]
+            
+            # Skip the rest of the batched processing
+            continue
         
         # Use fixed generation length for batch processing (use max length for consistency)
         generation_kwargs = {
@@ -273,6 +319,8 @@ def train_rlhf(cfg: DictConfig) -> None:
                 else x for x in softmax_toxicity_labels
             ]
             rewards = [torch.tensor(output) for output in softmax_toxicity_labels]
+            # Use softmax_toxicity_labels for NaN counting in this case
+            raw_toxicity_labels = softmax_toxicity_labels
         
         # Calculate statistics for logging
         rewards_tensor = torch.tensor([r.item() for r in rewards])
