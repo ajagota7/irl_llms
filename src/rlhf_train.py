@@ -168,12 +168,28 @@ def train_rlhf(cfg: DictConfig) -> None:
     if reward_model is None:
         raise ValueError("Reward model is None - failed to load")
     
+    # Create a simple reward model wrapper for PPOv2Trainer
+    class SimpleRewardModel(torch.nn.Module):
+        def __init__(self, base_reward_model, reward_tokenizer):
+            super().__init__()
+            self.base_reward_model = base_reward_model
+            self.reward_tokenizer = reward_tokenizer
+            
+        def forward(self, input_ids, attention_mask=None, **kwargs):
+            # This is a placeholder - PPOv2Trainer will call this but we'll compute rewards manually
+            batch_size = input_ids.shape[0]
+            return torch.zeros(batch_size, device=input_ids.device)
+    
+    # Create the wrapper reward model
+    simple_reward_model = SimpleRewardModel(reward_model, reward_tokenizer)
+    
     # Create PPO trainer
     ppo_trainer = PPOv2Trainer(
         config=ppo_config,
         tokenizer=tokenizer,
         policy=model,
         ref_policy=ref_model,
+        reward_model=simple_reward_model,
         train_dataset=train_dataset,
         data_collator=collator,
         optimizers=(optimizer, lr_scheduler),
