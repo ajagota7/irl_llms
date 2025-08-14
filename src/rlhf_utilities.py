@@ -260,44 +260,34 @@ def evaluate_toxicity(
         "max_new_tokens": config.model.generation.output_max_length,
     }
     
-    # Use batch processing for much faster evaluation
-    batch_size = 16  # Process 16 samples at once
+    # Generate responses and calculate toxicity
     toxicity_scores = []
     generations = []
     
-    # Process samples in batches
-    for i in tqdm(range(0, len(eval_samples), batch_size), desc=f"Evaluating (epoch {epoch})"):
-        batch_samples = eval_samples[i:i + batch_size]
-        batch_queries = [sample["query"] for sample in batch_samples]
+    # Process samples in batches for reward model evaluation, but generate one by one for PPO trainer
+    batch_size = 16  # For reward model batching
+    all_responses = []
+    
+    # First, generate all responses (one by one for PPO trainer compatibility)
+    for sample in tqdm(eval_samples, desc=f"Generating (epoch {epoch})"):
+        query = sample["query"]
         
-        # Tokenize all queries in batch
-        batch_inputs = tokenizer(
-            batch_queries, 
-            return_tensors="pt", 
-            padding=True, 
-            truncation=True
-        ).to(device)
+        # Tokenize the query - PPO trainer expects individual tensors
+        query_tensor = tokenizer(query, return_tensors="pt")
+        query_input_ids = query_tensor.input_ids.squeeze().to(device)
         
-        # Generate responses for entire batch
-        with torch.no_grad():
-            batch_responses = ppo_trainer.generate(
-                batch_inputs.input_ids, 
-                attention_mask=batch_inputs.attention_mask,
-                **gen_kwargs
-            )
-        
-        # Decode responses
-        batch_responses_text = []
-        for j, response_ids in enumerate(batch_responses):
-            # Remove the input part to get only the generated response
-            input_length = batch_inputs.input_ids[j].shape[0]
-            response_only = response_ids[input_length:]
-            response_text = tokenizer.decode(response_only, skip_special_tokens=True)
-            batch_responses_text.append(response_text)
+        # Generate response
+        response_tensor = ppo_trainer.generate(query_input_ids, **gen_kwargs)
+        response = tokenizer.decode(response_tensor[0], skip_special_tokens=True)
+        all_responses.append(response)
+    
+    # Now calculate toxicity in batches for efficiency
+    for i in tqdm(range(0, len(all_responses), batch_size), desc=f"Evaluating toxicity (epoch {epoch})"):
+        batch_responses = all_responses[i:i + batch_size]
         
         # Calculate toxicity for entire batch
         reward_inputs = reward_tokenizer(
-            batch_responses_text, 
+            batch_responses, 
             return_tensors="pt", 
             padding=True, 
             truncation=True
@@ -330,13 +320,15 @@ def evaluate_toxicity(
                         
             except Exception as e:
                 print(f"Error calculating toxicity for batch: {e}")
-                batch_toxicity = [0.5] * len(batch_responses_text)  # Default values
+                batch_toxicity = [0.5] * len(batch_responses)  # Default values
         
         # Store results
         toxicity_scores.extend(batch_toxicity)
-        for j, (query, response, toxicity) in enumerate(zip(batch_queries, batch_responses_text, batch_toxicity)):
+        
+        # Create generation records
+        for j, (sample, response, toxicity) in enumerate(zip(eval_samples[i:i + batch_size], batch_responses, batch_toxicity)):
             generations.append({
-                "query": query,
+                "query": sample["query"],
                 "response": response,
                 "toxicity": toxicity
             })
