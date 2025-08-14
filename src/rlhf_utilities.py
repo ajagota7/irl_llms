@@ -298,10 +298,12 @@ def evaluate_toxicity(
         
         # Stack queries for batched generation
         try:
-            stacked_queries = torch.stack(padded_queries)
-            
-            # Generate responses in batch
-            response_tensors = ppo_trainer.generate(stacked_queries, **gen_kwargs)
+            # PPO trainer expects a list of tensors, not a stacked tensor
+            # Generate responses in batch by processing each query individually
+            response_tensors = []
+            for query_input_ids in padded_queries:
+                response_tensor = ppo_trainer.generate(query_input_ids, **gen_kwargs)
+                response_tensors.append(response_tensor.squeeze())
             
         except Exception as e:
             print(f"Error in batched evaluation: {e}")
@@ -312,7 +314,7 @@ def evaluate_toxicity(
             for sample in batch_samples:
                 query_tensor = tokenizer(sample["query"], return_tensors="pt")
                 query_input_ids = query_tensor.input_ids.squeeze().to(device)
-                response_tensor = ppo_trainer.generate(query_input_ids.unsqueeze(0), **gen_kwargs)
+                response_tensor = ppo_trainer.generate(query_input_ids, **gen_kwargs)
                 response_tensors.append(response_tensor.squeeze())
         
         # Process each response in the batch

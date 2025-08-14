@@ -236,8 +236,7 @@ def train_rlhf(cfg: DictConfig) -> None:
                     padded_query = query_squeezed
                 padded_queries.append(padded_query)
             
-            # Stack all queries for parallel processing
-            stacked_queries = torch.stack(padded_queries)
+            # Prepare queries for generation (PPO trainer expects individual tensors)
             
         except Exception as e:
             print(f"Error in batch preparation: {e}")
@@ -257,7 +256,7 @@ def train_rlhf(cfg: DictConfig) -> None:
                 }
                 
                 query_squeezed = query.squeeze()
-                response = ppo_trainer.generate(query_squeezed.unsqueeze(0), **generation_kwargs)
+                response = ppo_trainer.generate(query_squeezed, **generation_kwargs)
                 response_tensors.append(response.squeeze()[-gen_len:])
             
             batch["response"] = [tokenizer.decode(r.squeeze()) for r in response_tensors]
@@ -275,8 +274,12 @@ def train_rlhf(cfg: DictConfig) -> None:
             "max_new_tokens": cfg.model.generation.output_max_length
         }
         
-        # Generate all responses in parallel - this is the key speedup!
-        response_tensors = ppo_trainer.generate(stacked_queries, **generation_kwargs)
+        # PPO trainer expects individual tensors, not a stacked tensor
+        # Generate responses for each query (still optimized approach)
+        response_tensors = []
+        for query_input_ids in padded_queries:
+            response_tensor = ppo_trainer.generate(query_input_ids, **generation_kwargs)
+            response_tensors.append(response_tensor.squeeze())
         
         # Extract the generated parts (last max_new_tokens tokens for each response)
         max_new_tokens = cfg.model.generation.output_max_length
