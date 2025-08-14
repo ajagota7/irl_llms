@@ -39,14 +39,14 @@ model:
   use_score_norm: true
   ratio_threshold: 10.0
   
-                # Generation parameters
-              generation:
-                min_length: 20
-                output_min_length: 20
-                output_max_length: 50
-                do_sample: true
-                top_k: 50
-                top_p: 0.9
+  # Generation parameters
+  generation:
+    min_length: 20
+    output_min_length: 20
+    output_max_length: 50
+    do_sample: true
+    top_k: 50
+    top_p: 0.9
 
 # Training parameters
 training:
