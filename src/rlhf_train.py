@@ -174,7 +174,6 @@ def train_rlhf(cfg: DictConfig) -> None:
         tokenizer=tokenizer,
         policy=model,
         ref_policy=ref_model,
-        reward_model=reward_model,
         train_dataset=train_dataset,
         data_collator=collator,
         optimizers=(optimizer, lr_scheduler),
