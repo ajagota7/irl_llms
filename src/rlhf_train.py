@@ -13,10 +13,8 @@ from datetime import datetime
 from torch.optim import Adam
 from tqdm import tqdm
 from trl import (
-    AutoModelForCausalLMWithValueHead,
     PPOv2Config,
-    PPOv2Trainer,
-    create_reference_model
+    PPOv2Trainer
 )
 from transformers import (
     AutoModelForCausalLM,
@@ -82,16 +80,18 @@ def train_rlhf(cfg: DictConfig) -> None:
     print(f"Train set: {len(train_dataset)} examples")
     print(f"Test set: {len(test_dataset)} examples")
     
-    # Load model and add value head
+    # Load model (PPOv2Trainer expects base model, not with value head)
     print(f"Loading model {cfg.model.name}...")
     model = AutoModelForCausalLM.from_pretrained(
         cfg.model.name,
         torch_dtype=torch.bfloat16
     )
-    model = AutoModelForCausalLMWithValueHead.from_pretrained(model)
     
-    # Create reference model
-    ref_model = create_reference_model(model)
+    # Create reference model (for PPOv2Trainer)
+    ref_model = AutoModelForCausalLM.from_pretrained(
+        cfg.model.name,
+        torch_dtype=torch.bfloat16
+    )
     
     # Create optimizer
     optimizer = Adam(
@@ -324,12 +324,12 @@ def train_rlhf(cfg: DictConfig) -> None:
             checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint-epoch-{epoch+1}")
             print(f"Saving model checkpoint to {checkpoint_path}")
             
-            if ppo_trainer.accelerator.is_main_process:
-                ppo_trainer.save_pretrained(checkpoint_path)
-                
-                # Save reward stats
-                reward_df = pd.DataFrame(reward_stats)
-                reward_df.to_csv(os.path.join(output_dir, "reward_stats.csv"), index=False)
+            # PPOv2Trainer doesn't have accelerator, just save directly
+            ppo_trainer.save_pretrained(checkpoint_path)
+            
+            # Save reward stats
+            reward_df = pd.DataFrame(reward_stats)
+            reward_df.to_csv(os.path.join(output_dir, "reward_stats.csv"), index=False)
         
         # Push checkpoint to Hub if enabled (separate from local saving)
         if cfg.output.push_to_hub and cfg.output.push_checkpoints_to_hub and (epoch + 1) % cfg.output.checkpoint_push_freq == 0:
@@ -339,10 +339,9 @@ def train_rlhf(cfg: DictConfig) -> None:
                     temp_checkpoint_path = os.path.join(checkpoint_dir, f"temp-checkpoint-epoch-{epoch+1}")
                     print(f"Creating temporary checkpoint for Hub push at {temp_checkpoint_path}")
                     
-                    if ppo_trainer.accelerator.is_main_process:
-                        # Save the model to the temporary path
-                        ppo_trainer.save_pretrained(temp_checkpoint_path)
-                        checkpoint_path = temp_checkpoint_path
+                    # PPOv2Trainer doesn't have accelerator, just save directly
+                    ppo_trainer.save_pretrained(temp_checkpoint_path)
+                    checkpoint_path = temp_checkpoint_path
                 else:
                     # Use the already saved checkpoint
                     checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint-epoch-{epoch+1}")
@@ -425,12 +424,12 @@ def train_rlhf(cfg: DictConfig) -> None:
     final_path = os.path.join(output_dir, "final-model")
     print(f"Saving final model to {final_path}")
     
-    if ppo_trainer.accelerator.is_main_process:
-        ppo_trainer.save_pretrained(final_path)
-        
-        # Save final reward stats
-        reward_df = pd.DataFrame(reward_stats)
-        reward_df.to_csv(os.path.join(output_dir, "final_reward_stats.csv"), index=False)
+    # PPOv2Trainer doesn't have accelerator, just save directly
+    ppo_trainer.save_pretrained(final_path)
+    
+    # Save final reward stats
+    reward_df = pd.DataFrame(reward_stats)
+    reward_df.to_csv(os.path.join(output_dir, "final_reward_stats.csv"), index=False)
         
         # Push to Hugging Face Hub if enabled
         if cfg.output.push_to_hub:
