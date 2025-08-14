@@ -273,37 +273,29 @@ def evaluate_toxicity(
         end_idx = min(start_idx + batch_size, len(eval_samples))
         batch_samples = eval_samples[start_idx:end_idx]
         
-        # Prepare batch queries with padding for equal sizes
-        batch_queries = []
-        max_length = 0
-        
-        # First pass: find the maximum length
-        for sample in batch_samples:
-            query_tensor = tokenizer(sample["query"], return_tensors="pt")
-            query_input_ids = query_tensor.input_ids.squeeze().to(device)
-            max_length = max(max_length, len(query_input_ids))
-            batch_queries.append(query_input_ids)
-        
-        # Second pass: pad all queries to the same length
-        padded_queries = []
-        for query_input_ids in batch_queries:
-            if len(query_input_ids) < max_length:
-                # Pad with pad_token_id
-                padding_length = max_length - len(query_input_ids)
-                padding = torch.full((padding_length,), tokenizer.pad_token_id, device=device)
-                padded_query = torch.cat([query_input_ids, padding], dim=0)
-            else:
-                padded_query = query_input_ids
-            padded_queries.append(padded_query)
-        
-        # Stack queries for batched generation
+        # Prepare batch queries for evaluation
         try:
-            # PPO trainer expects a list of tensors, not a stacked tensor
-            # Generate responses in batch by processing each query individually
-            response_tensors = []
-            for query_input_ids in padded_queries:
-                response_tensor = ppo_trainer.generate(query_input_ids, **gen_kwargs)
-                response_tensors.append(response_tensor.squeeze())
+            # TRUE BATCHED GENERATION for evaluation
+            with torch.no_grad():
+                ppo_trainer.model.gradient_checkpointing_disable()
+                
+                # Prepare queries for batched generation
+                eval_queries = []
+                for sample in batch_samples:
+                    query_tensor = tokenizer(sample["query"], return_tensors="pt")
+                    query_input_ids = query_tensor.input_ids.squeeze().to(device)
+                    eval_queries.append(query_input_ids)
+                
+                # Use the trainer's built-in batched generation
+                response_tensors = ppo_trainer.generate(
+                    query_tensor=eval_queries,
+                    return_prompt=False,
+                    use_cache=True,
+                    batch_size=len(eval_queries),
+                    **gen_kwargs
+                )
+                
+                ppo_trainer.model.gradient_checkpointing_enable()
             
         except Exception as e:
             print(f"Error in batched evaluation: {e}")

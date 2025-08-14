@@ -15,7 +15,7 @@ from tqdm import tqdm
 from trl import (
     AutoModelForCausalLMWithValueHead,
     PPOConfig,
-    PPOTrainer,
+    PPOv2Trainer,
     create_reference_model
 )
 from transformers import (
@@ -84,7 +84,10 @@ def train_rlhf(cfg: DictConfig) -> None:
     
     # Load model and add value head
     print(f"Loading model {cfg.model.name}...")
-    model = AutoModelForCausalLM.from_pretrained(cfg.model.name)
+    model = AutoModelForCausalLM.from_pretrained(
+        cfg.model.name,
+        torch_dtype=torch.bfloat16
+    )
     model = AutoModelForCausalLMWithValueHead.from_pretrained(model)
     
     # Create reference model
@@ -152,7 +155,7 @@ def train_rlhf(cfg: DictConfig) -> None:
     ppo_config = PPOConfig(**ppo_params)
     
     # Create PPO trainer
-    ppo_trainer = PPOTrainer(
+    ppo_trainer = PPOv2Trainer(
         config=ppo_config,
         model=model,
         ref_model=ref_model,
@@ -215,77 +218,40 @@ def train_rlhf(cfg: DictConfig) -> None:
         # Process batch
         query_tensors = batch["input_ids"]
         
-        # Get response from policy model - BATCHED GENERATION FOR 5-10x SPEEDUP
-        # Prepare queries with padding for equal sizes
-        device = ppo_trainer.accelerator.device
+        # Get response from policy model - TRUE BATCHED GENERATION FOR 5-10x SPEEDUP
+        # CRITICAL: Disable gradient checkpointing and use no_grad for maximum speed
         
-        try:
-            # Find the maximum length in the batch
-            max_length = max(len(query.squeeze()) for query in query_tensors)
-            
-            # Pad all queries to the same length
-            padded_queries = []
-            for query in query_tensors:
-                query_squeezed = query.squeeze()
-                if len(query_squeezed) < max_length:
-                    # Pad with pad_token_id
-                    padding_length = max_length - len(query_squeezed)
-                    padding = torch.full((padding_length,), tokenizer.pad_token_id, device=device)
-                    padded_query = torch.cat([query_squeezed, padding], dim=0)
-                else:
-                    padded_query = query_squeezed
-                padded_queries.append(padded_query)
-            
-            # Prepare queries for generation (PPO trainer expects individual tensors)
-            
-        except Exception as e:
-            print(f"Error in batch preparation: {e}")
-            print("Falling back to sequential generation...")
-            
-            # Fallback to sequential generation if batching fails
-            response_tensors = []
-            for query in query_tensors:
-                gen_len = cfg.model.generation.output_max_length
-                generation_kwargs = {
-                    "min_length": cfg.model.generation.min_length,
-                    "top_k": cfg.model.generation.top_k,
-                    "top_p": cfg.model.generation.top_p,
-                    "do_sample": cfg.model.generation.do_sample,
-                    "pad_token_id": tokenizer.eos_token_id,
-                    "max_new_tokens": gen_len
-                }
-                
-                query_squeezed = query.squeeze()
-                response = ppo_trainer.generate(query_squeezed, **generation_kwargs)
-                response_tensors.append(response.squeeze()[-gen_len:])
-            
-            batch["response"] = [tokenizer.decode(r.squeeze()) for r in response_tensors]
-            
-            # Skip the rest of the batched processing
-            continue
+        # Debug: Monitor GPU usage
+        if epoch % 10 == 0:
+            print(f"\nEpoch {epoch} - GPU Memory Before Generation: {torch.cuda.memory_allocated()/1e9:.2f}GB")
         
-        # Use fixed generation length for batch processing (use max length for consistency)
-        generation_kwargs = {
-            "min_length": cfg.model.generation.min_length,
-            "top_k": cfg.model.generation.top_k,
-            "top_p": cfg.model.generation.top_p,
-            "do_sample": cfg.model.generation.do_sample,
-            "pad_token_id": tokenizer.eos_token_id,
-            "max_new_tokens": cfg.model.generation.output_max_length
-        }
+        with torch.no_grad():
+            ppo_trainer.model.gradient_checkpointing_disable()
+            
+            # Use the trainer's built-in batched generation - NO MORE LOOPS!
+            response_tensors = ppo_trainer.generate(
+                query_tensor=query_tensors,  # Pass the list directly
+                return_prompt=False,
+                use_cache=True,
+                batch_size=len(query_tensors),  # Use full batch
+                max_new_tokens=cfg.model.generation.output_max_length,
+                min_length=cfg.model.generation.min_length,
+                top_k=cfg.model.generation.top_k,
+                top_p=cfg.model.generation.top_p,
+                do_sample=cfg.model.generation.do_sample,
+                pad_token_id=tokenizer.eos_token_id,
+            )
+            
+            # Re-enable gradient checkpointing for training
+            ppo_trainer.model.gradient_checkpointing_enable()
         
-        # PPO trainer expects individual tensors, not a stacked tensor
-        # Generate responses for each query (still optimized approach)
-        response_tensors = []
-        for query_input_ids in padded_queries:
-            response_tensor = ppo_trainer.generate(query_input_ids, **generation_kwargs)
-            response_tensors.append(response_tensor.squeeze())
+        # Debug: Monitor GPU usage after generation
+        if epoch % 10 == 0:
+            print(f"Epoch {epoch} - GPU Memory After Generation: {torch.cuda.memory_allocated()/1e9:.2f}GB")
+            print(f"Epoch {epoch} - Batch Size: {len(query_tensors)}, Response Shape: {response_tensors.shape if hasattr(response_tensors, 'shape') else 'list'}")
         
-        # Extract the generated parts (last max_new_tokens tokens for each response)
-        max_new_tokens = cfg.model.generation.output_max_length
-        response_tensors = [response[-max_new_tokens:] for response in response_tensors]
-        
-        batch["response"] = [tokenizer.decode(r.squeeze()) for r in response_tensors]
+        # Decode responses
+        batch["response"] = [tokenizer.decode(r, skip_special_tokens=True) for r in response_tensors]
         
         # Compute toxicity scores as rewards
         texts = batch["response"]
