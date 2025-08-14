@@ -21,14 +21,14 @@ model:
   reward_model: "s-nlp/roberta_toxicity_classifier"
   use_raw_logits: true
   
-  # Optimized generation parameters for speed
-  generation:
-    min_length: 5
-    output_min_length: 5
-    output_max_length: 10
-    do_sample: false
-    top_k: 0.0
-    top_p: 1.0
+                # Original generation parameters (with sampling)
+              generation:
+                min_length: 20
+                output_min_length: 20
+                output_max_length: 50
+                do_sample: true
+                top_k: 50
+                top_p: 0.9
 
 # Training parameters
 training:
