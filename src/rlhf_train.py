@@ -14,7 +14,8 @@ from torch.optim import Adam
 from tqdm import tqdm
 from trl import (
     PPOConfig,
-    PPOTrainer
+    PPOTrainer,
+    AutoModelForCausalLMWithValueHead
 )
 from transformers import (
     AutoModelForCausalLM,
@@ -80,18 +81,24 @@ def train_rlhf(cfg: DictConfig) -> None:
     print(f"Train set: {len(train_dataset)} examples")
     print(f"Test set: {len(test_dataset)} examples")
     
-    # Load model (PPOv2Trainer expects base model, not with value head)
+    # Load model (PPOTrainer expects model with value head)
     print(f"Loading model {cfg.model.name}...")
     model = AutoModelForCausalLM.from_pretrained(
         cfg.model.name,
         torch_dtype=torch.bfloat16
     )
     
-    # Create reference model (for PPOv2Trainer)
+    # Wrap model with value head for PPOTrainer
+    model = AutoModelForCausalLMWithValueHead.from_pretrained(model)
+    
+    # Create reference model (for PPOTrainer)
     ref_model = AutoModelForCausalLM.from_pretrained(
         cfg.model.name,
         torch_dtype=torch.bfloat16
     )
+    
+    # Wrap reference model with value head
+    ref_model = AutoModelForCausalLMWithValueHead.from_pretrained(ref_model)
     
     # Create optimizer
     optimizer = Adam(
