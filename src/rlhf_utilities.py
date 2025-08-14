@@ -264,74 +264,48 @@ def evaluate_toxicity(
     toxicity_scores = []
     generations = []
     
-    # Process samples in batches for reward model evaluation, but generate one by one for PPO trainer
-    batch_size = 16  # For reward model batching
-    all_responses = []
-    
-    # First, generate all responses (one by one for PPO trainer compatibility)
-    for sample in tqdm(eval_samples, desc=f"Generating (epoch {epoch})"):
+    for sample in tqdm(eval_samples, desc=f"Evaluating (epoch {epoch})"):
         query = sample["query"]
         
-        # Tokenize the query - PPO trainer expects individual tensors
+        # Tokenize the query - PPO trainer expects a list of input_ids, not a tensor
         query_tensor = tokenizer(query, return_tensors="pt")
-        query_input_ids = query_tensor.input_ids.squeeze().to(device)
+        query_input_ids = query_tensor.input_ids.squeeze().to(device)  # Convert to 1D tensor
         
         # Generate response
         response_tensor = ppo_trainer.generate(query_input_ids, **gen_kwargs)
         response = tokenizer.decode(response_tensor[0], skip_special_tokens=True)
-        all_responses.append(response)
-    
-    # Now calculate toxicity in batches for efficiency
-    for i in tqdm(range(0, len(all_responses), batch_size), desc=f"Evaluating toxicity (epoch {epoch})"):
-        batch_responses = all_responses[i:i + batch_size]
         
-        # Calculate toxicity for entire batch
-        reward_inputs = reward_tokenizer(
-            batch_responses, 
-            return_tensors="pt", 
-            padding=True, 
-            truncation=True
-        ).to(device)
-        
+        # Calculate toxicity
+        inputs = reward_tokenizer(response, return_tensors="pt").to(device)
         with torch.no_grad():
             try:
-                reward_outputs = reward_model(**reward_inputs)
+                outputs = reward_model(**inputs)
                 
                 # Handle different model output formats
-                if hasattr(reward_outputs, 'logits'):
-                    logits = reward_outputs.logits
+                if hasattr(outputs, 'logits'):
+                    logits = outputs.logits
                     if logits.shape[1] == 1:  # Single value output
-                        batch_toxicity = logits.squeeze().cpu().tolist()
+                        toxicity = logits[0][0].item()
                     else:  # Classification output (typically 2 classes)
-                        batch_toxicity = torch.sigmoid(logits)[:, 0].cpu().tolist()
+                        toxicity = torch.sigmoid(logits)[0][0].item()
                 else:
                     # Direct value output
-                    batch_toxicity = reward_outputs.squeeze().cpu().tolist()
+                    toxicity = outputs[0].item()
                 
-                # Handle single item case
-                if not isinstance(batch_toxicity, list):
-                    batch_toxicity = [batch_toxicity]
-                
-                # Check for NaN or inf and replace with default
-                for j, toxicity in enumerate(batch_toxicity):
-                    if np.isnan(toxicity) or np.isinf(toxicity):
-                        print(f"Warning: Got {toxicity} toxicity score, using default 0.5")
-                        batch_toxicity[j] = 0.5
-                        
+                # Check for NaN or inf
+                if np.isnan(toxicity) or np.isinf(toxicity):
+                    print(f"Warning: Got {toxicity} toxicity score, using default 0.5")
+                    toxicity = 0.5
             except Exception as e:
-                print(f"Error calculating toxicity for batch: {e}")
-                batch_toxicity = [0.5] * len(batch_responses)  # Default values
+                print(f"Error calculating toxicity: {e}")
+                toxicity = 0.5  # Default value
         
-        # Store results
-        toxicity_scores.extend(batch_toxicity)
-        
-        # Create generation records
-        for j, (sample, response, toxicity) in enumerate(zip(eval_samples[i:i + batch_size], batch_responses, batch_toxicity)):
-            generations.append({
-                "query": sample["query"],
-                "response": response,
-                "toxicity": toxicity
-            })
+        toxicity_scores.append(toxicity)
+        generations.append({
+            "query": query,
+            "response": response,
+            "toxicity": toxicity
+        })
     
     # Calculate average toxicity
     avg_toxicity = sum(toxicity_scores) / len(toxicity_scores)
