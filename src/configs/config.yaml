@@ -1,6 +1,6 @@
 # Base configuration for irl_llms
 defaults:
-  - rlhf: pythia_70m  # Default to pythia_70m config
+  - rlhf: smolLM_135m  # Default to smolLM_135m config
   - irl: pythia_70m
   - _self_
 
