@@ -21,14 +21,14 @@ model:
   reward_model: "s-nlp/roberta_toxicity_classifier"
   use_raw_logits: true
   
-                # Original generation parameters (with sampling)
-              generation:
-                min_length: 20
-                output_min_length: 20
-                output_max_length: 50
-                do_sample: true
-                top_k: 50
-                top_p: 0.9
+  # Original generation parameters (with sampling)
+  generation:
+    min_length: 20
+    output_min_length: 20
+    output_max_length: 50
+    do_sample: true
+    top_k: 50
+    top_p: 0.9
 
 # Training parameters
 training:
@@ -59,6 +59,6 @@ wandb:
 
 # Acceleration settings
 acceleration:
-  mixed_precision: "fp16"    # Enable mixed precision
-  gradient_clipping: 1.0     # Enable gradient clipping
-  use_flash_attention: true  # Enable flash attention if available 
+  mixed_precision: "fp16"
+  gradient_clipping: 1.0
+  use_flash_attention: true 
