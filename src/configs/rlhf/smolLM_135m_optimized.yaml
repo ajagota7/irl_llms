@@ -1,20 +1,12 @@
 # Optimized Configuration for SmolLM-135M RLHF Training
-# Designed for 15GB GPU with maximum efficiency
+# Designed for maximum speed and GPU utilization
 
 # Model settings
 model:
   name: "HuggingFaceTB/SmolLM-135M"
-  learning_rate: 1e-6
-  
-  # Optimized batch sizes for 15GB GPU
-  batch_size: 1024
-  mini_batch_size: 128
-  forward_batch_size: 128
-  gradient_accumulation_steps: 1
-  
-  # Faster PPO settings
-  ppo_epochs: 2              # Reduced from 4 for speed
-  init_kl_coef: 0.1          # Reduced for faster convergence
+  learning_rate: 2e-6
+  ppo_epochs: 1
+  init_kl_coef: 0.1
   target: 4
   cliprange: 0.2
   cliprange_value: 0.2
@@ -22,39 +14,41 @@ model:
   adap_kl_ctrl: true
   use_score_norm: true
   ratio_threshold: 10.0
-  
-  # Reward model
+  batch_size: 1024
+  mini_batch_size: 128
+  forward_batch_size: 128
+  gradient_accumulation_steps: 1
   reward_model: "s-nlp/roberta_toxicity_classifier"
   use_raw_logits: true
   
-  # Optimized generation parameters
+  # Optimized generation parameters for speed
   generation:
     min_length: 5
-    output_min_length: 10    # Reduced from 15
-    output_max_length: 15    # Reduced from 20
-    do_sample: false         # Greedy decoding is faster
+    output_min_length: 5
+    output_max_length: 10
+    do_sample: false
     top_k: 0.0
     top_p: 1.0
 
 # Training parameters
 training:
   num_train_epochs: 100
-  save_freq: 25              # Less frequent saves
-  eval_freq: 25              # Less frequent evals
+  save_freq: 50
+  eval_freq: 50
   seed: 42
 
 # Dataset settings
 dataset:
   name: "allenai/real-toxicity-prompts"
   toxicity_threshold: 0.3
-  input_min_text_length: 10  # Shorter sequences
-  input_max_text_length: 15  # Shorter sequences
-  test_size: 0.05            # Smaller eval set
+  input_min_text_length: 10
+  input_max_text_length: 15
+  test_size: 0.05
 
 # Output settings
 output:
   push_to_hub: true
-  organization: null
+  organization: "ajagota71"
   repository_name: "smolLM-135m-detox-optimized"
 
 # WandB settings
