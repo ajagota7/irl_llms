@@ -136,15 +136,6 @@ def train_rlhf(cfg: DictConfig) -> None:
     ppo_params["mini_batch_size"] = mini_batch_size
     ppo_params["gradient_accumulation_steps"] = gradient_accumulation_steps
 
-    # Debug: Print the actual batch parameters being used
-    print(f"🔧 PPO Batch Parameters:")
-    print(f"   - batch_size: {batch_size}")
-    print(f"   - mini_batch_size: {mini_batch_size}")
-    print(f"   - gradient_accumulation_steps: {gradient_accumulation_steps}")
-    print(f"   - effective_batch_size: {batch_size * gradient_accumulation_steps}")
-    print(f"   - samples_per_ppo_step: {mini_batch_size}")
-    print(f"   - ppo_steps_per_epoch: {len(train_dataset) // batch_size}")
-
     # Add PPO-specific parameters from RLHF config if available
     if hasattr(cfg.rlhf, 'model'):
         rlhf_model = cfg.rlhf.model

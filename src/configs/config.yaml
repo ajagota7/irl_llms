@@ -20,18 +20,18 @@ mode: "train"  # "generate_dataset", "train", or "all"
 # Model settings (base defaults that can be overridden by specific configs)
 model:
   name: null
-  learning_rate: 2e-6
-  batch_size: 1024
-  mini_batch_size: 128
-  forward_batch_size: 128
-  gradient_accumulation_steps: 1
+  learning_rate: 1e-5
+  batch_size: 128
+  mini_batch_size: 8
+  forward_batch_size: 8
+  gradient_accumulation_steps: 8
   reward_model: null
   use_raw_logits: true
   
   # PPO specific settings
-  ppo_epochs: 1
-  init_kl_coef: 0.1
-  target: 4
+  ppo_epochs: 4
+  init_kl_coef: 0.2
+  target: 6
   cliprange: 0.2
   cliprange_value: 0.2
   vf_coef: 0.1
@@ -41,34 +41,34 @@ model:
   
   # Generation parameters
   generation:
-    min_length: 20
-    output_min_length: 20
-    output_max_length: 50
+    min_length: 5
+    output_min_length: 15
+    output_max_length: 20
     do_sample: true
-    top_k: 50
-    top_p: 0.9
+    top_k: 0.0
+    top_p: 1.0
 
 # Training parameters
 training:
   num_train_epochs: 100
-  save_freq: 50
-  eval_freq: 50
+  save_freq: 20
+  eval_freq: 20
   seed: 42
 
 # Dataset settings
 dataset:
   name: null
   toxicity_threshold: 0.3
-  input_min_text_length: 10
-  input_max_text_length: 15
-  test_size: 0.05
+  input_min_text_length: 15
+  input_max_text_length: 20
+  test_size: 0.1
 
 # Output settings
 output:
   push_to_hub: true
   push_checkpoints_to_hub: true  # Whether to push checkpoints during training
-  checkpoint_push_freq: 50  # How often to push checkpoints (in epochs)
-  organization: "ajagota71"
+  checkpoint_push_freq: 20  # How often to push checkpoints (in epochs)
+  organization: null
   repository_name: null
   private: false  # Whether repositories should be private
 

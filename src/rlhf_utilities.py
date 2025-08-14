@@ -326,8 +326,8 @@ def evaluate_toxicity(
     plt.grid(True, alpha=0.3)
     
     # Save plot
-    plot_file = os.path.join(eval_dir, f"toxicity_distribution_epoch_{epoch}.png")
-    plt.savefig(plot_file, dpi=300, bbox_inches='tight')
+    plot_file = os.path.join(eval_dir, f"toxicity_dist_epoch_{epoch}.png")
+    plt.savefig(plot_file)
     plt.close()
     
     return avg_toxicity, generations
