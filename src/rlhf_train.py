@@ -430,47 +430,47 @@ def train_rlhf(cfg: DictConfig) -> None:
     # Save final reward stats
     reward_df = pd.DataFrame(reward_stats)
     reward_df.to_csv(os.path.join(output_dir, "final_reward_stats.csv"), index=False)
+    
+    # Push to Hugging Face Hub if enabled
+    if cfg.output.push_to_hub:
+        # Determine repository name
+        if cfg.output.repository_name:
+            repo_name = cfg.output.repository_name
+        else:
+            model_short_name = cfg.model.name.split('/')[-1]
+            repo_name = f"{model_short_name}-detox"
         
-        # Push to Hugging Face Hub if enabled
-        if cfg.output.push_to_hub:
-            # Determine repository name
-            if cfg.output.repository_name:
-                repo_name = cfg.output.repository_name
-            else:
-                model_short_name = cfg.model.name.split('/')[-1]
-                repo_name = f"{model_short_name}-detox"
+        # Prepare repository ID
+        repo_id = f"{cfg.output.organization}/{repo_name}" if cfg.output.organization else repo_name
+        
+        print(f"Pushing final model to Hugging Face Hub: {repo_id}")
+        
+        # Save model and tokenizer
+        model.save_pretrained(final_path)
+        tokenizer.save_pretrained(final_path)
+        
+        # Save config file
+        with open(os.path.join(final_path, "rlhf_config.yaml"), "w") as f:
+            f.write(OmegaConf.to_yaml(cfg))
+        
+        # Push to Hub
+        try:
+            api = HfApi()
             
-            # Prepare repository ID
-            repo_id = f"{cfg.output.organization}/{repo_name}" if cfg.output.organization else repo_name
+            # Check if the repository exists, create it if it doesn't
+            if not api.repo_exists(repo_id=repo_id):
+                api.create_repo(repo_id=repo_id, private=False)
             
-            print(f"Pushing final model to Hugging Face Hub: {repo_id}")
-            
-            # Save model and tokenizer
-            model.save_pretrained(final_path)
-            tokenizer.save_pretrained(final_path)
-            
-            # Save config file
-            with open(os.path.join(final_path, "rlhf_config.yaml"), "w") as f:
-                f.write(OmegaConf.to_yaml(cfg))
-            
-            # Push to Hub
-            try:
-                api = HfApi()
-                
-                # Check if the repository exists, create it if it doesn't
-                if not api.repo_exists(repo_id=repo_id):
-                    api.create_repo(repo_id=repo_id, private=False)
-                
-                # Upload the folder
-                api.upload_folder(
-                    folder_path=final_path,
-                    repo_id=repo_id,
-                    commit_message="Final model after RLHF training"
-                )
-                print(f"Successfully pushed model to {repo_id}")
-            except Exception as e:
-                print(f"Error pushing to Hugging Face Hub: {str(e)}")
-                print("Continuing without pushing to Hub.")
+            # Upload the folder
+            api.upload_folder(
+                folder_path=final_path,
+                repo_id=repo_id,
+                commit_message="Final model after RLHF training"
+            )
+            print(f"Successfully pushed model to {repo_id}")
+        except Exception as e:
+            print(f"Error pushing to Hugging Face Hub: {str(e)}")
+            print("Continuing without pushing to Hub.")
     
     # Final evaluation
     final_toxicity, _ = evaluate_toxicity(
