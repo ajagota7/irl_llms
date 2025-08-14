@@ -243,7 +243,7 @@ def evaluate_toxicity(
     eval_dir = os.path.join(output_dir, "evaluation")
     os.makedirs(eval_dir, exist_ok=True)
     
-    device = ppo_trainer.accelerator.device
+    device = next(ppo_trainer.policy.parameters()).device
     
     # Sample a subset of the dataset for evaluation
     eval_size = min(100, len(dataset))
@@ -277,7 +277,7 @@ def evaluate_toxicity(
         try:
             # TRUE BATCHED GENERATION for evaluation
             with torch.no_grad():
-                ppo_trainer.model.gradient_checkpointing_disable()
+                ppo_trainer.policy.gradient_checkpointing_disable()
                 
                 # Prepare queries for batched generation
                 eval_queries = []
@@ -295,7 +295,7 @@ def evaluate_toxicity(
                     **gen_kwargs
                 )
                 
-                ppo_trainer.model.gradient_checkpointing_enable()
+                ppo_trainer.policy.gradient_checkpointing_enable()
             
         except Exception as e:
             print(f"Error in batched evaluation: {e}")

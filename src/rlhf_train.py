@@ -14,7 +14,7 @@ from torch.optim import Adam
 from tqdm import tqdm
 from trl import (
     AutoModelForCausalLMWithValueHead,
-    PPOConfig,
+    PPOv2Config,
     PPOv2Trainer,
     create_reference_model
 )
@@ -152,25 +152,25 @@ def train_rlhf(cfg: DictConfig) -> None:
             ppo_params["ratio_threshold"] = rlhf_model.ratio_threshold
     
     # Create PPO config
-    ppo_config = PPOConfig(**ppo_params)
+    ppo_config = PPOv2Config(**ppo_params)
+    
+    # Load toxicity model first (needed for PPOv2Trainer)
+    print(f"Loading toxicity model {cfg.model.reward_model}...")
+    reward_model, reward_tokenizer = load_reward_model(
+        cfg.model.reward_model,
+        "cuda" if torch.cuda.is_available() else "cpu"
+    )
     
     # Create PPO trainer
     ppo_trainer = PPOv2Trainer(
         config=ppo_config,
-        model=model,
-        ref_model=ref_model,
         tokenizer=tokenizer,
-        dataset=train_dataset,
+        policy=model,
+        ref_policy=ref_model,
+        reward_model=reward_model,
+        train_dataset=train_dataset,
         data_collator=collator,
-        optimizer=optimizer,
-        lr_scheduler=lr_scheduler,
-    )
-    
-    # Load toxicity model
-    print(f"Loading toxicity model {cfg.model.reward_model}...")
-    reward_model, reward_tokenizer = load_reward_model(
-        cfg.model.reward_model,
-        ppo_trainer.accelerator.device
+        optimizers=(optimizer, lr_scheduler),
     )
     
     # Setup generation parameters (fixed length for batch processing)
@@ -226,7 +226,7 @@ def train_rlhf(cfg: DictConfig) -> None:
             print(f"\nEpoch {epoch} - GPU Memory Before Generation: {torch.cuda.memory_allocated()/1e9:.2f}GB")
         
         with torch.no_grad():
-            ppo_trainer.model.gradient_checkpointing_disable()
+            ppo_trainer.policy.gradient_checkpointing_disable()
             
             # Use the trainer's built-in batched generation - NO MORE LOOPS!
             response_tensors = ppo_trainer.generate(
@@ -243,7 +243,7 @@ def train_rlhf(cfg: DictConfig) -> None:
             )
             
             # Re-enable gradient checkpointing for training
-            ppo_trainer.model.gradient_checkpointing_enable()
+            ppo_trainer.policy.gradient_checkpointing_enable()
         
         # Debug: Monitor GPU usage after generation
         if epoch % 10 == 0:
@@ -255,18 +255,19 @@ def train_rlhf(cfg: DictConfig) -> None:
         
         # Compute toxicity scores as rewards
         texts = batch["response"]
+        device = next(ppo_trainer.policy.parameters()).device
         toxicity_inputs = reward_tokenizer(
             texts,
             padding=True,
             truncation=True,
             return_tensors="pt"
-        ).to(ppo_trainer.accelerator.device)
+        ).to(device)
         
         # Use safe reward computation
         raw_values = safe_reward_computation(
             reward_model, 
             toxicity_inputs, 
-            ppo_trainer.accelerator.device
+            device
         )
         
         # Calculate rewards based on configuration
@@ -530,11 +531,11 @@ def safe_generate(ppo_trainer, query, generation_kwargs):
                 
                 # Create a minimal valid response as last resort
                 # Just return the input with a simple completion
-                device = ppo_trainer.accelerator.device
-                if hasattr(ppo_trainer.model, 'pretrained_model'):
-                    vocab_size = ppo_trainer.model.pretrained_model.config.vocab_size
+                device = next(ppo_trainer.policy.parameters()).device
+                if hasattr(ppo_trainer.policy, 'pretrained_model'):
+                    vocab_size = ppo_trainer.policy.pretrained_model.config.vocab_size
                 else:
-                    vocab_size = ppo_trainer.model.config.vocab_size
+                    vocab_size = ppo_trainer.policy.config.vocab_size
                 
                 # Get the token IDs for a simple completion like " is"
                 simple_tokens = ppo_trainer.tokenizer(" is", add_special_tokens=False).input_ids
@@ -596,7 +597,7 @@ def safe_log_stats(ppo_trainer, stats, batch, rewards):
                 'rewards/mean': clean_stats.get('rewards/mean', 0.0),
                 'current_epoch': clean_stats.get('current_epoch', 0)
             }
-            ppo_trainer.accelerator.log(minimal_stats)
+            # PPOv2Trainer doesn't have accelerator.log, use a different approach
             print(f"Logged minimal stats: {minimal_stats}")
         except Exception as e2:
             print(f"Even minimal logging failed: {e2}")
