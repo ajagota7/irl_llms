@@ -129,7 +129,6 @@ def train_rlhf(cfg: DictConfig) -> None:
     
     # Add some default PPOv2Config parameters
     ppo_params["sft_model_path"] = cfg.model.name
-    ppo_params["reward_model_path"] = cfg.model.reward_model
     ppo_params["temperature"] = 0.7
     ppo_params["response_length"] = cfg.model.generation.output_max_length
 
@@ -157,13 +156,24 @@ def train_rlhf(cfg: DictConfig) -> None:
         "cuda" if torch.cuda.is_available() else "cpu"
     )
     
+    # Debug: Check that all models are properly loaded
+    print(f"Debug - Model loaded: {model is not None}")
+    print(f"Debug - Ref model loaded: {ref_model is not None}")
+    print(f"Debug - Reward model loaded: {reward_model is not None}")
+    
+    if model is None:
+        raise ValueError("Policy model is None - failed to load")
+    if ref_model is None:
+        raise ValueError("Reference model is None - failed to load")
+    if reward_model is None:
+        raise ValueError("Reward model is None - failed to load")
+    
     # Create PPO trainer
     ppo_trainer = PPOv2Trainer(
         config=ppo_config,
         tokenizer=tokenizer,
         policy=model,
         ref_policy=ref_model,
-        reward_model=reward_model,
         train_dataset=train_dataset,
         data_collator=collator,
         optimizers=(optimizer, lr_scheduler),
