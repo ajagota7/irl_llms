@@ -109,7 +109,6 @@ def train_rlhf(cfg: DictConfig) -> None:
     
     # Get PPO parameters from RLHF config if they exist
     ppo_params = {
-        "model_name": cfg.model.name,
         "learning_rate": cfg.model.learning_rate,
         "log_with": "wandb" if wandb_run else None,
     }
@@ -124,32 +123,29 @@ def train_rlhf(cfg: DictConfig) -> None:
     if batch_size % (mini_batch_size * gradient_accumulation_steps) != 0:
         raise ValueError(f"Invalid batch configuration: batch_size={batch_size}, mini_batch_size={mini_batch_size}, gradient_accumulation_steps={gradient_accumulation_steps}. These must be perfectly divisible.")
     
-    # Add the optimized batch parameters
-    ppo_params["batch_size"] = batch_size
-    ppo_params["mini_batch_size"] = mini_batch_size
+    # Add the optimized batch parameters (PPOv2Config uses different names)
+    ppo_params["per_device_train_batch_size"] = mini_batch_size
     ppo_params["gradient_accumulation_steps"] = gradient_accumulation_steps
+    
+    # Add some default PPOv2Config parameters
+    ppo_params["sft_model_path"] = cfg.model.name
+    ppo_params["reward_model_path"] = cfg.model.reward_model
+    ppo_params["temperature"] = 0.7
+    ppo_params["response_length"] = cfg.model.generation.output_max_length
 
-    # Add PPO-specific parameters from RLHF config if available
+    # Add PPO-specific parameters from RLHF config if available (PPOv2Config uses different names)
     if hasattr(cfg.rlhf, 'model'):
         rlhf_model = cfg.rlhf.model
         if hasattr(rlhf_model, 'ppo_epochs'):
-            ppo_params["ppo_epochs"] = rlhf_model.ppo_epochs
+            ppo_params["num_ppo_epochs"] = rlhf_model.ppo_epochs
         if hasattr(rlhf_model, 'init_kl_coef'):
-            ppo_params["init_kl_coef"] = rlhf_model.init_kl_coef
-        if hasattr(rlhf_model, 'target'):
-            ppo_params["target"] = rlhf_model.target
+            ppo_params["kl_coef"] = rlhf_model.init_kl_coef
         if hasattr(rlhf_model, 'cliprange'):
             ppo_params["cliprange"] = rlhf_model.cliprange
         if hasattr(rlhf_model, 'cliprange_value'):
             ppo_params["cliprange_value"] = rlhf_model.cliprange_value
         if hasattr(rlhf_model, 'vf_coef'):
             ppo_params["vf_coef"] = rlhf_model.vf_coef
-        if hasattr(rlhf_model, 'adap_kl_ctrl'):
-            ppo_params["adap_kl_ctrl"] = rlhf_model.adap_kl_ctrl
-        if hasattr(rlhf_model, 'use_score_norm'):
-            ppo_params["use_score_norm"] = rlhf_model.use_score_norm
-        if hasattr(rlhf_model, 'ratio_threshold'):
-            ppo_params["ratio_threshold"] = rlhf_model.ratio_threshold
     
     # Create PPO config
     ppo_config = PPOv2Config(**ppo_params)

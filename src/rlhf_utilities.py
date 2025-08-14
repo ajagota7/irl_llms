@@ -258,6 +258,8 @@ def evaluate_toxicity(
         "do_sample": config.model.generation.do_sample,
         "pad_token_id": tokenizer.pad_token_id,
         "max_new_tokens": config.model.generation.output_max_length,
+        "use_cache": True,
+        "return_prompt": False,
     }
     
     # Generate responses and calculate toxicity - BATCHED FOR SPEEDUP
