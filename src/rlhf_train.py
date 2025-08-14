@@ -110,7 +110,7 @@ def train_rlhf(cfg: DictConfig) -> None:
     # Get PPO parameters from RLHF config if they exist
     ppo_params = {
         "learning_rate": cfg.model.learning_rate,
-        "log_with": "wandb" if wandb_run else None,
+        "report_to": ["wandb"] if wandb_run else None,
     }
     
     # GPU-optimized batch parameters (pre-calculated for optimal performance)
