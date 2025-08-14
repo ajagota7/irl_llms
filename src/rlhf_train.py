@@ -118,13 +118,13 @@ def train_rlhf(cfg: DictConfig) -> None:
     batch_size = cfg.model.batch_size
     mini_batch_size = cfg.model.mini_batch_size
     gradient_accumulation_steps = cfg.model.gradient_accumulation_steps
-    
+
     # Verify the configuration is optimal (should always pass with our config)
     if batch_size % (mini_batch_size * gradient_accumulation_steps) != 0:
         raise ValueError(f"Invalid batch configuration: batch_size={batch_size}, mini_batch_size={mini_batch_size}, gradient_accumulation_steps={gradient_accumulation_steps}. These must be perfectly divisible.")
     
     # Add the optimized batch parameters (PPOConfig uses different names)
-    ppo_params["batch_size"] = mini_batch_size
+    ppo_params["batch_size"] = batch_size  # Use the full batch size
     ppo_params["mini_batch_size"] = mini_batch_size
     ppo_params["gradient_accumulation_steps"] = gradient_accumulation_steps
 
