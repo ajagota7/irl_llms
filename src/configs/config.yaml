@@ -1,6 +1,6 @@
 # Base configuration for irl_llms
 defaults:
-  - rlhf: smolLM_135m  # Default to smolLM_135m config
+  - rlhf: pythia_70m  # Default to pythia_70m config
   - irl: pythia_70m
   - _self_
 
@@ -17,6 +17,52 @@ output_dir: ${hydra:runtime.cwd}/outputs/${now:%Y-%m-%d_%H-%M-%S}
 # Mode to run (top-level)
 mode: "train"  # "generate_dataset", "train", or "all"
 
+# Model settings (base defaults that can be overridden by specific configs)
+model:
+  name: null
+  learning_rate: 1e-5
+  batch_size: 128
+  mini_batch_size: 8
+  forward_batch_size: 8
+  gradient_accumulation_steps: 8
+  reward_model: null
+  use_raw_logits: true
+  
+  # PPO specific settings
+  ppo_epochs: 4
+  init_kl_coef: 0.2
+  target: 6
+  cliprange: 0.2
+  cliprange_value: 0.2
+  vf_coef: 0.1
+  adap_kl_ctrl: true
+  use_score_norm: true
+  ratio_threshold: 10.0
+  
+  # Generation parameters
+  generation:
+    min_length: 5
+    output_min_length: 15
+    output_max_length: 20
+    do_sample: true
+    top_k: 0.0
+    top_p: 1.0
+
+# Training parameters
+training:
+  num_train_epochs: 100
+  save_freq: 20
+  eval_freq: 20
+  seed: 42
+
+# Dataset settings
+dataset:
+  name: null
+  toxicity_threshold: 0.3
+  input_min_text_length: 15
+  input_max_text_length: 20
+  test_size: 0.1
+
 # Output settings
 output:
   push_to_hub: true
@@ -31,3 +77,75 @@ wandb:
   project: "irl_llms"
   entity: null
   name: null
+
+
+# IRL base settings
+irl:
+  # Mode to run
+  mode: "train"  # "generate_dataset", "train", or "all"
+  
+  # Dataset settings
+  dataset:
+    original_model_name: "EleutherAI/pythia-70M"  # Model that generated the original toxic completions
+    detoxified_model_name: "ajagota71/pythia-70m-detox-epoch-100"  # Model that generated the detoxified completions
+    original_dataset_path: null  # Path to the original toxic dataset
+    detoxified_dataset_path: null  # Path to the detoxified dataset
+    cache_dir: ${hydra:runtime.cwd}/datasets
+    custom_dataset_name: null  # Custom name for the dataset (optional, will use default naming if null)
+    num_samples: 1000
+    max_new_tokens: 30
+    batch_size: 16
+    temperature: 0.7
+    top_p: 1.0
+    seed: ${seed}
+    use_cached: false
+    toxicity_threshold: 0.3
+    push_to_hub: false
+    hub_org: null
+    hub_token: ${oc.env:HF_TOKEN,null}
+    private: false
+    use_half_precision: null
+  
+  # Model settings
+  model:
+    reward_model_base: null  # Base model for the reward model
+    use_half_precision: null  # Auto-determined
+    num_unfrozen_layers: 1
+  
+  # Training parameters
+  training:
+    irl_method: "max_margin"  # "max_margin" or "max_entropy"
+    learning_rate: 1e-5
+    epochs: 20
+    batch_size: 4
+    eval_interval: 5
+    max_length: 512
+    train_test_split: 0.8
+    grad_clip: 1.0
+    weight_decay: 0.01
+    margin: 0.1  # For max_margin
+    temperature: 0.1  # For max_entropy
+    adam_epsilon: 1e-8
+    seed: ${seed}
+    include_prompt: true
+  
+  # Evaluation settings
+  evaluation:
+    true_reward_model: "s-nlp/roberta_toxicity_classifier"
+  
+  # Output settings
+  output:
+    base_dir: ${hydra:runtime.cwd}/outputs/irl
+    save_checkpoints: true
+    checkpoint_interval: 5  # Save checkpoints at epoch 0 and every N epochs
+    push_to_hub: false
+    push_checkpoints_to_hub: true  # Whether to push checkpoints to hub
+    hub_org: "ajagota71"
+    repo_name_prefix: "irl-reward-model"
+    private: false
+  
+  # Logging settings
+  logging:
+    project_name: "irl-detoxification"
+    use_wandb: true
+    wandb_mode: "online"  # "online", "offline", or "disabled"

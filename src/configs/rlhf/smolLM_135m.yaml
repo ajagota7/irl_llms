@@ -1,4 +1,4 @@
-# Configuration for SmolLM-135M RLHF with Optimizations
+# Configuration for Pythia-160M RLHF
 
 # Model settings
 model:
@@ -13,18 +13,10 @@ model:
   adap_kl_ctrl: true
   use_score_norm: true
   ratio_threshold: 10.0
-  
-  # OPTIMIZED BATCH SIZES - Pre-calculated for efficiency
-  # These will be overridden by automatic calculation based on GPU memory
-  batch_size: 128  # Will be auto-adjusted based on GPU memory
-  mini_batch_size: 32  # Will be auto-adjusted
-  gradient_accumulation_steps: 4  # Will be auto-adjusted
+  batch_size: 256
+  mini_batch_size: 32
   forward_batch_size: 32
-  
-  # Memory optimization settings
-  use_gradient_checkpointing: true
-  use_mixed_precision: true  # Enable bfloat16/fp16 training
-  
+  gradient_accumulation_steps: 1
   reward_model: "s-nlp/roberta_toxicity_classifier"
   use_raw_logits: true
   
@@ -43,11 +35,6 @@ training:
   save_freq: 20
   eval_freq: 20
   seed: 42
-  
-  # Optimization settings
-  use_async_io: true  # Enable async checkpoint saving and evaluation
-  data_loader_workers: 4  # Number of data loading workers
-  pin_memory: true  # Pin memory for faster GPU transfer
 
 # Dataset settings
 dataset:
@@ -56,21 +43,12 @@ dataset:
   input_min_text_length: 15
   input_max_text_length: 20
   test_size: 0.1
-  
-  # Data loading optimizations
-  use_caching: true
-  cache_dir: "./dataset_cache"
-  batch_processing: true
 
 # Output settings
 output:
   push_to_hub: true
   organization: null
   repository_name: "smolLM-135m-detox"
-  
-  # Async I/O settings
-  async_checkpoint_saving: true
-  async_evaluation: true
 
 # WandB settings
 wandb:
