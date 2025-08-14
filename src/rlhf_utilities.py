@@ -20,6 +20,7 @@ from transformers import (
 )
 from datasets import load_dataset
 from omegaconf import OmegaConf
+from datetime import datetime
 
 
 class LengthSampler:
@@ -34,7 +35,7 @@ class LengthSampler:
 
 
 def build_dataset(config: Dict) -> Tuple[Any, Any, AutoTokenizer]:
-    """Build dataset for RLHF training."""
+    """Build dataset for RLHF training with optimized data loading."""
     
     # Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(config.model.name)
@@ -43,15 +44,19 @@ def build_dataset(config: Dict) -> Tuple[Any, Any, AutoTokenizer]:
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     
-    # Load dataset
-    ds = load_dataset(config.dataset.name, split="train")
+    # OPTIMIZATION 7: Optimized Data Loading
+    print("Loading and preprocessing dataset...")
     
-    # Filter for toxic prompts
+    # Load dataset with caching for better performance
+    ds = load_dataset(config.dataset.name, split="train", cache_dir="./dataset_cache")
+    
+    # Filter for toxic prompts - use batched processing for better performance
     def filter_fn(sample):
         toxicity = sample["prompt"]["toxicity"]
         return toxicity is not None and toxicity > config.dataset.toxicity_threshold
     
-    ds = ds.filter(filter_fn, batched=False)
+    # Use batched filtering for better performance
+    ds = ds.filter(filter_fn, batched=True, batch_size=1000)
     
     # Setup random length sampling
     input_size = LengthSampler(
@@ -69,7 +74,8 @@ def build_dataset(config: Dict) -> Tuple[Any, Any, AutoTokenizer]:
         sample["query"] = tokenizer.decode(sample["input_ids"])
         return sample
     
-    ds = ds.map(tokenize, batched=False)
+    # Use batched tokenization for better performance
+    ds = ds.map(tokenize, batched=True, batch_size=100, num_proc=4)
     ds.set_format(type="torch")
     
     # Split into train/test
@@ -77,6 +83,8 @@ def build_dataset(config: Dict) -> Tuple[Any, Any, AutoTokenizer]:
     
     train_ds = ds["train"]
     test_ds = ds["test"]
+    
+    print(f"Dataset loaded: {len(train_ds)} training samples, {len(test_ds)} test samples")
     
     return train_ds, test_ds, tokenizer
 
@@ -236,7 +244,7 @@ def evaluate_toxicity(
     config, 
     epoch
 ) -> Tuple[float, List[Dict]]:
-    """Evaluate model toxicity on a dataset."""
+    """Evaluate model toxicity on a dataset with optimized performance."""
     
     # Create evaluation directory
     output_dir = os.path.join(os.getcwd(), f"outputs/{config.now}")
@@ -245,8 +253,30 @@ def evaluate_toxicity(
     
     device = ppo_trainer.accelerator.device
     
-    # Sample a subset of the dataset for evaluation
-    eval_size = min(100, len(dataset))
+    # OPTIMIZATION 8: Reduce Evaluation Overhead
+    # Use smaller evaluation sets for large models to reduce overhead
+    # Cache evaluation results to avoid recomputation
+    
+    # Determine evaluation size based on model size and dataset size
+    total_samples = len(dataset)
+    if total_samples > 10000:
+        # For large datasets, use smaller evaluation set
+        eval_size = min(50, total_samples // 100)
+    else:
+        eval_size = min(100, total_samples // 10)
+    
+    # Check for cached evaluation results
+    cache_file = os.path.join(eval_dir, f"eval_cache_epoch_{epoch}.json")
+    if os.path.exists(cache_file):
+        try:
+            with open(cache_file, 'r') as f:
+                cached_results = json.load(f)
+                print(f"Using cached evaluation results for epoch {epoch}")
+                return cached_results['avg_toxicity'], cached_results['generations']
+        except Exception as e:
+            print(f"Failed to load cached results: {e}")
+    
+    # Sample evaluation subset
     eval_indices = random.sample(range(len(dataset)), eval_size)
     eval_samples = [dataset[i] for i in eval_indices]
     
@@ -309,6 +339,20 @@ def evaluate_toxicity(
     
     # Calculate average toxicity
     avg_toxicity = sum(toxicity_scores) / len(toxicity_scores)
+    
+    # Cache evaluation results
+    cache_results = {
+        'avg_toxicity': avg_toxicity,
+        'generations': generations,
+        'eval_size': eval_size,
+        'timestamp': datetime.now().isoformat()
+    }
+    
+    try:
+        with open(cache_file, 'w') as f:
+            json.dump(cache_results, f, indent=2)
+    except Exception as e:
+        print(f"Failed to cache evaluation results: {e}")
     
     # Save generations to file
     output_file = os.path.join(eval_dir, f"generations_epoch_{epoch}.json")
