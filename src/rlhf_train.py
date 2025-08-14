@@ -13,9 +13,10 @@ from datetime import datetime
 from torch.optim import Adam
 from tqdm import tqdm
 from trl import (
+    AutoModelForCausalLMWithValueHead,
     PPOConfig,
     PPOTrainer,
-    AutoModelForCausalLMWithValueHead
+    create_reference_model
 )
 from transformers import (
     AutoModelForCausalLM,
@@ -81,24 +82,13 @@ def train_rlhf(cfg: DictConfig) -> None:
     print(f"Train set: {len(train_dataset)} examples")
     print(f"Test set: {len(test_dataset)} examples")
     
-    # Load model (PPOTrainer expects model with value head)
+    # Load model and add value head
     print(f"Loading model {cfg.model.name}...")
-    model = AutoModelForCausalLM.from_pretrained(
-        cfg.model.name,
-        torch_dtype=torch.bfloat16
-    )
-    
-    # Wrap model with value head for PPOTrainer
+    model = AutoModelForCausalLM.from_pretrained(cfg.model.name)
     model = AutoModelForCausalLMWithValueHead.from_pretrained(model)
     
-    # Create reference model (for PPOTrainer)
-    ref_model = AutoModelForCausalLM.from_pretrained(
-        cfg.model.name,
-        torch_dtype=torch.bfloat16
-    )
-    
-    # Wrap reference model with value head
-    ref_model = AutoModelForCausalLMWithValueHead.from_pretrained(ref_model)
+    # Create reference model
+    ref_model = create_reference_model(model)
     
     # Create optimizer
     optimizer = Adam(
@@ -116,67 +106,60 @@ def train_rlhf(cfg: DictConfig) -> None:
     
     # Get PPO parameters from RLHF config if they exist
     ppo_params = {
+        "model_name": cfg.model.name,
         "learning_rate": cfg.model.learning_rate,
-        "log_with": ["wandb"] if wandb_run else None,
+        "log_with": "wandb" if wandb_run else None,
     }
     
-    # GPU-optimized batch parameters (pre-calculated for optimal performance)
-    # These values are carefully chosen to be powers of 2 and perfectly divisible
+    # Handle batch size parameters to ensure they're compatible
     batch_size = cfg.model.batch_size
     mini_batch_size = cfg.model.mini_batch_size
     gradient_accumulation_steps = cfg.model.gradient_accumulation_steps
 
-    # Verify the configuration is optimal (should always pass with our config)
+    # Ensure batch_size is a multiple of mini_batch_size * gradient_accumulation_steps
     if batch_size % (mini_batch_size * gradient_accumulation_steps) != 0:
-        raise ValueError(f"Invalid batch configuration: batch_size={batch_size}, mini_batch_size={mini_batch_size}, gradient_accumulation_steps={gradient_accumulation_steps}. These must be perfectly divisible.")
-    
-    # Add the optimized batch parameters (PPOConfig uses different names)
-    ppo_params["batch_size"] = batch_size  # Use the full batch size
+        # Option 1: Adjust mini_batch_size to make it work
+        if batch_size >= gradient_accumulation_steps:
+            new_mini_batch_size = batch_size // gradient_accumulation_steps
+            print(f"Warning: Adjusting mini_batch_size from {mini_batch_size} to {new_mini_batch_size} to ensure compatibility with batch_size={batch_size}")
+            mini_batch_size = new_mini_batch_size
+        # Option 2: If that's not possible, adjust gradient_accumulation_steps
+        else:
+            new_gradient_accumulation_steps = 1
+            new_mini_batch_size = batch_size
+            print(f"Warning: Adjusting gradient_accumulation_steps from {gradient_accumulation_steps} to {new_gradient_accumulation_steps} and mini_batch_size from {mini_batch_size} to {new_mini_batch_size} to ensure compatibility with batch_size={batch_size}")
+            gradient_accumulation_steps = new_gradient_accumulation_steps
+            mini_batch_size = new_mini_batch_size
+
+    # Add the adjusted batch parameters
+    ppo_params["batch_size"] = batch_size
     ppo_params["mini_batch_size"] = mini_batch_size
     ppo_params["gradient_accumulation_steps"] = gradient_accumulation_steps
 
-    # Add some default PPOConfig parameters
-    ppo_params["model_name"] = cfg.model.name
-    ppo_params["target"] = 6
-    ppo_params["adap_kl_ctrl"] = True
-    ppo_params["use_score_norm"] = True
-    ppo_params["ratio_threshold"] = 10.0
-    
-    # Add PPO-specific parameters from RLHF config if available (PPOConfig uses different names)
+    # Add PPO-specific parameters from RLHF config if available
     if hasattr(cfg.rlhf, 'model'):
         rlhf_model = cfg.rlhf.model
         if hasattr(rlhf_model, 'ppo_epochs'):
             ppo_params["ppo_epochs"] = rlhf_model.ppo_epochs
         if hasattr(rlhf_model, 'init_kl_coef'):
             ppo_params["init_kl_coef"] = rlhf_model.init_kl_coef
+        if hasattr(rlhf_model, 'target'):
+            ppo_params["target"] = rlhf_model.target
         if hasattr(rlhf_model, 'cliprange'):
             ppo_params["cliprange"] = rlhf_model.cliprange
         if hasattr(rlhf_model, 'cliprange_value'):
             ppo_params["cliprange_value"] = rlhf_model.cliprange_value
         if hasattr(rlhf_model, 'vf_coef'):
             ppo_params["vf_coef"] = rlhf_model.vf_coef
+        if hasattr(rlhf_model, 'adap_kl_ctrl'):
+            ppo_params["adap_kl_ctrl"] = rlhf_model.adap_kl_ctrl
+        if hasattr(rlhf_model, 'use_score_norm'):
+            ppo_params["use_score_norm"] = rlhf_model.use_score_norm
+        if hasattr(rlhf_model, 'ratio_threshold'):
+            ppo_params["ratio_threshold"] = rlhf_model.ratio_threshold
     
     # Create PPO config
     ppo_config = PPOConfig(**ppo_params)
-    
-    # Load toxicity model first (needed for PPOv2Trainer)
-    print(f"Loading toxicity model {cfg.model.reward_model}...")
-    reward_model, reward_tokenizer = load_reward_model(
-        cfg.model.reward_model,
-        "cuda" if torch.cuda.is_available() else "cpu"
-    )
-    
-    # Debug: Check that all models are properly loaded
-    print(f"Debug - Model loaded: {model is not None}")
-    print(f"Debug - Ref model loaded: {ref_model is not None}")
-    print(f"Debug - Reward model loaded: {reward_model is not None}")
-    
-    if model is None:
-        raise ValueError("Policy model is None - failed to load")
-    if ref_model is None:
-        raise ValueError("Reference model is None - failed to load")
-    if reward_model is None:
-        raise ValueError("Reward model is None - failed to load")
     
     # Create PPO trainer
     ppo_trainer = PPOTrainer(
@@ -190,8 +173,18 @@ def train_rlhf(cfg: DictConfig) -> None:
         lr_scheduler=lr_scheduler,
     )
     
-    # Setup generation parameters (fixed length for batch processing)
-    print(f"Using fixed generation length: {cfg.model.generation.output_max_length} tokens for optimal batch performance")
+    # Load toxicity model
+    print(f"Loading toxicity model {cfg.model.reward_model}...")
+    reward_model, reward_tokenizer = load_reward_model(
+        cfg.model.reward_model,
+        ppo_trainer.accelerator.device
+    )
+    
+    # Setup generation parameters
+    output_length_sampler = LengthSampler(
+        cfg.model.generation.output_min_length,
+        cfg.model.generation.output_max_length
+    )
     
     # Initial evaluation
     print("Performing initial evaluation...")
@@ -235,56 +228,52 @@ def train_rlhf(cfg: DictConfig) -> None:
         # Process batch
         query_tensors = batch["input_ids"]
         
-        # Get response from policy model - TRUE BATCHED GENERATION FOR 5-10x SPEEDUP
-        # CRITICAL: Disable gradient checkpointing and use no_grad for maximum speed
-        
-        # Debug: Monitor GPU usage
-        if epoch % 10 == 0:
-            print(f"\nEpoch {epoch} - GPU Memory Before Generation: {torch.cuda.memory_allocated()/1e9:.2f}GB")
-        
-        with torch.no_grad():
-            ppo_trainer.model.gradient_checkpointing_disable()
+        # Get response from policy model
+        response_tensors = []
+        for query in query_tensors:
+            gen_len = output_length_sampler()
+            generation_kwargs = {
+                "min_length": cfg.model.generation.min_length,
+                "top_k": cfg.model.generation.top_k,
+                "top_p": cfg.model.generation.top_p,
+                "do_sample": cfg.model.generation.do_sample,
+                "pad_token_id": tokenizer.eos_token_id,
+                "max_new_tokens": gen_len
+            }
             
-            # Use the trainer's built-in batched generation - NO MORE LOOPS!
-            response_tensors = ppo_trainer.generate(
-                query_tensor=query_tensors,  # Pass the list directly
-                return_prompt=False,
-                use_cache=True,
-                batch_size=len(query_tensors),  # Use full batch
-                max_new_tokens=cfg.model.generation.output_max_length,
-                min_length=cfg.model.generation.min_length,
-                top_k=cfg.model.generation.top_k,
-                top_p=cfg.model.generation.top_p,
-                do_sample=cfg.model.generation.do_sample,
-                pad_token_id=tokenizer.eos_token_id,
-            )
+            # Make sure query is 1D
+            query = query.squeeze()
             
-            # Re-enable gradient checkpointing for training
-            ppo_trainer.model.gradient_checkpointing_enable()
+            # Use safe generation instead of direct generation
+            response = safe_generate(ppo_trainer, query, generation_kwargs)
+            
+            # Extract the generated part (last gen_len tokens)
+            if response.size(1) >= gen_len:
+                response_tensors.append(response.squeeze()[-gen_len:])
+            else:
+                # If response is shorter than expected, pad it
+                padding = torch.full((gen_len - response.size(1),), 
+                                    tokenizer.pad_token_id, 
+                                    device=response.device)
+                padded_response = torch.cat([response.squeeze(), padding], dim=0)
+                response_tensors.append(padded_response[-gen_len:])
         
-        # Debug: Monitor GPU usage after generation
-        if epoch % 10 == 0:
-            print(f"Epoch {epoch} - GPU Memory After Generation: {torch.cuda.memory_allocated()/1e9:.2f}GB")
-            print(f"Epoch {epoch} - Batch Size: {len(query_tensors)}, Response Shape: {response_tensors.shape if hasattr(response_tensors, 'shape') else 'list'}")
-        
-        # Decode responses
-        batch["response"] = [tokenizer.decode(r, skip_special_tokens=True) for r in response_tensors]
+        batch["response"] = [tokenizer.decode(r.squeeze()) for r in response_tensors]
         
         # Compute toxicity scores as rewards
         texts = batch["response"]
-        device = next(ppo_trainer.model.parameters()).device
         toxicity_inputs = reward_tokenizer(
             texts,
             padding=True,
             truncation=True,
             return_tensors="pt"
-        ).to(device)
+        ).to(ppo_trainer.accelerator.device)
         
         # Use safe reward computation
         raw_values = safe_reward_computation(
             reward_model, 
             toxicity_inputs, 
-            device
+            ppo_trainer.accelerator.device
         )
         
         # Calculate rewards based on configuration
@@ -306,8 +295,6 @@ def train_rlhf(cfg: DictConfig) -> None:
                 else x for x in softmax_toxicity_labels
             ]
             rewards = [torch.tensor(output) for output in softmax_toxicity_labels]
-            # Use softmax_toxicity_labels for NaN counting in this case
-            raw_toxicity_labels = softmax_toxicity_labels
         
         # Calculate statistics for logging
         rewards_tensor = torch.tensor([r.item() for r in rewards])
@@ -345,12 +332,12 @@ def train_rlhf(cfg: DictConfig) -> None:
             checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint-epoch-{epoch+1}")
             print(f"Saving model checkpoint to {checkpoint_path}")
             
-            # PPOv2Trainer doesn't have accelerator, just save directly
-            ppo_trainer.save_pretrained(checkpoint_path)
-            
-            # Save reward stats
-            reward_df = pd.DataFrame(reward_stats)
-            reward_df.to_csv(os.path.join(output_dir, "reward_stats.csv"), index=False)
+            if ppo_trainer.accelerator.is_main_process:
+                ppo_trainer.save_pretrained(checkpoint_path)
+                
+                # Save reward stats
+                reward_df = pd.DataFrame(reward_stats)
+                reward_df.to_csv(os.path.join(output_dir, "reward_stats.csv"), index=False)
         
         # Push checkpoint to Hub if enabled (separate from local saving)
         if cfg.output.push_to_hub and cfg.output.push_checkpoints_to_hub and (epoch + 1) % cfg.output.checkpoint_push_freq == 0:
@@ -360,9 +347,10 @@ def train_rlhf(cfg: DictConfig) -> None:
                     temp_checkpoint_path = os.path.join(checkpoint_dir, f"temp-checkpoint-epoch-{epoch+1}")
                     print(f"Creating temporary checkpoint for Hub push at {temp_checkpoint_path}")
                     
-                    # PPOv2Trainer doesn't have accelerator, just save directly
-                    ppo_trainer.save_pretrained(temp_checkpoint_path)
-                    checkpoint_path = temp_checkpoint_path
+                    if ppo_trainer.accelerator.is_main_process:
+                        # Save the model to the temporary path
+                        ppo_trainer.save_pretrained(temp_checkpoint_path)
+                        checkpoint_path = temp_checkpoint_path
                 else:
                     # Use the already saved checkpoint
                     checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint-epoch-{epoch+1}")
@@ -445,53 +433,53 @@ def train_rlhf(cfg: DictConfig) -> None:
     final_path = os.path.join(output_dir, "final-model")
     print(f"Saving final model to {final_path}")
     
-    # PPOv2Trainer doesn't have accelerator, just save directly
-    ppo_trainer.save_pretrained(final_path)
-    
-    # Save final reward stats
-    reward_df = pd.DataFrame(reward_stats)
-    reward_df.to_csv(os.path.join(output_dir, "final_reward_stats.csv"), index=False)
-    
-    # Push to Hugging Face Hub if enabled
-    if cfg.output.push_to_hub:
-        # Determine repository name
-        if cfg.output.repository_name:
-            repo_name = cfg.output.repository_name
-        else:
-            model_short_name = cfg.model.name.split('/')[-1]
-            repo_name = f"{model_short_name}-detox"
+    if ppo_trainer.accelerator.is_main_process:
+        ppo_trainer.save_pretrained(final_path)
         
-        # Prepare repository ID
-        repo_id = f"{cfg.output.organization}/{repo_name}" if cfg.output.organization else repo_name
+        # Save final reward stats
+        reward_df = pd.DataFrame(reward_stats)
+        reward_df.to_csv(os.path.join(output_dir, "final_reward_stats.csv"), index=False)
         
-        print(f"Pushing final model to Hugging Face Hub: {repo_id}")
-        
-        # Save model and tokenizer
-        model.save_pretrained(final_path)
-        tokenizer.save_pretrained(final_path)
-        
-        # Save config file
-        with open(os.path.join(final_path, "rlhf_config.yaml"), "w") as f:
-            f.write(OmegaConf.to_yaml(cfg))
-        
-        # Push to Hub
-        try:
-            api = HfApi()
+        # Push to Hugging Face Hub if enabled
+        if cfg.output.push_to_hub:
+            # Determine repository name
+            if cfg.output.repository_name:
+                repo_name = cfg.output.repository_name
+            else:
+                model_short_name = cfg.model.name.split('/')[-1]
+                repo_name = f"{model_short_name}-detox"
             
-            # Check if the repository exists, create it if it doesn't
-            if not api.repo_exists(repo_id=repo_id):
-                api.create_repo(repo_id=repo_id, private=False)
+            # Prepare repository ID
+            repo_id = f"{cfg.output.organization}/{repo_name}" if cfg.output.organization else repo_name
             
-            # Upload the folder
-            api.upload_folder(
-                folder_path=final_path,
-                repo_id=repo_id,
-                commit_message="Final model after RLHF training"
-            )
-            print(f"Successfully pushed model to {repo_id}")
-        except Exception as e:
-            print(f"Error pushing to Hugging Face Hub: {str(e)}")
-            print("Continuing without pushing to Hub.")
+            print(f"Pushing final model to Hugging Face Hub: {repo_id}")
+            
+            # Save model and tokenizer
+            model.save_pretrained(final_path)
+            tokenizer.save_pretrained(final_path)
+            
+            # Save config file
+            with open(os.path.join(final_path, "rlhf_config.yaml"), "w") as f:
+                f.write(OmegaConf.to_yaml(cfg))
+            
+            # Push to Hub
+            try:
+                api = HfApi()
+                
+                # Check if the repository exists, create it if it doesn't
+                if not api.repo_exists(repo_id=repo_id):
+                    api.create_repo(repo_id=repo_id, private=False)
+                
+                # Upload the folder
+                api.upload_folder(
+                    folder_path=final_path,
+                    repo_id=repo_id,
+                    commit_message="Final model after RLHF training"
+                )
+                print(f"Successfully pushed model to {repo_id}")
+            except Exception as e:
+                print(f"Error pushing to Hugging Face Hub: {str(e)}")
+                print("Continuing without pushing to Hub.")
     
     # Final evaluation
     final_toxicity, _ = evaluate_toxicity(
@@ -547,7 +535,7 @@ def safe_generate(ppo_trainer, query, generation_kwargs):
                 
                 # Create a minimal valid response as last resort
                 # Just return the input with a simple completion
-                device = next(ppo_trainer.model.parameters()).device
+                device = ppo_trainer.accelerator.device
                 if hasattr(ppo_trainer.model, 'pretrained_model'):
                     vocab_size = ppo_trainer.model.pretrained_model.config.vocab_size
                 else:
@@ -613,7 +601,7 @@ def safe_log_stats(ppo_trainer, stats, batch, rewards):
                 'rewards/mean': clean_stats.get('rewards/mean', 0.0),
                 'current_epoch': clean_stats.get('current_epoch', 0)
             }
-            # PPOv2Trainer doesn't have accelerator.log, use a different approach
+            ppo_trainer.accelerator.log(minimal_stats)
             print(f"Logged minimal stats: {minimal_stats}")
         except Exception as e2:
             print(f"Even minimal logging failed: {e2}")

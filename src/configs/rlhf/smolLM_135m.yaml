@@ -13,11 +13,10 @@ model:
   adap_kl_ctrl: true
   use_score_norm: true
   ratio_threshold: 10.0
-  # GPU-optimized batch sizes (powers of 2 for optimal GPU utilization)
-  batch_size: 128  # Reduced for better memory efficiency
-  mini_batch_size: 16  # Power of 2, divides batch_size evenly
-  forward_batch_size: 16  # Match mini_batch_size for consistency
-  gradient_accumulation_steps: 8  # 128/16 = 8, ensures perfect division
+  batch_size: 256
+  mini_batch_size: 32
+  forward_batch_size: 32
+  gradient_accumulation_steps: 1
   reward_model: "s-nlp/roberta_toxicity_classifier"
   use_raw_logits: true
   

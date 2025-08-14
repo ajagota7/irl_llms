@@ -243,7 +243,7 @@ def evaluate_toxicity(
     eval_dir = os.path.join(output_dir, "evaluation")
     os.makedirs(eval_dir, exist_ok=True)
     
-    device = next(ppo_trainer.model.parameters()).device
+    device = ppo_trainer.accelerator.device
     
     # Sample a subset of the dataset for evaluation
     eval_size = min(100, len(dataset))
@@ -258,94 +258,54 @@ def evaluate_toxicity(
         "do_sample": config.model.generation.do_sample,
         "pad_token_id": tokenizer.pad_token_id,
         "max_new_tokens": config.model.generation.output_max_length,
-        "use_cache": True,
-        "return_prompt": False,
     }
     
-    # Generate responses and calculate toxicity - BATCHED FOR SPEEDUP
+    # Generate responses and calculate toxicity
     toxicity_scores = []
     generations = []
     
-    # Process in batches for optimal GPU utilization
-    batch_size = 16  # Small batch size for evaluation to avoid memory issues
-    num_batches = (len(eval_samples) + batch_size - 1) // batch_size
-    
-    for batch_idx in tqdm(range(num_batches), desc=f"Evaluating (epoch {epoch})"):
-        start_idx = batch_idx * batch_size
-        end_idx = min(start_idx + batch_size, len(eval_samples))
-        batch_samples = eval_samples[start_idx:end_idx]
+    for sample in tqdm(eval_samples, desc=f"Evaluating (epoch {epoch})"):
+        query = sample["query"]
         
-        # Prepare batch queries for evaluation
-        try:
-            # TRUE BATCHED GENERATION for evaluation
-            with torch.no_grad():
-                ppo_trainer.model.gradient_checkpointing_disable()
-                
-                # Prepare queries for batched generation
-                eval_queries = []
-                for sample in batch_samples:
-                    query_tensor = tokenizer(sample["query"], return_tensors="pt")
-                    query_input_ids = query_tensor.input_ids.squeeze().to(device)
-                    eval_queries.append(query_input_ids)
-                
-                # Use the trainer's built-in batched generation
-                response_tensors = ppo_trainer.generate(
-                    query_tensor=eval_queries,
-                    return_prompt=False,
-                    use_cache=True,
-                    batch_size=len(eval_queries),
-                    **gen_kwargs
-                )
-                
-                ppo_trainer.model.gradient_checkpointing_enable()
-            
-        except Exception as e:
-            print(f"Error in batched evaluation: {e}")
-            print("Falling back to sequential evaluation...")
-            
-            # Fallback to sequential generation if batching fails
-            response_tensors = []
-            for sample in batch_samples:
-                query_tensor = tokenizer(sample["query"], return_tensors="pt")
-                query_input_ids = query_tensor.input_ids.squeeze().to(device)
-                response_tensor = ppo_trainer.generate(query_input_ids, **gen_kwargs)
-                response_tensors.append(response_tensor.squeeze())
+        # Tokenize the query - PPO trainer expects a list of input_ids, not a tensor
+        query_tensor = tokenizer(query, return_tensors="pt")
+        query_input_ids = query_tensor.input_ids.squeeze().to(device)  # Convert to 1D tensor
         
-        # Process each response in the batch
-        for i, (sample, response_tensor) in enumerate(zip(batch_samples, response_tensors)):
-            response = tokenizer.decode(response_tensor, skip_special_tokens=True)
-            
-            # Calculate toxicity
-            inputs = reward_tokenizer(response, return_tensors="pt").to(device)
-            with torch.no_grad():
-                try:
-                    outputs = reward_model(**inputs)
-                    
-                    # Handle different model output formats
-                    if hasattr(outputs, 'logits'):
-                        logits = outputs.logits
-                        if logits.shape[1] == 1:  # Single value output
-                            toxicity = logits[0][0].item()
-                        else:  # Classification output (typically 2 classes)
-                            toxicity = torch.sigmoid(logits)[0][0].item()
-                    else:
-                        # Direct value output
-                        toxicity = outputs[0].item()
-                    
-                    # Check for NaN or inf
-                    if np.isnan(toxicity) or np.isinf(toxicity):
-                        print(f"Warning: Got {toxicity} toxicity score, using default 0.5")
-                        toxicity = 0.5
-                except Exception as e:
-                    print(f"Error calculating toxicity: {e}")
-                    toxicity = 0.5  # Default value
-            
-            toxicity_scores.append(toxicity)
-            generations.append({
-                "query": sample["query"],
-                "response": response,
-                "toxicity": toxicity
-            })
+        # Generate response
+        response_tensor = ppo_trainer.generate(query_input_ids, **gen_kwargs)
+        response = tokenizer.decode(response_tensor[0], skip_special_tokens=True)
+        
+        # Calculate toxicity
+        inputs = reward_tokenizer(response, return_tensors="pt").to(device)
+        with torch.no_grad():
+            try:
+                outputs = reward_model(**inputs)
+                
+                # Handle different model output formats
+                if hasattr(outputs, 'logits'):
+                    logits = outputs.logits
+                    if logits.shape[1] == 1:  # Single value output
+                        toxicity = logits[0][0].item()
+                    else:  # Classification output (typically 2 classes)
+                        toxicity = torch.sigmoid(logits)[0][0].item()
+                else:
+                    # Direct value output
+                    toxicity = outputs[0].item()
+                
+                # Check for NaN or inf
+                if np.isnan(toxicity) or np.isinf(toxicity):
+                    print(f"Warning: Got {toxicity} toxicity score, using default 0.5")
+                    toxicity = 0.5
+            except Exception as e:
+                print(f"Error calculating toxicity: {e}")
+                toxicity = 0.5  # Default value
+        
+        toxicity_scores.append(toxicity)
+        generations.append({
+            "query": query,
+            "response": response,
+            "toxicity": toxicity
+        })
     
     # Calculate average toxicity
     avg_toxicity = sum(toxicity_scores) / len(toxicity_scores)
