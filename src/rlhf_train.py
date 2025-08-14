@@ -13,8 +13,8 @@ from datetime import datetime
 from torch.optim import Adam
 from tqdm import tqdm
 from trl import (
-    PPOv2Config,
-    PPOv2Trainer
+    PPOConfig,
+    PPOTrainer
 )
 from transformers import (
     AutoModelForCausalLM,
@@ -123,22 +123,25 @@ def train_rlhf(cfg: DictConfig) -> None:
     if batch_size % (mini_batch_size * gradient_accumulation_steps) != 0:
         raise ValueError(f"Invalid batch configuration: batch_size={batch_size}, mini_batch_size={mini_batch_size}, gradient_accumulation_steps={gradient_accumulation_steps}. These must be perfectly divisible.")
     
-    # Add the optimized batch parameters (PPOv2Config uses different names)
-    ppo_params["per_device_train_batch_size"] = mini_batch_size
+    # Add the optimized batch parameters (PPOConfig uses different names)
+    ppo_params["batch_size"] = mini_batch_size
+    ppo_params["mini_batch_size"] = mini_batch_size
     ppo_params["gradient_accumulation_steps"] = gradient_accumulation_steps
-    
-    # Add some default PPOv2Config parameters
-    ppo_params["sft_model_path"] = cfg.model.name
-    ppo_params["temperature"] = 0.7
-    ppo_params["response_length"] = cfg.model.generation.output_max_length
 
-    # Add PPO-specific parameters from RLHF config if available (PPOv2Config uses different names)
+    # Add some default PPOConfig parameters
+    ppo_params["model_name"] = cfg.model.name
+    ppo_params["target"] = 6
+    ppo_params["adap_kl_ctrl"] = True
+    ppo_params["use_score_norm"] = True
+    ppo_params["ratio_threshold"] = 10.0
+    
+    # Add PPO-specific parameters from RLHF config if available (PPOConfig uses different names)
     if hasattr(cfg.rlhf, 'model'):
         rlhf_model = cfg.rlhf.model
         if hasattr(rlhf_model, 'ppo_epochs'):
-            ppo_params["num_ppo_epochs"] = rlhf_model.ppo_epochs
+            ppo_params["ppo_epochs"] = rlhf_model.ppo_epochs
         if hasattr(rlhf_model, 'init_kl_coef'):
-            ppo_params["kl_coef"] = rlhf_model.init_kl_coef
+            ppo_params["init_kl_coef"] = rlhf_model.init_kl_coef
         if hasattr(rlhf_model, 'cliprange'):
             ppo_params["cliprange"] = rlhf_model.cliprange
         if hasattr(rlhf_model, 'cliprange_value'):
@@ -147,7 +150,7 @@ def train_rlhf(cfg: DictConfig) -> None:
             ppo_params["vf_coef"] = rlhf_model.vf_coef
     
     # Create PPO config
-    ppo_config = PPOv2Config(**ppo_params)
+    ppo_config = PPOConfig(**ppo_params)
     
     # Load toxicity model first (needed for PPOv2Trainer)
     print(f"Loading toxicity model {cfg.model.reward_model}...")
@@ -168,31 +171,16 @@ def train_rlhf(cfg: DictConfig) -> None:
     if reward_model is None:
         raise ValueError("Reward model is None - failed to load")
     
-    # Create a simple reward model wrapper for PPOv2Trainer
-    class SimpleRewardModel(torch.nn.Module):
-        def __init__(self, base_reward_model, reward_tokenizer):
-            super().__init__()
-            self.base_reward_model = base_reward_model
-            self.reward_tokenizer = reward_tokenizer
-            
-        def forward(self, input_ids, attention_mask=None, **kwargs):
-            # This is a placeholder - PPOv2Trainer will call this but we'll compute rewards manually
-            batch_size = input_ids.shape[0]
-            return torch.zeros(batch_size, device=input_ids.device)
-    
-    # Create the wrapper reward model
-    simple_reward_model = SimpleRewardModel(reward_model, reward_tokenizer)
-    
     # Create PPO trainer
-    ppo_trainer = PPOv2Trainer(
+    ppo_trainer = PPOTrainer(
         config=ppo_config,
+        model=model,
+        ref_model=ref_model,
         tokenizer=tokenizer,
-        policy=model,
-        ref_policy=ref_model,
-        reward_model=simple_reward_model,
-        train_dataset=train_dataset,
+        dataset=train_dataset,
         data_collator=collator,
-        optimizers=(optimizer, lr_scheduler),
+        optimizer=optimizer,
+        lr_scheduler=lr_scheduler,
     )
     
     # Setup generation parameters (fixed length for batch processing)
@@ -248,7 +236,7 @@ def train_rlhf(cfg: DictConfig) -> None:
             print(f"\nEpoch {epoch} - GPU Memory Before Generation: {torch.cuda.memory_allocated()/1e9:.2f}GB")
         
         with torch.no_grad():
-            ppo_trainer.policy.gradient_checkpointing_disable()
+            ppo_trainer.model.gradient_checkpointing_disable()
             
             # Use the trainer's built-in batched generation - NO MORE LOOPS!
             response_tensors = ppo_trainer.generate(
@@ -265,7 +253,7 @@ def train_rlhf(cfg: DictConfig) -> None:
             )
             
             # Re-enable gradient checkpointing for training
-            ppo_trainer.policy.gradient_checkpointing_enable()
+            ppo_trainer.model.gradient_checkpointing_enable()
         
         # Debug: Monitor GPU usage after generation
         if epoch % 10 == 0:
@@ -277,7 +265,7 @@ def train_rlhf(cfg: DictConfig) -> None:
         
         # Compute toxicity scores as rewards
         texts = batch["response"]
-        device = next(ppo_trainer.policy.parameters()).device
+        device = next(ppo_trainer.model.parameters()).device
         toxicity_inputs = reward_tokenizer(
             texts,
             padding=True,
@@ -552,11 +540,11 @@ def safe_generate(ppo_trainer, query, generation_kwargs):
                 
                 # Create a minimal valid response as last resort
                 # Just return the input with a simple completion
-                device = next(ppo_trainer.policy.parameters()).device
-                if hasattr(ppo_trainer.policy, 'pretrained_model'):
-                    vocab_size = ppo_trainer.policy.pretrained_model.config.vocab_size
+                device = next(ppo_trainer.model.parameters()).device
+                if hasattr(ppo_trainer.model, 'pretrained_model'):
+                    vocab_size = ppo_trainer.model.pretrained_model.config.vocab_size
                 else:
-                    vocab_size = ppo_trainer.policy.config.vocab_size
+                    vocab_size = ppo_trainer.model.config.vocab_size
                 
                 # Get the token IDs for a simple completion like " is"
                 simple_tokens = ppo_trainer.tokenizer(" is", add_special_tokens=False).input_ids
