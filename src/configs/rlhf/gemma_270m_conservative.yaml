@@ -1,0 +1,63 @@
+# Conservative Configuration for Gemma-270M RLHF
+# This configuration uses smaller batch sizes and safer parameters
+
+# Model settings
+model:
+  name: "google/gemma-3-270m"
+  learning_rate: 5e-7  # Lower learning rate for stability
+  ppo_epochs: 2  # Fewer PPO epochs
+  init_kl_coef: 0.2  # Lower KL coefficient
+  target: 6  # Higher target for more conservative training
+  cliprange: 0.1  # Smaller clip range
+  cliprange_value: 0.1
+  vf_coef: 0.1
+  adap_kl_ctrl: true
+  use_score_norm: true
+  ratio_threshold: 10.0
+  batch_size: 32  # Smaller batch size
+  mini_batch_size: 1  # Smaller mini batch
+  forward_batch_size: 1
+  gradient_accumulation_steps: 32  # More gradient accumulation steps
+  reward_model: "s-nlp/roberta_toxicity_classifier"
+  use_raw_logits: true
+  
+  # Model loading parameters to fix TorchDynamo issues
+  attn_implementation: "eager"  # Recommended for Gemma3 models
+  torch_compile: false  # Disable TorchDynamo compilation
+  use_cache: true
+  
+  # Safer generation parameters
+  generation:
+    min_length: 5
+    output_min_length: 10  # Shorter outputs
+    output_max_length: 15  # Shorter max length
+    do_sample: false  # Use greedy decoding for stability
+    top_k: 0.0
+    top_p: 1.0
+
+# Training parameters
+training:
+  num_train_epochs: 50  # Fewer epochs for testing
+  save_freq: 10  # Save more frequently
+  eval_freq: 10  # Evaluate more frequently
+  seed: 42
+
+# Dataset settings
+dataset:
+  name: "allenai/real-toxicity-prompts"
+  toxicity_threshold: 0.3
+  input_min_text_length: 10  # Shorter inputs
+  input_max_text_length: 15
+  test_size: 0.1
+
+# Output settings
+output:
+  push_to_hub: true
+  organization: null
+  repository_name: "gemma-270m-detox-conservative"
+
+# WandB settings
+wandb:
+  project: "irl_llms"
+  entity: null
+  name: null 

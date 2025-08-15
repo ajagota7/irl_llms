@@ -12,6 +12,10 @@ from omegaconf import DictConfig, OmegaConf
 from datetime import datetime
 from torch.optim import Adam
 from tqdm import tqdm
+
+# Disable TorchDynamo compilation globally to avoid issues with Gemma3 models
+import torch._dynamo
+torch._dynamo.config.suppress_errors = True
 from trl import (
     AutoModelForCausalLMWithValueHead,
     PPOConfig,
@@ -84,7 +88,17 @@ def train_rlhf(cfg: DictConfig) -> None:
     
     # Load model and add value head
     print(f"Loading model {cfg.model.name}...")
-    model = AutoModelForCausalLM.from_pretrained(cfg.model.name)
+    
+    # Prepare model loading kwargs
+    model_kwargs = {}
+    if hasattr(cfg.model, 'attn_implementation'):
+        model_kwargs['attn_implementation'] = cfg.model.attn_implementation
+    if hasattr(cfg.model, 'torch_compile') and not cfg.model.torch_compile:
+        model_kwargs['torch_compile'] = False
+    if hasattr(cfg.model, 'use_cache'):
+        model_kwargs['use_cache'] = cfg.model.use_cache
+    
+    model = AutoModelForCausalLM.from_pretrained(cfg.model.name, **model_kwargs)
     model = AutoModelForCausalLMWithValueHead.from_pretrained(model)
     
     # Create reference model
