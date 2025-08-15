@@ -1,0 +1,60 @@
+# Configuration for SmolLM2-135M RLHF (optimized)
+
+# Model settings
+model:
+  name: "HuggingFaceTB/SmolLM2-135M"
+  learning_rate: 1e-4             # QLoRA adapters like higher LR
+  ppo_epochs: 2                   # small, deep model -> fewer PPO passes
+  init_kl_coef: 0.02              # start gentle; adaptive KL on
+  target: 6.0                     # KL target
+  cliprange: 0.2
+  cliprange_value: 0.2
+  vf_coef: 0.1
+  adap_kl_ctrl: true
+  use_score_norm: true
+  ratio_threshold: 10.0
+  batch_size: 128                 # effective batch = mini_batch_size * grad_acc * (num_minibatches per PPO)
+  mini_batch_size: 8
+  forward_batch_size: 8           # (not used directly by TRL; safe to keep)
+  gradient_accumulation_steps: 4
+  reward_model: "s-nlp/roberta_toxicity_classifier"
+  use_raw_logits: false           # reward = 0.5 - sigmoid(logit)
+  attn_implementation: "flash_attention_2"   # fallback to "sdpa" if FA2 not installed
+
+  # Generation parameters
+  generation:
+    min_length: 5
+    output_min_length: 15
+    output_max_length: 48         # short outputs improve PPO stability/speed
+    do_sample: true
+    top_k: 0.0
+    top_p: 1.0
+
+# Training parameters
+training:
+  num_train_epochs: 100           # interpreted as "steps" in the new loop
+  save_freq: 20                   # save every 20 steps
+  eval_freq: 20                   # eval every 20 steps
+  seed: 42
+
+# Dataset settings
+dataset:
+  name: "allenai/real-toxicity-prompts"
+  toxicity_threshold: 0.3
+  input_min_text_length: 15
+  input_max_text_length: 20
+  test_size: 0.1
+
+# Output settings
+output:
+  push_to_hub: true
+  organization: null
+  repository_name: "smolLM2_135m-detox"
+  push_checkpoints_to_hub: false   # set true if you want intermediate pushes
+  checkpoint_push_freq: 20
+
+# WandB settings
+wandb:
+  project: "irl_llms"
+  entity: null
+  name: null
