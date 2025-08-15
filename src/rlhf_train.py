@@ -42,9 +42,27 @@ def train_rlhf(cfg: DictConfig) -> None:
     """Main training function."""
     
     # Set memory optimization environment variables
-    if hasattr(cfg, 'memory') and getattr(cfg.memory, 'expandable_segments', False):
-        os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
-        print("Enabled expandable segments for better memory management")
+    memory_config = []
+    if hasattr(cfg, 'memory'):
+        if getattr(cfg.memory, 'expandable_segments', False):
+            memory_config.append('expandable_segments:True')
+        if hasattr(cfg.memory, 'max_split_size_mb'):
+            max_split = cfg.memory.max_split_size_mb
+            memory_config.append(f'max_split_size_mb:{max_split}')
+        if hasattr(cfg.memory, 'device_memory_fraction'):
+            fraction = cfg.memory.device_memory_fraction
+            memory_config.append(f'garbage_collection_threshold:{fraction}')
+    
+    if memory_config:
+        os.environ['PYTORCH_CUDA_ALLOC_CONF'] = ','.join(memory_config)
+        print(f"Memory config: {os.environ['PYTORCH_CUDA_ALLOC_CONF']}")
+    
+    # Force garbage collection and clear cache at start
+    import gc
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        print(f"Cleared GPU cache. Available memory: {torch.cuda.memory_allocated() / 1024**3:.2f}GB")
     
     # Add current timestamp
     cfg.now = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -360,6 +378,12 @@ def train_rlhf(cfg: DictConfig) -> None:
         stats["rewards/mean"] = raw_mean
         stats["rewards/std"] = raw_std
         stats["current_epoch"] = epoch
+        
+        # Periodic memory cleanup to prevent fragmentation
+        if epoch % 5 == 0 and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            gc.collect()
+            print(f"Memory cleanup at epoch {epoch}. GPU memory: {torch.cuda.memory_allocated() / 1024**3:.2f}GB")
         
         # Log stats safely
         safe_log_stats(ppo_trainer, stats, batch, rewards)
