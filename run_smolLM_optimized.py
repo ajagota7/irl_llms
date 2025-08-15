@@ -32,10 +32,11 @@ def main():
     print("2. Conservative memory settings")
     print("3. Advanced memory optimization")
     print("4. Ultra-conservative (for memory fragmentation issues)")
-    print("5. Custom configuration")
+    print("5. Fragmentation fix (aggressive memory management)")
+    print("6. Custom configuration")
     print()
     
-    choice = input("Enter your choice (1-5): ").strip()
+    choice = input("Enter your choice (1-6): ").strip()
     
     base_command = "python src/rlhf_train.py"
     common_args = [
@@ -69,6 +70,11 @@ def main():
         print("\nUsing ultra-conservative configuration for memory fragmentation issues...")
         
     elif choice == "5":
+        # Fragmentation fix
+        config = "rlhf=smolLM_1p7b_fragmentation_fix"
+        print("\nUsing fragmentation fix configuration with aggressive memory management...")
+        
+    elif choice == "6":
         # Custom
         print("\nCustom configuration options:")
         print("Available configs:")
@@ -76,6 +82,7 @@ def main():
         print("- smolLM_1p7b_conservative (very conservative)")
         print("- smolLM_1p7b_memory_optimized (advanced optimization)")
         print("- smolLM_1p7b_ultra_conservative (ultra conservative)")
+        print("- smolLM_1p7b_fragmentation_fix (fragmentation fix)")
         
         config_name = input("Enter config name: ").strip()
         if not config_name:

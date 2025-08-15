@@ -123,12 +123,18 @@ def train_rlhf(cfg: DictConfig) -> None:
             torch_dtype = torch.float16  # Use float16 for older GPUs
             print("Using float16 precision for memory optimization")
     
+    # Check for CPU offloading settings
+    offload_to_cpu = getattr(cfg.memory, 'offload_to_cpu', False) if hasattr(cfg, 'memory') else False
+    offload_buffers = getattr(cfg.memory, 'offload_buffers', False) if hasattr(cfg, 'memory') else False
+    
     # Load model with memory optimizations
     model = AutoModelForCausalLM.from_pretrained(
         cfg.model.name,
         torch_dtype=torch_dtype,
         low_cpu_mem_usage=low_cpu_mem_usage,
-        device_map="auto" if torch.cuda.is_available() else None
+        device_map="auto" if torch.cuda.is_available() else None,
+        offload_folder="offload" if offload_to_cpu else None,
+        offload_state_dict=True if offload_to_cpu else False
     )
     
     # Enable gradient checkpointing if requested
@@ -379,11 +385,26 @@ def train_rlhf(cfg: DictConfig) -> None:
         stats["rewards/std"] = raw_std
         stats["current_epoch"] = epoch
         
-        # Periodic memory cleanup to prevent fragmentation
-        if epoch % 5 == 0 and torch.cuda.is_available():
+        # Aggressive memory cleanup to prevent fragmentation
+        if epoch % 2 == 0 and torch.cuda.is_available():  # More frequent cleanup
             torch.cuda.empty_cache()
             gc.collect()
-            print(f"Memory cleanup at epoch {epoch}. GPU memory: {torch.cuda.memory_allocated() / 1024**3:.2f}GB")
+            
+            # Force garbage collection multiple times
+            for _ in range(3):
+                gc.collect()
+                torch.cuda.empty_cache()
+            
+            # Print detailed memory info
+            allocated = torch.cuda.memory_allocated() / 1024**3
+            reserved = torch.cuda.memory_reserved() / 1024**3
+            print(f"Memory cleanup at epoch {epoch}. Allocated: {allocated:.2f}GB, Reserved: {reserved:.2f}GB")
+            
+            # If memory usage is still high, try to reset the cache
+            if allocated > 20:  # If using more than 20GB
+                print("High memory usage detected, attempting cache reset...")
+                torch.cuda.empty_cache()
+                gc.collect()
         
         # Log stats safely
         safe_log_stats(ppo_trainer, stats, batch, rewards)
