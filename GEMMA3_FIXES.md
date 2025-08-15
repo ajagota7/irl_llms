@@ -23,9 +23,10 @@ The following configuration parameters have been added to fix the issues:
 model:
   # Model loading parameters to fix TorchDynamo issues
   attn_implementation: "eager"  # Recommended for Gemma3 models
-  torch_compile: false  # Disable TorchDynamo compilation
   use_cache: true
 ```
+
+**Note**: TorchDynamo compilation is disabled via environment variables and global configuration, not through model parameters.
 
 ### 2. Updated Training Script
 

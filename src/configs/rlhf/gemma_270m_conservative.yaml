@@ -23,7 +23,6 @@ model:
   
   # Model loading parameters to fix TorchDynamo issues
   attn_implementation: "eager"  # Recommended for Gemma3 models
-  torch_compile: false  # Disable TorchDynamo compilation
   use_cache: true
   
   # Safer generation parameters

@@ -101,8 +101,6 @@ def train_rlhf(cfg: DictConfig) -> None:
     model_kwargs = {}
     if hasattr(cfg.model, 'attn_implementation'):
         model_kwargs['attn_implementation'] = cfg.model.attn_implementation
-    # Always disable torch_compile for Gemma3 models
-    model_kwargs['torch_compile'] = False
     if hasattr(cfg.model, 'use_cache'):
         model_kwargs['use_cache'] = cfg.model.use_cache
     

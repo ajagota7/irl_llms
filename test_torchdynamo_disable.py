@@ -40,13 +40,11 @@ def test_torchdynamo_disable(cfg: DictConfig) -> None:
         model_kwargs['attn_implementation'] = cfg.rlhf.model.attn_implementation
         print(f"Using attention implementation: {cfg.rlhf.model.attn_implementation}")
     
-    # Always disable torch_compile
-    model_kwargs['torch_compile'] = False
-    print("TorchDynamo compilation disabled")
-    
     if hasattr(cfg.rlhf.model, 'use_cache'):
         model_kwargs['use_cache'] = cfg.rlhf.model.use_cache
         print(f"Use cache: {cfg.rlhf.model.use_cache}")
+    
+    print("TorchDynamo compilation disabled via environment variables and global config")
     
     try:
         # Load tokenizer
