@@ -20,7 +20,6 @@ os.environ['TORCHDYNAMO_VERBOSE'] = '0'
 import torch._dynamo
 torch._dynamo.config.suppress_errors = True
 torch._dynamo.config.disable = True
-torch._dynamo.config.backend = "eager"  # Use eager backend (no compilation)
 
 @hydra.main(config_path="src/configs", config_name="config", version_base=None)
 def test_torchdynamo_disable(cfg: DictConfig) -> None:
@@ -32,7 +31,6 @@ def test_torchdynamo_disable(cfg: DictConfig) -> None:
     print(f"PYTORCH_DISABLE_TORCH_COMPILE: {os.environ.get('PYTORCH_DISABLE_TORCH_COMPILE', 'Not set')}")
     print(f"torch._dynamo.config.disable: {torch._dynamo.config.disable}")
     print(f"torch._dynamo.config.suppress_errors: {torch._dynamo.config.suppress_errors}")
-    print(f"torch._dynamo.config.backend: {torch._dynamo.config.backend}")
     
     print(f"\nModel name: {cfg.rlhf.model.name}")
     

@@ -24,7 +24,6 @@ os.environ['TORCHDYNAMO_VERBOSE'] = '0'
 import torch._dynamo
 torch._dynamo.config.suppress_errors = True
 torch._dynamo.config.disable = True  # Completely disable TorchDynamo
-torch._dynamo.config.backend = "eager"  # Use eager backend (no compilation)
 from trl import (
     AutoModelForCausalLMWithValueHead,
     PPOConfig,
