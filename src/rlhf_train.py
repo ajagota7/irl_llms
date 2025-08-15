@@ -41,29 +41,6 @@ from rlhf_utilities import (
 def train_rlhf(cfg: DictConfig) -> None:
     """Main training function."""
     
-    # Set memory optimization environment variables
-    memory_config = []
-    if hasattr(cfg, 'memory'):
-        if getattr(cfg.memory, 'expandable_segments', False):
-            memory_config.append('expandable_segments:True')
-        if hasattr(cfg.memory, 'max_split_size_mb'):
-            max_split = cfg.memory.max_split_size_mb
-            memory_config.append(f'max_split_size_mb:{max_split}')
-        if hasattr(cfg.memory, 'device_memory_fraction'):
-            fraction = cfg.memory.device_memory_fraction
-            memory_config.append(f'garbage_collection_threshold:{fraction}')
-    
-    if memory_config:
-        os.environ['PYTORCH_CUDA_ALLOC_CONF'] = ','.join(memory_config)
-        print(f"Memory config: {os.environ['PYTORCH_CUDA_ALLOC_CONF']}")
-    
-    # Force garbage collection and clear cache at start
-    import gc
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-        print(f"Cleared GPU cache. Available memory: {torch.cuda.memory_allocated() / 1024**3:.2f}GB")
-    
     # Add current timestamp
     cfg.now = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     
@@ -105,43 +82,9 @@ def train_rlhf(cfg: DictConfig) -> None:
     print(f"Train set: {len(train_dataset)} examples")
     print(f"Test set: {len(test_dataset)} examples")
     
-    # Load model and add value head with memory optimizations
+    # Load model and add value head
     print(f"Loading model {cfg.model.name}...")
-    
-    # Check for memory optimization settings
-    use_half_precision = getattr(cfg.model, 'use_half_precision', False)
-    low_cpu_mem_usage = getattr(cfg.model, 'low_cpu_mem_usage', False)
-    use_gradient_checkpointing = getattr(cfg.model, 'use_gradient_checkpointing', False)
-    
-    # Determine torch dtype for memory optimization
-    torch_dtype = None
-    if use_half_precision:
-        if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8:
-            torch_dtype = torch.bfloat16  # Use bfloat16 for Ampere+ GPUs
-            print("Using bfloat16 precision for memory optimization")
-        else:
-            torch_dtype = torch.float16  # Use float16 for older GPUs
-            print("Using float16 precision for memory optimization")
-    
-    # Check for CPU offloading settings
-    offload_to_cpu = getattr(cfg.memory, 'offload_to_cpu', False) if hasattr(cfg, 'memory') else False
-    offload_buffers = getattr(cfg.memory, 'offload_buffers', False) if hasattr(cfg, 'memory') else False
-    
-    # Load model with memory optimizations
-    model = AutoModelForCausalLM.from_pretrained(
-        cfg.model.name,
-        torch_dtype=torch_dtype,
-        low_cpu_mem_usage=low_cpu_mem_usage,
-        device_map="auto" if torch.cuda.is_available() else None,
-        offload_folder="offload" if offload_to_cpu else None,
-        offload_state_dict=True if offload_to_cpu else False
-    )
-    
-    # Enable gradient checkpointing if requested
-    if use_gradient_checkpointing and hasattr(model, 'gradient_checkpointing_enable'):
-        model.gradient_checkpointing_enable()
-        print("Enabled gradient checkpointing for memory optimization")
-    
+    model = AutoModelForCausalLM.from_pretrained(cfg.model.name)
     model = AutoModelForCausalLMWithValueHead.from_pretrained(model)
     
     # Create reference model
@@ -298,10 +241,6 @@ def train_rlhf(cfg: DictConfig) -> None:
                 "max_new_tokens": gen_len
             }
             
-            # Add memory optimization for generation if specified
-            if hasattr(cfg.model.generation, 'use_cache'):
-                generation_kwargs["use_cache"] = cfg.model.generation.use_cache
-            
             # Make sure query is 1D
             query = query.squeeze()
             
@@ -384,27 +323,6 @@ def train_rlhf(cfg: DictConfig) -> None:
         stats["rewards/mean"] = raw_mean
         stats["rewards/std"] = raw_std
         stats["current_epoch"] = epoch
-        
-        # Aggressive memory cleanup to prevent fragmentation
-        if epoch % 2 == 0 and torch.cuda.is_available():  # More frequent cleanup
-            torch.cuda.empty_cache()
-            gc.collect()
-            
-            # Force garbage collection multiple times
-            for _ in range(3):
-                gc.collect()
-                torch.cuda.empty_cache()
-            
-            # Print detailed memory info
-            allocated = torch.cuda.memory_allocated() / 1024**3
-            reserved = torch.cuda.memory_reserved() / 1024**3
-            print(f"Memory cleanup at epoch {epoch}. Allocated: {allocated:.2f}GB, Reserved: {reserved:.2f}GB")
-            
-            # If memory usage is still high, try to reset the cache
-            if allocated > 20:  # If using more than 20GB
-                print("High memory usage detected, attempting cache reset...")
-                torch.cuda.empty_cache()
-                gc.collect()
         
         # Log stats safely
         safe_log_stats(ppo_trainer, stats, batch, rewards)
