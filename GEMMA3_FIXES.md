@@ -30,9 +30,11 @@ model:
 ### 2. Updated Training Script
 
 The `rlhf_train.py` script now:
+- Sets environment variables to completely disable TorchDynamo
 - Disables TorchDynamo compilation globally
 - Uses the `eager` attention implementation for Gemma3 models
 - Passes the configuration parameters to model loading
+- Wraps generation calls with `torch._dynamo.disable()`
 
 ### 3. Conservative Configuration
 
@@ -43,32 +45,49 @@ A conservative configuration (`gemma_270m_conservative.yaml`) is provided with:
 - Greedy decoding instead of sampling
 - Shorter generation lengths
 
+### 4. Wrapper Script
+
+A wrapper script (`run_gemma_rlhf.py`) is provided that:
+- Sets all necessary environment variables
+- Runs the training with TorchDynamo completely disabled
+- Provides a simple interface for running training
+
 ## Usage
 
-### Option 1: Use the Fixed Original Configuration
+### Option 1: Use the Wrapper Script (Recommended)
+
+```bash
+# Run with conservative configuration (default)
+python run_gemma_rlhf.py
+
+# Run with original configuration
+python run_gemma_rlhf.py rlhf=gemma_270m model.use_raw_logits=true model.reward_model=s-nlp/roberta_toxicity_classifier training.save_freq=50 training.num_train_epochs=100 output.checkpoint_push_freq=20 output.push_to_hub=true output.organization=your_org
+
+# Run with conservative configuration
+python run_gemma_rlhf.py rlhf=gemma_270m_conservative model.use_raw_logits=true model.reward_model=s-nlp/roberta_toxicity_classifier output.push_to_hub=true output.organization=your_org
+```
+
+### Option 2: Use the Fixed Training Script Directly
 
 ```bash
 python src/rlhf_train.py rlhf=gemma_270m model.use_raw_logits=true model.reward_model=s-nlp/roberta_toxicity_classifier training.save_freq=50 training.num_train_epochs=100 output.checkpoint_push_freq=20 output.push_to_hub=true output.organization=your_org
 ```
 
-### Option 2: Use the Conservative Configuration
+### Option 3: Test TorchDynamo Disable First
 
 ```bash
-python src/rlhf_train.py rlhf=gemma_270m_conservative model.use_raw_logits=true model.reward_model=s-nlp/roberta_toxicity_classifier output.push_to_hub=true output.organization=your_org
-```
-
-### Option 3: Test Model Loading First
-
-```bash
-python test_gemma_config.py rlhf=gemma_270m
+python test_torchdynamo_disable.py rlhf=gemma_270m
 ```
 
 ## Key Changes Made
 
-1. **Global TorchDynamo Disable**: Added `torch._dynamo.config.suppress_errors = True` to prevent compilation errors
-2. **Eager Attention**: Using `attn_implementation="eager"` as recommended for Gemma3 models
-3. **Model Loading Parameters**: Added support for configuration-based model loading parameters
-4. **Conservative Alternative**: Created a safer configuration for initial testing
+1. **Environment Variables**: Set multiple environment variables to completely disable TorchDynamo
+2. **Global TorchDynamo Disable**: Added `torch._dynamo.config.disable = True` to completely disable compilation
+3. **Generation Wrapping**: Wrapped generation calls with `torch._dynamo.disable()` context manager
+4. **Eager Attention**: Using `attn_implementation="eager"` as recommended for Gemma3 models
+5. **Model Loading Parameters**: Added support for configuration-based model loading parameters
+6. **Conservative Alternative**: Created a safer configuration for initial testing
+7. **Wrapper Script**: Created a script that sets all environment variables before running training
 
 ## Expected Behavior
 

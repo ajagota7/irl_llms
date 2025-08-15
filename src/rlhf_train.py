@@ -13,9 +13,17 @@ from datetime import datetime
 from torch.optim import Adam
 from tqdm import tqdm
 
+# Set environment variables to disable TorchDynamo completely
+os.environ['TORCHDYNAMO_DISABLE'] = '1'
+os.environ['TORCH_COMPILE_DISABLE'] = '1'
+os.environ['PYTORCH_DISABLE_TORCH_COMPILE'] = '1'
+os.environ['TORCH_LOGS'] = 'off'
+os.environ['TORCHDYNAMO_VERBOSE'] = '0'
+
 # Disable TorchDynamo compilation globally to avoid issues with Gemma3 models
 import torch._dynamo
 torch._dynamo.config.suppress_errors = True
+torch._dynamo.config.disable = True  # Completely disable TorchDynamo
 from trl import (
     AutoModelForCausalLMWithValueHead,
     PPOConfig,
@@ -93,8 +101,8 @@ def train_rlhf(cfg: DictConfig) -> None:
     model_kwargs = {}
     if hasattr(cfg.model, 'attn_implementation'):
         model_kwargs['attn_implementation'] = cfg.model.attn_implementation
-    if hasattr(cfg.model, 'torch_compile') and not cfg.model.torch_compile:
-        model_kwargs['torch_compile'] = False
+    # Always disable torch_compile for Gemma3 models
+    model_kwargs['torch_compile'] = False
     if hasattr(cfg.model, 'use_cache'):
         model_kwargs['use_cache'] = cfg.model.use_cache
     
@@ -522,11 +530,13 @@ def train_rlhf(cfg: DictConfig) -> None:
 
 
 def safe_generate(ppo_trainer, query, generation_kwargs):
-    """Safely generate text, handling potential CUDA errors."""
+    """Safely generate text, handling potential CUDA errors and TorchDynamo issues."""
     try:
-        # Standard generation
-        response = ppo_trainer.generate(query, **generation_kwargs)
-        return response
+        # Ensure TorchDynamo is disabled during generation
+        with torch._dynamo.disable():
+            # Standard generation
+            response = ppo_trainer.generate(query, **generation_kwargs)
+            return response
     except RuntimeError as e:
         if "CUDA error" in str(e) or "device-side assert triggered" in str(e):
             print(f"CUDA error during generation: {e}")
@@ -540,9 +550,10 @@ def safe_generate(ppo_trainer, query, generation_kwargs):
             safe_kwargs["num_beams"] = 1
             
             try:
-                # Try again with safer parameters
-                response = ppo_trainer.generate(query, **safe_kwargs)
-                return response
+                # Try again with safer parameters and TorchDynamo disabled
+                with torch._dynamo.disable():
+                    response = ppo_trainer.generate(query, **safe_kwargs)
+                    return response
             except Exception as e2:
                 print(f"Fallback generation also failed: {e2}")
                 print("Creating empty response as last resort")
