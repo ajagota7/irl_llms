@@ -45,7 +45,11 @@ def print_memory_info():
         # Largest block
         if hasattr(torch.cuda, 'memory_summary'):
             summary = torch.cuda.memory_summary(device)
-            print(f"  Largest block: {summary.split('Largest block: ')[1].split('\\n')[0] if 'Largest block:' in summary else 'N/A'}")
+            if 'Largest block:' in summary:
+                largest_block = summary.split('Largest block: ')[1].split('\n')[0]
+            else:
+                largest_block = 'N/A'
+            print(f"  Largest block: {largest_block}")
     else:
         print("CUDA not available")
     
