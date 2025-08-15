@@ -41,6 +41,11 @@ from rlhf_utilities import (
 def train_rlhf(cfg: DictConfig) -> None:
     """Main training function."""
     
+    # Set memory optimization environment variables
+    if hasattr(cfg, 'memory') and getattr(cfg.memory, 'expandable_segments', False):
+        os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+        print("Enabled expandable segments for better memory management")
+    
     # Add current timestamp
     cfg.now = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     
@@ -82,9 +87,37 @@ def train_rlhf(cfg: DictConfig) -> None:
     print(f"Train set: {len(train_dataset)} examples")
     print(f"Test set: {len(test_dataset)} examples")
     
-    # Load model and add value head
+    # Load model and add value head with memory optimizations
     print(f"Loading model {cfg.model.name}...")
-    model = AutoModelForCausalLM.from_pretrained(cfg.model.name)
+    
+    # Check for memory optimization settings
+    use_half_precision = getattr(cfg.model, 'use_half_precision', False)
+    low_cpu_mem_usage = getattr(cfg.model, 'low_cpu_mem_usage', False)
+    use_gradient_checkpointing = getattr(cfg.model, 'use_gradient_checkpointing', False)
+    
+    # Determine torch dtype for memory optimization
+    torch_dtype = None
+    if use_half_precision:
+        if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8:
+            torch_dtype = torch.bfloat16  # Use bfloat16 for Ampere+ GPUs
+            print("Using bfloat16 precision for memory optimization")
+        else:
+            torch_dtype = torch.float16  # Use float16 for older GPUs
+            print("Using float16 precision for memory optimization")
+    
+    # Load model with memory optimizations
+    model = AutoModelForCausalLM.from_pretrained(
+        cfg.model.name,
+        torch_dtype=torch_dtype,
+        low_cpu_mem_usage=low_cpu_mem_usage,
+        device_map="auto" if torch.cuda.is_available() else None
+    )
+    
+    # Enable gradient checkpointing if requested
+    if use_gradient_checkpointing and hasattr(model, 'gradient_checkpointing_enable'):
+        model.gradient_checkpointing_enable()
+        print("Enabled gradient checkpointing for memory optimization")
+    
     model = AutoModelForCausalLMWithValueHead.from_pretrained(model)
     
     # Create reference model
@@ -240,6 +273,10 @@ def train_rlhf(cfg: DictConfig) -> None:
                 "pad_token_id": tokenizer.eos_token_id,
                 "max_new_tokens": gen_len
             }
+            
+            # Add memory optimization for generation if specified
+            if hasattr(cfg.model.generation, 'use_cache'):
+                generation_kwargs["use_cache"] = cfg.model.generation.use_cache
             
             # Make sure query is 1D
             query = query.squeeze()

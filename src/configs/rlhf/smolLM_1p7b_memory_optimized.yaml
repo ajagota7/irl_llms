@@ -1,0 +1,72 @@
+# Configuration for SmolLM-1.7B RLHF (Advanced Memory Optimization for A100)
+
+# Model settings
+model:
+  name: "HuggingFaceTB/SmolLM-1.7B"
+  learning_rate: 3e-6
+  ppo_epochs: 1  # Minimal PPO epochs to save memory
+  init_kl_coef: 0.5
+  target: 2.5
+  cliprange: 0.2
+  cliprange_value: 0.2
+  vf_coef: 0.1
+  adap_kl_ctrl: true
+  use_score_norm: true
+  ratio_threshold: 10.0
+  batch_size: 2  # Very conservative batch size
+  mini_batch_size: 1  # Minimal mini batch size
+  forward_batch_size: 1  # Minimal forward batch size
+  gradient_accumulation_steps: 8  # Increased to maintain effective batch size
+  reward_model: "s-nlp/roberta_toxicity_classifier"
+  use_raw_logits: true
+  
+  # Memory optimization settings
+  use_half_precision: true  # Enable FP16 for memory efficiency
+  use_gradient_checkpointing: true  # Enable gradient checkpointing
+  use_amp: true  # Automatic Mixed Precision
+  low_cpu_mem_usage: true  # Reduce CPU memory usage during loading
+  
+  # Generation parameters (minimal for memory efficiency)
+  generation:
+    min_length: 5
+    output_min_length: 8  # Very short outputs to save memory
+    output_max_length: 12  # Very short outputs to save memory
+    do_sample: true
+    top_k: 0.0
+    top_p: 1.0
+    use_cache: false  # Disable KV cache to save memory
+
+# Training parameters
+training:
+  num_train_epochs: 100
+  save_freq: 20
+  eval_freq: 20
+  seed: 42
+  max_grad_norm: 1.0  # Gradient clipping for stability
+
+# Dataset settings
+dataset:
+  name: "allenai/real-toxicity-prompts"
+  toxicity_threshold: 0.3
+  input_min_text_length: 15
+  input_max_text_length: 20
+  test_size: 0.1
+
+# Output settings
+output:
+  push_to_hub: true
+  organization: null
+  repository_name: "SmolLM-1.7B-detox-memory-optimized"
+
+# WandB settings
+wandb:
+  project: "irl_llms"
+  entity: null
+  name: null
+
+# Memory management settings
+memory:
+  device_memory_fraction: 0.9  # Use 90% of available GPU memory
+  pin_memory: true
+  num_workers: 2  # Reduced for memory efficiency
+  expandable_segments: true  # Enable expandable segments for better memory management 
