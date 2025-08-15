@@ -20,6 +20,7 @@ os.environ['TORCHDYNAMO_VERBOSE'] = '0'
 import torch._dynamo
 torch._dynamo.config.suppress_errors = True
 torch._dynamo.config.disable = True
+torch._dynamo.config.backend = "eager"  # Use eager backend (no compilation)
 
 @hydra.main(config_path="src/configs", config_name="config", version_base=None)
 def test_torchdynamo_disable(cfg: DictConfig) -> None:
@@ -31,6 +32,7 @@ def test_torchdynamo_disable(cfg: DictConfig) -> None:
     print(f"PYTORCH_DISABLE_TORCH_COMPILE: {os.environ.get('PYTORCH_DISABLE_TORCH_COMPILE', 'Not set')}")
     print(f"torch._dynamo.config.disable: {torch._dynamo.config.disable}")
     print(f"torch._dynamo.config.suppress_errors: {torch._dynamo.config.suppress_errors}")
+    print(f"torch._dynamo.config.backend: {torch._dynamo.config.backend}")
     
     print(f"\nModel name: {cfg.rlhf.model.name}")
     
@@ -67,15 +69,14 @@ def test_torchdynamo_disable(cfg: DictConfig) -> None:
         print("✅ Forward pass successful!")
         print(f"Output shape: {outputs.logits.shape}")
         
-        # Test generation with TorchDynamo disabled
+        # Test generation (TorchDynamo is already disabled globally)
         print("Testing generation...")
-        with torch._dynamo.disable():
-            generated = model.generate(
-                test_input.input_ids,
-                max_new_tokens=10,
-                do_sample=False,
-                pad_token_id=tokenizer.eos_token_id
-            )
+        generated = model.generate(
+            test_input.input_ids,
+            max_new_tokens=10,
+            do_sample=False,
+            pad_token_id=tokenizer.eos_token_id
+        )
         
         print("✅ Generation successful!")
         generated_text = tokenizer.decode(generated[0], skip_special_tokens=True)

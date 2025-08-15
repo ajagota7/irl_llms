@@ -24,6 +24,7 @@ os.environ['TORCHDYNAMO_VERBOSE'] = '0'
 import torch._dynamo
 torch._dynamo.config.suppress_errors = True
 torch._dynamo.config.disable = True  # Completely disable TorchDynamo
+torch._dynamo.config.backend = "eager"  # Use eager backend (no compilation)
 from trl import (
     AutoModelForCausalLMWithValueHead,
     PPOConfig,
@@ -530,11 +531,9 @@ def train_rlhf(cfg: DictConfig) -> None:
 def safe_generate(ppo_trainer, query, generation_kwargs):
     """Safely generate text, handling potential CUDA errors and TorchDynamo issues."""
     try:
-        # Ensure TorchDynamo is disabled during generation
-        with torch._dynamo.disable():
-            # Standard generation
-            response = ppo_trainer.generate(query, **generation_kwargs)
-            return response
+        # Standard generation (TorchDynamo is already disabled globally)
+        response = ppo_trainer.generate(query, **generation_kwargs)
+        return response
     except RuntimeError as e:
         if "CUDA error" in str(e) or "device-side assert triggered" in str(e):
             print(f"CUDA error during generation: {e}")
@@ -548,10 +547,9 @@ def safe_generate(ppo_trainer, query, generation_kwargs):
             safe_kwargs["num_beams"] = 1
             
             try:
-                # Try again with safer parameters and TorchDynamo disabled
-                with torch._dynamo.disable():
-                    response = ppo_trainer.generate(query, **safe_kwargs)
-                    return response
+                # Try again with safer parameters
+                response = ppo_trainer.generate(query, **safe_kwargs)
+                return response
             except Exception as e2:
                 print(f"Fallback generation also failed: {e2}")
                 print("Creating empty response as last resort")
