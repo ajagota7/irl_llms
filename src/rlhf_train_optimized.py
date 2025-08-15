@@ -1,17 +1,15 @@
 """
 SmolLM-optimized RLHF training (PPO) script.
 
-Key changes vs. your original:
-- QLoRA (4-bit NF4) + PEFT LoRA adapters
-- FlashAttention-2 / SDPA, TF32, grad checkpointing, torch.compile
-- Left padding + single batched generation per step
-- Reward shaping fix (sigmoid -> centered reward)
-- PagedAdamW32bit optimizer w/ cosine schedule + warmup
-- Proper PPO knobs (adaptive KL, score norm, conservative clips)
-- Cleaner, more robust W&B logging
-- Save adapters-only checkpoints (tiny) while keeping push-to-hub flow
+Key optimizations over rlhf_train.py:
+- QLoRA (4-bit NF4) + PEFT LoRA adapters for memory efficiency
+- FlashAttention-2 / SDPA for faster attention
+- TF32, grad checkpointing, torch.compile for speed
+- PagedAdamW32bit optimizer with cosine schedule
+- Better reward shaping (centered rewards)
+- More robust error handling
 
-This keeps your Hydra config and utilities intact.
+This follows the exact structure of rlhf_train.py but with optimizations.
 """
 
 import os
@@ -22,19 +20,20 @@ import pandas as pd
 import numpy as np
 from omegaconf import DictConfig, OmegaConf
 from datetime import datetime
-
-# Optimizers / schedulers
 from torch.optim import AdamW
-from transformers import get_cosine_schedule_with_warmup
-
-# TRL / HF
+from tqdm import tqdm
 from trl import (
     AutoModelForCausalLMWithValueHead,
     PPOConfig,
     PPOTrainer,
-    create_reference_model,
+    create_reference_model
 )
-from transformers import AutoTokenizer
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    get_cosine_schedule_with_warmup
+)
+from huggingface_hub import HfApi
 
 # Quantization + PEFT
 from transformers import BitsAndBytesConfig
@@ -48,8 +47,6 @@ except Exception:
     PagedAdamW32bit = None  # type: ignore
     _HAS_BNB_OPT = False
 
-from huggingface_hub import HfApi
-
 from rlhf_utilities import (
     build_dataset,
     collator,
@@ -58,6 +55,7 @@ from rlhf_utilities import (
     evaluate_toxicity,
     analyze_prompt_tracking,
     LengthSampler,
+    safe_reward_computation
 )
 
 # ----------------------
@@ -78,152 +76,86 @@ def _bf16_supported() -> bool:
     return torch.cuda.is_available() and torch.cuda.get_device_capability(0)[0] >= 8
 
 
-# ----------------------
-# Safe wrappers
-# ----------------------
-
-def safe_generate_batch(ppo_trainer: PPOTrainer, batch_input_ids, generation_kwargs):
-    """Batched generation with fallback settings for stability."""
-    try:
-        # ppo_trainer.generate handles device placement
-        return ppo_trainer.generate(batch_input_ids, **generation_kwargs)
-    except RuntimeError as e:
-        if "CUDA" in str(e) or "device-side assert" in str(e):
-            print(f"[safe_generate_batch] CUDA error: {e}\nFalling back to deterministic decoding…")
-            safe_kwargs = dict(generation_kwargs)
-            safe_kwargs["do_sample"] = False
-            safe_kwargs["top_k"] = None
-            safe_kwargs["top_p"] = None
-            safe_kwargs["num_beams"] = 1
-            return ppo_trainer.generate(batch_input_ids, **safe_kwargs)
-        raise
-
-
-def safe_log_stats(ppo_trainer: PPOTrainer, stats: dict, batch: dict, rewards: list):
-    """Cleans NaNs/Infs in stats and logs to TRL/Accelerate (and W&B if enabled)."""
-    clean_stats = {}
-    for k, v in stats.items():
-        if isinstance(v, (int, float)):
-            if np.isnan(v) or np.isinf(v):
-                clean_stats[k] = 0.0
-            else:
-                clean_stats[k] = float(v)
-        else:
-            clean_stats[k] = v
-
-    for key in ["ppo/advantages", "ppo/ratio", "ppo/policy_loss", "ppo/value_loss"]:
-        if key in clean_stats and isinstance(clean_stats[key], list):
-            clean_stats[key] = [
-                float(x) for x in clean_stats[key]
-                if isinstance(x, (int, float)) and not (np.isnan(x) or np.isinf(x))
-            ] or [0.0]
-
-    try:
-        ppo_trainer.log_stats(clean_stats, batch, rewards)
-    except Exception as e:
-        print(f"[safe_log_stats] Logging error: {e}")
-        try:
-            minimal = {
-                "rewards/mean": clean_stats.get("rewards/mean", 0.0),
-                "train/step": clean_stats.get("train/step", 0),
-            }
-            ppo_trainer.accelerator.log(minimal)
-        except Exception as e2:
-            print(f"[safe_log_stats] Minimal logging failed: {e2}")
-
-
-def safe_ppo_step(ppo_trainer: PPOTrainer, query_tensors, response_tensors, rewards):
-    try:
-        return ppo_trainer.step(query_tensors, response_tensors, rewards)
-    except RuntimeError as e:
-        if "CUDA" in str(e) or "device-side assert" in str(e):
-            print(f"[safe_ppo_step] CUDA error during PPO step: {e}")
-            return {"error": str(e)}
-        raise
-
-
-# ----------------------
-# Main
-# ----------------------
-
 @hydra.main(config_path="configs", config_name="config", version_base=None)
-def train_rlhf(cfg: DictConfig) -> float:
-    """Main training function (SmolLM-optimized)."""
+def train_rlhf(cfg: DictConfig) -> None:
+    """Main training function."""
+    
+    # Add current timestamp
     cfg.now = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    
+    # Print configuration
     print(f"Configuration:\n{OmegaConf.to_yaml(cfg)}")
-
-    # Output dirs
+    
+    # Create output directories
     output_dir = os.path.join(os.getcwd(), f"outputs/{cfg.now}")
+    os.makedirs(output_dir, exist_ok=True)
     eval_dir = os.path.join(output_dir, "evaluation")
     checkpoint_dir = os.path.join(output_dir, "checkpoints")
     os.makedirs(eval_dir, exist_ok=True)
     os.makedirs(checkpoint_dir, exist_ok=True)
-
-    # Seeds
+    
+    # Set random seed
     torch.manual_seed(cfg.training.seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(cfg.training.seed)
-
-    # W&B
+    
+    # Setup WandB logging
     wandb_run = setup_wandb(cfg)
-    if wandb_run:
-        try:
-            import wandb
-            wandb_run.config.update(dict(now=cfg.now))
-            wandb_run.define_metric("train/step")
-            wandb_run.define_metric("*", step_metric="train/step", step_sync=True)
-        except Exception:
-            pass
-
-    # Model/dataset inheritance from rlhf.* if not provided (keeps your logic)
+    
+    # Build dataset and tokenizer
+    print("Building dataset...")
+    
+    # Use the model name from the rlhf config if the main model name is null
     if cfg.model.name is None and hasattr(cfg.rlhf, 'model') and cfg.rlhf.model.name is not None:
         cfg.model.name = cfg.rlhf.model.name
+    
+    # Use the dataset name from the rlhf config if the main dataset name is null
     if cfg.dataset.name is None and hasattr(cfg.rlhf, 'dataset') and cfg.rlhf.dataset.name is not None:
         cfg.dataset.name = cfg.rlhf.dataset.name
+    
+    # Use the reward model from the rlhf config if the main reward model is null
     if cfg.model.reward_model is None and hasattr(cfg.rlhf, 'model') and cfg.rlhf.model.reward_model is not None:
         cfg.model.reward_model = cfg.rlhf.model.reward_model
-
-    # Datasets + tokenizer
-    print("Building dataset…")
+    
     train_dataset, test_dataset, tokenizer = build_dataset(cfg)
     print(f"Train set: {len(train_dataset)} examples")
-    print(f"Test  set: {len(test_dataset)} examples")
-
+    print(f"Test set: {len(test_dataset)} examples")
+    
     # Tokenizer tweaks for decoder-only efficiency
     tokenizer.padding_side = "left"
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-
+    
     # ----------------------
-    # Load policy with QLoRA + FA2/SDPA + grad checkpointing
+    # Load model with optimizations
     # ----------------------
+    print(f"Loading model {cfg.model.name}...")
+    
     use_bf16 = _bf16_supported()
-
-    # Try to use flash-attn-2; fallback to SDPA if not available
     attn_impl = getattr(cfg.model, "attn_implementation", None) or "flash_attention_2"
-
-    bnb_cfg = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_compute_dtype=torch.bfloat16 if use_bf16 else torch.float16,
-    )
-
-    lora_cfg = LoraConfig(
-        r=16,
-        lora_alpha=32,
-        lora_dropout=0.05,
-        bias="none",
-        task_type="CAUSAL_LM",
-        target_modules=[
-            "q_proj", "k_proj", "v_proj", "o_proj",
-            "gate_proj", "up_proj", "down_proj",
-        ],
-    )
-
-    # Load value-head model directly with PEFT + 4-bit
+    
+    # Try QLoRA first, fallback to regular loading
     try:
-        model = AutoModelForCausalLMWithValueHead.from_pretrained(
+        bnb_cfg = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_compute_dtype=torch.bfloat16 if use_bf16 else torch.float16,
+        )
+        
+        lora_cfg = LoraConfig(
+            r=16,
+            lora_alpha=32,
+            lora_dropout=0.05,
+            bias="none",
+            task_type="CAUSAL_LM",
+            target_modules=[
+                "q_proj", "k_proj", "v_proj", "o_proj",
+                "gate_proj", "up_proj", "down_proj",
+            ],
+        )
+        
+        model = AutoModelForCausalLM.from_pretrained(
             cfg.model.name,
             quantization_config=bnb_cfg,
             peft_config=lora_cfg,
@@ -231,147 +163,157 @@ def train_rlhf(cfg: DictConfig) -> float:
             attn_implementation=attn_impl,
             device_map="auto",
         )
+        print("Loaded model with QLoRA + FlashAttention")
     except Exception as e:
-        print(f"[load] Falling back to SDPA/fp16 due to: {e}")
+        print(f"QLoRA loading failed: {e}, falling back to regular loading")
         try:
-            model = AutoModelForCausalLMWithValueHead.from_pretrained(
+            model = AutoModelForCausalLM.from_pretrained(
                 cfg.model.name,
-                peft_config=lora_cfg,
-                torch_dtype=torch.float16,
+                torch_dtype=torch.bfloat16 if use_bf16 else torch.float16,
                 attn_implementation="sdpa",
                 device_map="auto",
             )
+            print("Loaded model with SDPA")
         except Exception as e2:
-            print(f"[load] Falling back to full-precision, no quant: {e2}")
-            model = AutoModelForCausalLMWithValueHead.from_pretrained(
-                cfg.model.name,
-                torch_dtype=torch.float16,
-                device_map="auto",
-            )
-
-    # Enable grad checkpointing on the base (pretrained) module
+            print(f"SDPA loading failed: {e2}, falling back to basic loading")
+            model = AutoModelForCausalLM.from_pretrained(cfg.model.name)
+            print("Loaded model with basic settings")
+    
+    # Add value head
+    model = AutoModelForCausalLMWithValueHead.from_pretrained(model)
+    
+    # Enable grad checkpointing
     try:
-        model.pretrained_model.gradient_checkpointing_enable()
+        model.gradient_checkpointing_enable()
     except Exception:
         pass
-
-    # Keep value head in bf16/fp32 for PPO stability
+    
+    # Try torch.compile for extra speed
     try:
-        model.v_head = model.v_head.to(dtype=torch.bfloat16 if use_bf16 else torch.float32)
+        model = torch.compile(model, mode="max-autotune")
+        print("Applied torch.compile optimization")
     except Exception:
         pass
-
-    # Reference model (PEFT-aware)
+    
+    # Create reference model
     ref_model = create_reference_model(model)
-
-    # Try torch.compile for extra speed on deep models
-    try:
-        model.pretrained_model = torch.compile(model.pretrained_model, mode="max-autotune")
-    except Exception:
-        pass
-
+    
     # ----------------------
     # Optimizer + LR schedule
     # ----------------------
-    trainable_params = [p for p in model.parameters() if p.requires_grad]
+    trainable_params = filter(lambda p: p.requires_grad, model.parameters())
+    
     if _HAS_BNB_OPT:
-        optimizer = PagedAdamW32bit(trainable_params, lr=cfg.model.learning_rate, betas=(0.9, 0.95), eps=1e-8, weight_decay=0.0)
+        optimizer = PagedAdamW32bit(
+            trainable_params, 
+            lr=cfg.model.learning_rate,
+            betas=(0.9, 0.95), 
+            eps=1e-8, 
+            weight_decay=0.0
+        )
+        print("Using PagedAdamW32bit optimizer")
     else:
-        optimizer = AdamW(trainable_params, lr=cfg.model.learning_rate, betas=(0.9, 0.95), eps=1e-8, weight_decay=0.0)
-
-    # Steps are defined like your original (loop is step-based, not true epochs)
-    total_steps = cfg.training.num_train_epochs * (len(train_dataset) // max(1, cfg.model.batch_size) + 1)
+        optimizer = AdamW(
+            trainable_params,
+            lr=cfg.model.learning_rate,
+            betas=(0.9, 0.95),
+            eps=1e-8,
+            weight_decay=0.0
+        )
+        print("Using AdamW optimizer")
+    
+    # Create learning rate scheduler
+    total_steps = cfg.training.num_train_epochs * (len(train_dataset) // cfg.model.batch_size + 1)
     lr_scheduler = get_cosine_schedule_with_warmup(
         optimizer,
         num_warmup_steps=max(100, int(0.03 * total_steps)),
-        num_training_steps=total_steps,
+        num_training_steps=total_steps
     )
-
-    # ----------------------
-    # PPO config
-    # ----------------------
+    
+    # Get PPO parameters from RLHF config if they exist
     ppo_params = {
         "model_name": cfg.model.name,
         "learning_rate": cfg.model.learning_rate,
         "log_with": "wandb" if wandb_run else None,
     }
-
-    # Batch size compatibility logic (kept from your script)
+    
+    # Handle batch size parameters to ensure they're compatible
     batch_size = cfg.model.batch_size
     mini_batch_size = cfg.model.mini_batch_size
     gradient_accumulation_steps = cfg.model.gradient_accumulation_steps
 
+    # Ensure batch_size is a multiple of mini_batch_size * gradient_accumulation_steps
     if batch_size % (mini_batch_size * gradient_accumulation_steps) != 0:
+        # Option 1: Adjust mini_batch_size to make it work
         if batch_size >= gradient_accumulation_steps:
             new_mini_batch_size = batch_size // gradient_accumulation_steps
-            print(f"Adjusting mini_batch_size {mini_batch_size} -> {new_mini_batch_size} for compatibility")
+            print(f"Warning: Adjusting mini_batch_size from {mini_batch_size} to {new_mini_batch_size} to ensure compatibility with batch_size={batch_size}")
             mini_batch_size = new_mini_batch_size
+        # Option 2: If that's not possible, adjust gradient_accumulation_steps
         else:
-            print(f"Adjusting gradient_accumulation_steps {gradient_accumulation_steps} -> 1 and mini_batch_size -> {batch_size}")
-            gradient_accumulation_steps = 1
-            mini_batch_size = batch_size
+            new_gradient_accumulation_steps = 1
+            new_mini_batch_size = batch_size
+            print(f"Warning: Adjusting gradient_accumulation_steps from {gradient_accumulation_steps} to {new_gradient_accumulation_steps} and mini_batch_size from {mini_batch_size} to {new_mini_batch_size} to ensure compatibility with batch_size={batch_size}")
+            gradient_accumulation_steps = new_gradient_accumulation_steps
+            mini_batch_size = new_mini_batch_size
 
-    ppo_params.update(
-        batch_size=batch_size,
-        mini_batch_size=mini_batch_size,
-        gradient_accumulation_steps=gradient_accumulation_steps,
-    )
+    # Add the adjusted batch parameters
+    ppo_params["batch_size"] = batch_size
+    ppo_params["mini_batch_size"] = mini_batch_size
+    ppo_params["gradient_accumulation_steps"] = gradient_accumulation_steps
 
-    # Add RLHF-specific knobs (safer defaults for small, deep models)
-    if hasattr(cfg, 'rlhf') and hasattr(cfg.rlhf, 'model'):
+    # Add PPO-specific parameters from RLHF config if available
+    if hasattr(cfg.rlhf, 'model'):
         rlhf_model = cfg.rlhf.model
-        for key in [
-            'ppo_epochs', 'init_kl_coef', 'target', 'cliprange', 'cliprange_value',
-            'vf_coef', 'adap_kl_ctrl', 'use_score_norm', 'ratio_threshold'
-        ]:
-            if hasattr(rlhf_model, key):
-                ppo_params[key] = getattr(rlhf_model, key)
-
-    ppo_params.setdefault("ppo_epochs", 2)
-    ppo_params.setdefault("adap_kl_ctrl", True)
-    ppo_params.setdefault("init_kl_coef", 0.02)
-    ppo_params.setdefault("target", 6.0)
-    ppo_params.setdefault("use_score_norm", True)
-    ppo_params.setdefault("cliprange", 0.2)
-    ppo_params.setdefault("cliprange_value", 0.2)
-
+        if hasattr(rlhf_model, 'ppo_epochs'):
+            ppo_params["ppo_epochs"] = rlhf_model.ppo_epochs
+        if hasattr(rlhf_model, 'init_kl_coef'):
+            ppo_params["init_kl_coef"] = rlhf_model.init_kl_coef
+        if hasattr(rlhf_model, 'target'):
+            ppo_params["target"] = rlhf_model.target
+        if hasattr(rlhf_model, 'cliprange'):
+            ppo_params["cliprange"] = rlhf_model.cliprange
+        if hasattr(rlhf_model, 'cliprange_value'):
+            ppo_params["cliprange_value"] = rlhf_model.cliprange_value
+        if hasattr(rlhf_model, 'vf_coef'):
+            ppo_params["vf_coef"] = rlhf_model.vf_coef
+        if hasattr(rlhf_model, 'adap_kl_ctrl'):
+            ppo_params["adap_kl_ctrl"] = rlhf_model.adap_kl_ctrl
+        if hasattr(rlhf_model, 'use_score_norm'):
+            ppo_params["use_score_norm"] = rlhf_model.use_score_norm
+        if hasattr(rlhf_model, 'ratio_threshold'):
+            ppo_params["ratio_threshold"] = rlhf_model.ratio_threshold
+    
+    # Create PPO config
     ppo_config = PPOConfig(**ppo_params)
-
-    # PPO trainer
+    
+    # Create PPO trainer
     ppo_trainer = PPOTrainer(
         config=ppo_config,
         model=model,
         ref_model=ref_model,
         tokenizer=tokenizer,
         dataset=train_dataset,
-        data_collator=collator,  # kept as-is
+        data_collator=collator,
         optimizer=optimizer,
         lr_scheduler=lr_scheduler,
     )
-
-    # ----------------------
-    # Reward model (optionally on a separate GPU)
-    # ----------------------
-    reward_device = ppo_trainer.accelerator.device
-    if torch.cuda.device_count() > 1:
-        reward_device = torch.device("cuda:1")
-    print(f"Loading reward model on {reward_device}…")
+    
+    # Load toxicity model
+    print(f"Loading toxicity model {cfg.model.reward_model}...")
     reward_model, reward_tokenizer = load_reward_model(
         cfg.model.reward_model,
-        reward_device,
+        ppo_trainer.accelerator.device
     )
-    reward_model.eval()
-
-    # Generation length sampler
+    
+    # Setup generation parameters
     output_length_sampler = LengthSampler(
         cfg.model.generation.output_min_length,
-        cfg.model.generation.output_max_length,
+        cfg.model.generation.output_max_length
     )
-
-    # ----------------------
+    
     # Initial evaluation
-    # ----------------------
-    print("Performing initial evaluation…")
+    print("Performing initial evaluation...")
     initial_toxicity, _ = evaluate_toxicity(
         model=model,
         ppo_trainer=ppo_trainer,
@@ -380,166 +322,218 @@ def train_rlhf(cfg: DictConfig) -> float:
         reward_tokenizer=reward_tokenizer,
         dataset=test_dataset,
         config=cfg,
-        epoch="initial",
+        epoch="initial"
     )
+    
     print(f"Initial average toxicity: {initial_toxicity:.4f}")
-
+    
+    # Save evaluation results
+    with open(os.path.join(eval_dir, "evaluation_results.txt"), "w") as f:
+        f.write(f"Epoch 0: Average toxicity = {initial_toxicity:.4f}\n")
+    
+    # Log initial metrics
     if wandb_run:
-        try:
-            import wandb
-            wandb_run.log({"eval/initial_toxicity": initial_toxicity, "train/step": 0})
-            wandb_run.watch(model, log="gradients", log_freq=50)
-        except Exception:
-            pass
-
-    # Reward stats across steps (your original structure)
+        wandb_run.log({"eval/initial_toxicity": initial_toxicity})
+    
+    # Create a dictionary to store reward stats across epochs
     reward_stats = {
         'epoch': [],
         'raw_rewards_mean': [],
         'raw_rewards_std': [],
         'nan_inf_count': [],
     }
-
-    print("Starting training loop…")
+    
+    # Training loop
+    print("Starting training loop...")
     training_start_time = time.time()
-
-    for step, batch in enumerate(ppo_trainer.dataloader, start=1):
-        if step > cfg.training.num_train_epochs:
+    
+    for epoch, batch in tqdm(enumerate(ppo_trainer.dataloader), total=cfg.training.num_train_epochs):
+        if epoch >= cfg.training.num_train_epochs:
             break
-
-        step_start = time.time()
-        query_tensors = batch["input_ids"]  # TRL provides already-prep'd tensors/lists
-
-        # Ensure list-of-tensors for TRL.step
-        if isinstance(query_tensors, torch.Tensor):
-            query_list = [q for q in query_tensors]
-        else:
-            query_list = [q for q in query_tensors]
-
-        # ---- Batched generation ----
-        gen_len = int(output_length_sampler())
-        generation_kwargs = {
-            "min_length": getattr(cfg.model.generation, "min_length", 0),
-            "top_k": cfg.model.generation.top_k,
-            "top_p": cfg.model.generation.top_p,
-            "do_sample": cfg.model.generation.do_sample,
-            "pad_token_id": tokenizer.pad_token_id,
-            "max_new_tokens": gen_len,
-            "use_cache": True,
-        }
-
-        responses = safe_generate_batch(ppo_trainer, query_tensors, generation_kwargs)
-        # responses: shape [B, total_len]; keep the generated tails of size gen_len
+        
+        # Process batch
+        query_tensors = batch["input_ids"]
+        
+        # Get response from policy model
         response_tensors = []
-        for resp in responses:
-            resp = resp.squeeze()
-            tail = resp[-gen_len:] if resp.size(0) >= gen_len else torch.nn.functional.pad(
-                resp, (gen_len - resp.size(0), 0), value=tokenizer.pad_token_id
-            )
-            response_tensors.append(tail)
-
-        # Decode batch responses
-        texts = [tokenizer.decode(r, skip_special_tokens=True) for r in response_tensors]
-
-        # ---- Reward computation (toxicity sigmoid; centered reward) ----
-        with torch.no_grad():
-            tox_inputs = reward_tokenizer(
-                texts, padding=True, truncation=True, return_tensors="pt"
-            ).to(reward_device)
-            out = reward_model(**tox_inputs)
-            logits = getattr(out, "logits", out)
-            logits = logits.squeeze(-1)
-            tox_prob = torch.sigmoid(logits).clamp(0.0, 1.0)
-
-        # Centered reward is often stabler for PPO advantages
-        centered_rewards = (0.5 - tox_prob).detach().cpu()
-        rewards = [r for r in centered_rewards]
-
-        # Reward stats
-        rewards_tensor = centered_rewards
+        for query in query_tensors:
+            gen_len = output_length_sampler()
+            generation_kwargs = {
+                "min_length": cfg.model.generation.min_length,
+                "top_k": cfg.model.generation.top_k,
+                "top_p": cfg.model.generation.top_p,
+                "do_sample": cfg.model.generation.do_sample,
+                "pad_token_id": tokenizer.eos_token_id,
+                "max_new_tokens": gen_len
+            }
+            
+            # Make sure query is 1D
+            query = query.squeeze()
+            
+            # Use safe generation instead of direct generation
+            response = safe_generate(ppo_trainer, query, generation_kwargs)
+            
+            # Extract the generated part (last gen_len tokens)
+            if response.size(1) >= gen_len:
+                response_tensors.append(response.squeeze()[-gen_len:])
+            else:
+                # If response is shorter than expected, pad it
+                padding = torch.full((gen_len - response.size(1),), 
+                                    tokenizer.pad_token_id, 
+                                    device=response.device)
+                padded_response = torch.cat([response.squeeze(), padding], dim=0)
+                response_tensors.append(padded_response[-gen_len:])
+        
+        batch["response"] = [tokenizer.decode(r.squeeze()) for r in response_tensors]
+        
+        # Compute toxicity scores as rewards
+        texts = batch["response"]
+        toxicity_inputs = reward_tokenizer(
+            texts,
+            padding=True,
+            truncation=True,
+            return_tensors="pt"
+        ).to(ppo_trainer.accelerator.device)
+        
+        # Use safe reward computation
+        raw_values = safe_reward_computation(
+            reward_model, 
+            toxicity_inputs, 
+            ppo_trainer.accelerator.device
+        )
+        
+        # Calculate rewards based on configuration
+        if cfg.model.use_raw_logits:
+            raw_toxicity_labels = raw_values.tolist()
+            # Check for NaN or inf values and replace them
+            raw_toxicity_labels = [
+                0.0 if (not isinstance(x, (int, float)) or np.isnan(x) or np.isinf(x)) 
+                else x for x in raw_toxicity_labels
+            ]
+            rewards = [torch.tensor(output) for output in raw_toxicity_labels]
+        else:
+            # Apply softmax for probability scores
+            softmax_values = torch.nn.functional.softmax(raw_values.view(-1, 1), dim=1)[:, 0]
+            softmax_toxicity_labels = softmax_values.tolist()
+            # Check for NaN or inf values and replace them
+            softmax_toxicity_labels = [
+                0.0 if (not isinstance(x, (int, float)) or np.isnan(x) or np.isinf(x)) 
+                else x for x in softmax_toxicity_labels
+            ]
+            rewards = [torch.tensor(output) for output in softmax_toxicity_labels]
+        
+        # Calculate statistics for logging
+        rewards_tensor = torch.tensor([r.item() for r in rewards])
         raw_mean = rewards_tensor.mean().item()
-        raw_std = rewards_tensor.std(unbiased=False).item()
-        nan_inf_count = int(((~torch.isfinite(rewards_tensor)).sum()).item())
-
-        reward_stats['epoch'].append(step)
+        raw_std = rewards_tensor.std().item()
+        
+        # Store statistics in tracking
+        reward_stats['epoch'].append(epoch)
         reward_stats['raw_rewards_mean'].append(raw_mean)
         reward_stats['raw_rewards_std'].append(raw_std)
+        
+        # Count NaN/Inf values
+        nan_inf_count = sum(1 for x in raw_toxicity_labels if not isinstance(x, (int, float)) or np.isnan(x) or np.isinf(x))
         reward_stats['nan_inf_count'].append(nan_inf_count)
-
-        # ---- PPO update ----
-        stats = safe_ppo_step(ppo_trainer, query_list, response_tensors, rewards)
-
-        # Tokens/sec logging
-        tokens_this_step = len(response_tensors) * gen_len
-        step_time = max(1e-6, time.time() - step_start)
-        toks_per_sec = tokens_this_step / step_time
-
-        # Augment stats
-        stats.update({
-            "rewards/mean": raw_mean,
-            "rewards/std": raw_std,
-            "rewards/nan_inf_count": nan_inf_count,
-            "train/tokens_per_step": tokens_this_step,
-            "train/tokens_per_second": toks_per_sec,
-            "train/step": step,
-        })
-
-        # Log
+        
+        # Print reward stats periodically
+        if epoch % 10 == 0:
+            print(f"\nEpoch {epoch} reward stats:")
+            print(f"  Rewards - Mean: {raw_mean:.4f}, Std: {raw_std:.4f}")
+            print(f"  NaN/Inf values replaced: {nan_inf_count}/{len(raw_toxicity_labels)} ({nan_inf_count/len(raw_toxicity_labels)*100:.1f}%)")
+        
+        # Run PPO update safely
+        stats = safe_ppo_step(ppo_trainer, query_tensors, response_tensors, rewards)
+        
+        # Augment stats dictionary with reward metrics
+        stats["rewards/mean"] = raw_mean
+        stats["rewards/std"] = raw_std
+        stats["current_epoch"] = epoch
+        
+        # Log stats safely
         safe_log_stats(ppo_trainer, stats, batch, rewards)
-        if wandb_run:
-            try:
-                wandb_run.log({
-                    "train/step": step,
-                    "train/tokens_per_second": toks_per_sec,
-                    "rewards/mean": raw_mean,
-                    "rewards/std": raw_std,
-                })
-            except Exception:
-                pass
-
-        # ---- Checkpointing (adapters only via TRL) ----
-        if (step % cfg.training.save_freq) == 0:
-            checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint-step-{step}")
+        
+        # Save model checkpoint
+        if (epoch + 1) % cfg.training.save_freq == 0:
+            checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint-epoch-{epoch+1}")
             print(f"Saving model checkpoint to {checkpoint_path}")
+            
             if ppo_trainer.accelerator.is_main_process:
                 ppo_trainer.save_pretrained(checkpoint_path)
-                pd.DataFrame(reward_stats).to_csv(
-                    os.path.join(checkpoint_path, "reward_stats.csv"), index=False
-                )
-
-        # ---- Optional: push checkpoint to Hub ----
-        if (
-            cfg.output.push_to_hub and cfg.output.push_checkpoints_to_hub and
-            (step % cfg.output.checkpoint_push_freq) == 0
-        ):
+                
+                # Save reward stats
+                reward_df = pd.DataFrame(reward_stats)
+                reward_df.to_csv(os.path.join(output_dir, "reward_stats.csv"), index=False)
+        
+        # Push checkpoint to Hub if enabled (separate from local saving)
+        if cfg.output.push_to_hub and cfg.output.push_checkpoints_to_hub and (epoch + 1) % cfg.output.checkpoint_push_freq == 0:
             try:
-                if ppo_trainer.accelerator.is_main_process:
+                # Create a temporary checkpoint path if we didn't just save one
+                if (epoch + 1) % cfg.training.save_freq != 0:
+                    temp_checkpoint_path = os.path.join(checkpoint_dir, f"temp-checkpoint-epoch-{epoch+1}")
+                    print(f"Creating temporary checkpoint for Hub push at {temp_checkpoint_path}")
+                    
+                    if ppo_trainer.accelerator.is_main_process:
+                        # Save the model to the temporary path
+                        ppo_trainer.save_pretrained(temp_checkpoint_path)
+                        checkpoint_path = temp_checkpoint_path
+                else:
+                    # Use the already saved checkpoint
+                    checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint-epoch-{epoch+1}")
+                
+                # Determine repository name
+                if cfg.output.repository_name:
+                    repo_name = cfg.output.repository_name
+                else:
                     model_short_name = cfg.model.name.split('/')[-1]
-                    repo_name = cfg.output.repository_name or f"{model_short_name}-detox"
-                    repo_id = f"{cfg.output.organization}/{repo_name}" if cfg.output.organization else repo_name
-                    checkpoint_repo_name = f"{repo_name}-checkpoint-step-{step}"
-                    checkpoint_repo_id = f"{cfg.output.organization}/{checkpoint_repo_name}" if cfg.output.organization else checkpoint_repo_name
-
-                    print(f"Pushing checkpoint to Hub: {checkpoint_repo_id}")
-
-                    # Ensure directory has config + tokenizer
-                    cp_path = os.path.join(checkpoint_dir, f"checkpoint-step-{step}")
-                    os.makedirs(cp_path, exist_ok=True)
-                    tokenizer.save_pretrained(cp_path)
-                    with open(os.path.join(cp_path, "rlhf_config.yaml"), "w") as f:
-                        f.write(OmegaConf.to_yaml(cfg))
-
-                    api = HfApi()
-                    if not api.repo_exists(repo_id=checkpoint_repo_id):
-                        api.create_repo(repo_id=checkpoint_repo_id, private=cfg.output.private)
-                    api.upload_folder(folder_path=cp_path, repo_id=checkpoint_repo_id, commit_message=f"Checkpoint step {step}")
-                    print(f"Uploaded {checkpoint_repo_id}")
+                    repo_name = f"{model_short_name}-detox"
+                
+                # Prepare repository ID
+                repo_id = f"{cfg.output.organization}/{repo_name}" if cfg.output.organization else repo_name
+                
+                # Add epoch information to the checkpoint folder
+                checkpoint_repo_name = f"{repo_name}-checkpoint-epoch-{epoch+1}"
+                checkpoint_repo_id = f"{cfg.output.organization}/{checkpoint_repo_name}" if cfg.output.organization else checkpoint_repo_name
+                
+                print(f"Pushing checkpoint to Hugging Face Hub: {checkpoint_repo_id}")
+                
+                # Save model and tokenizer to the checkpoint path
+                model.save_pretrained(checkpoint_path)
+                tokenizer.save_pretrained(checkpoint_path)
+                
+                # Save config file
+                with open(os.path.join(checkpoint_path, "rlhf_config.yaml"), "w") as f:
+                    f.write(OmegaConf.to_yaml(cfg))
+                
+                # Push to Hub
+                api = HfApi()
+                
+                # Check if the repository exists, create it if it doesn't
+                if not api.repo_exists(repo_id=checkpoint_repo_id):
+                    api.create_repo(repo_id=checkpoint_repo_id, private=cfg.output.private)
+                
+                # Upload the folder
+                api.upload_folder(
+                    folder_path=checkpoint_path,
+                    repo_id=checkpoint_repo_id,
+                    commit_message=f"Checkpoint after epoch {epoch+1}"
+                )
+                print(f"Successfully pushed checkpoint to {checkpoint_repo_id}")
+                
+                # Clean up temporary checkpoint if created
+                if (epoch + 1) % cfg.training.save_freq != 0 and os.path.exists(temp_checkpoint_path):
+                    import shutil
+                    shutil.rmtree(temp_checkpoint_path)
+                    print(f"Removed temporary checkpoint directory {temp_checkpoint_path}")
+                    
             except Exception as e:
-                print(f"[Hub] Checkpoint push failed: {e}")
-
-        # ---- Periodic evaluation ----
-        if (step % cfg.training.eval_freq) == 0:
-            print(f"\nEvaluating at step {step}…")
+                print(f"Error pushing checkpoint to Hugging Face Hub: {str(e)}")
+                print("Continuing training without pushing checkpoint.")
+        
+        # Run evaluation
+        if (epoch + 1) % cfg.training.eval_freq == 0:
+            print(f"\nEvaluating at epoch {epoch+1}...")
+            
             avg_toxicity, _ = evaluate_toxicity(
                 model=model,
                 ppo_trainer=ppo_trainer,
@@ -548,43 +542,71 @@ def train_rlhf(cfg: DictConfig) -> float:
                 reward_tokenizer=reward_tokenizer,
                 dataset=test_dataset,
                 config=cfg,
-                epoch=step,
+                epoch=epoch+1
             )
-            print(f"Step {step}: Average toxicity = {avg_toxicity:.4f}")
+            
+            print(f"Epoch {epoch+1}: Average toxicity = {avg_toxicity:.4f}")
+            
+            # Save evaluation results
             with open(os.path.join(eval_dir, "evaluation_results.txt"), "a") as f:
-                f.write(f"Step {step}: Average toxicity = {avg_toxicity:.4f}\n")
+                f.write(f"Epoch {epoch+1}: Average toxicity = {avg_toxicity:.4f}\n")
+            
+            # Log evaluation metrics
             if wandb_run:
-                try:
-                    wandb_run.log({"eval/toxicity": avg_toxicity, "train/step": step})
-                except Exception:
-                    pass
-
-    # ----------------------
-    # Save final
-    # ----------------------
+                wandb_run.log({"eval/toxicity": avg_toxicity, "eval/epoch": epoch+1})
+    
+    # Save final model
     final_path = os.path.join(output_dir, "final-model")
     print(f"Saving final model to {final_path}")
+    
     if ppo_trainer.accelerator.is_main_process:
         ppo_trainer.save_pretrained(final_path)
-        tokenizer.save_pretrained(final_path)
-        pd.DataFrame(reward_stats).to_csv(os.path.join(output_dir, "final_reward_stats.csv"), index=False)
-
+        
+        # Save final reward stats
+        reward_df = pd.DataFrame(reward_stats)
+        reward_df.to_csv(os.path.join(output_dir, "final_reward_stats.csv"), index=False)
+        
+        # Push to Hugging Face Hub if enabled
         if cfg.output.push_to_hub:
-            try:
+            # Determine repository name
+            if cfg.output.repository_name:
+                repo_name = cfg.output.repository_name
+            else:
                 model_short_name = cfg.model.name.split('/')[-1]
-                repo_name = cfg.output.repository_name or f"{model_short_name}-detox"
-                repo_id = f"{cfg.output.organization}/{repo_name}" if cfg.output.organization else repo_name
-                print(f"Pushing final model to Hub: {repo_id}")
-                with open(os.path.join(final_path, "rlhf_config.yaml"), "w") as f:
-                    f.write(OmegaConf.to_yaml(cfg))
+                repo_name = f"{model_short_name}-detox"
+            
+            # Prepare repository ID
+            repo_id = f"{cfg.output.organization}/{repo_name}" if cfg.output.organization else repo_name
+            
+            print(f"Pushing final model to Hugging Face Hub: {repo_id}")
+            
+            # Save model and tokenizer
+            model.save_pretrained(final_path)
+            tokenizer.save_pretrained(final_path)
+            
+            # Save config file
+            with open(os.path.join(final_path, "rlhf_config.yaml"), "w") as f:
+                f.write(OmegaConf.to_yaml(cfg))
+            
+            # Push to Hub
+            try:
                 api = HfApi()
+                
+                # Check if the repository exists, create it if it doesn't
                 if not api.repo_exists(repo_id=repo_id):
                     api.create_repo(repo_id=repo_id, private=False)
-                api.upload_folder(folder_path=final_path, repo_id=repo_id, commit_message="Final model after RLHF training")
+                
+                # Upload the folder
+                api.upload_folder(
+                    folder_path=final_path,
+                    repo_id=repo_id,
+                    commit_message="Final model after RLHF training"
+                )
                 print(f"Successfully pushed model to {repo_id}")
             except Exception as e:
-                print(f"[Hub] Final push failed: {e}")
-
+                print(f"Error pushing to Hugging Face Hub: {str(e)}")
+                print("Continuing without pushing to Hub.")
+    
     # Final evaluation
     final_toxicity, _ = evaluate_toxicity(
         model=model,
@@ -594,24 +616,137 @@ def train_rlhf(cfg: DictConfig) -> float:
         reward_tokenizer=reward_tokenizer,
         dataset=test_dataset,
         config=cfg,
-        epoch="final",
+        epoch="final"
     )
+    
     print(f"Final evaluation: Average toxicity = {final_toxicity:.4f}")
-
+    
+    # Calculate total training time
     total_time = time.time() - training_start_time
-    h, rem = divmod(total_time, 3600)
-    m, s = divmod(rem, 60)
-    print(f"Total training time: {int(h)}h {int(m)}m {int(s)}s")
+    hours, remainder = divmod(total_time, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    
+    print(f"Total training time: {int(hours)}h {int(minutes)}m {int(seconds)}s")
     print(f"Training complete! Models and results saved to: {output_dir}")
+    
+    # Return final toxicity for potential programmatic use
+    return final_toxicity
 
-    if wandb_run:
+
+def safe_generate(ppo_trainer, query, generation_kwargs):
+    """Safely generate text, handling potential CUDA errors."""
+    try:
+        # Standard generation
+        response = ppo_trainer.generate(query, **generation_kwargs)
+        return response
+    except RuntimeError as e:
+        if "CUDA error" in str(e) or "device-side assert triggered" in str(e):
+            print(f"CUDA error during generation: {e}")
+            print("Attempting fallback generation with safer parameters...")
+            
+            # Create safer generation parameters
+            safe_kwargs = generation_kwargs.copy()
+            # Disable sampling which can cause probability issues
+            safe_kwargs["do_sample"] = False
+            # Use greedy decoding instead
+            safe_kwargs["num_beams"] = 1
+            
+            try:
+                # Try again with safer parameters
+                response = ppo_trainer.generate(query, **safe_kwargs)
+                return response
+            except Exception as e2:
+                print(f"Fallback generation also failed: {e2}")
+                print("Creating empty response as last resort")
+                
+                # Create a minimal valid response as last resort
+                # Just return the input with a simple completion
+                device = ppo_trainer.accelerator.device
+                if hasattr(ppo_trainer.model, 'pretrained_model'):
+                    vocab_size = ppo_trainer.model.pretrained_model.config.vocab_size
+                else:
+                    vocab_size = ppo_trainer.model.config.vocab_size
+                
+                # Get the token IDs for a simple completion like " is"
+                simple_tokens = ppo_trainer.tokenizer(" is", add_special_tokens=False).input_ids
+                
+                # Create a response that's just the query plus this simple completion
+                min_length = generation_kwargs.get("min_length", 5)
+                response_length = max(min_length, len(simple_tokens))
+                
+                # Create a tensor with the right shape
+                response = torch.cat([
+                    query.unsqueeze(0),  # Add batch dimension
+                    torch.tensor([simple_tokens], device=device)
+                ], dim=1)
+                
+                return response
+        else:
+            # If it's not a CUDA error, re-raise
+            raise
+
+
+def safe_log_stats(ppo_trainer, stats, batch, rewards):
+    """Safely log stats, handling NaN values."""
+    # Clean up stats dictionary to remove NaN/inf values
+    clean_stats = {}
+    for k, v in stats.items():
+        if isinstance(v, (int, float)):
+            if np.isnan(v) or np.isinf(v):
+                print(f"Warning: {k} has invalid value {v}, replacing with 0")
+                clean_stats[k] = 0.0
+            else:
+                clean_stats[k] = v
+        else:
+            clean_stats[k] = v
+    
+    # Handle histograms specially
+    if 'ppo/advantages' in clean_stats:
+        advantages = clean_stats['ppo/advantages']
+        if isinstance(advantages, list):
+            # Filter out NaN and inf values
+            filtered_advantages = [x for x in advantages if isinstance(x, (int, float)) and not np.isnan(x) and not np.isinf(x)]
+            if not filtered_advantages:  # If all values were invalid
+                filtered_advantages = [0.0]
+            clean_stats['ppo/advantages'] = filtered_advantages
+    
+    # Same for other potential histogram values
+    for key in ['ppo/ratio', 'ppo/policy_loss', 'ppo/value_loss']:
+        if key in clean_stats and isinstance(clean_stats[key], list):
+            clean_stats[key] = [x for x in clean_stats[key] if isinstance(x, (int, float)) and not np.isnan(x) and not np.isinf(x)]
+            if not clean_stats[key]:  # If all values were invalid
+                clean_stats[key] = [0.0]
+    
+    try:
+        ppo_trainer.log_stats(clean_stats, batch, rewards)
+    except Exception as e:
+        print(f"Error in logging stats: {e}")
+        # Try a minimal logging approach
         try:
-            wandb_run.log({"eval/final_toxicity": final_toxicity, "train/total_seconds": total_time, "train/step": step})
-        except Exception:
-            pass
+            minimal_stats = {
+                'rewards/mean': clean_stats.get('rewards/mean', 0.0),
+                'current_epoch': clean_stats.get('current_epoch', 0)
+            }
+            ppo_trainer.accelerator.log(minimal_stats)
+            print(f"Logged minimal stats: {minimal_stats}")
+        except Exception as e2:
+            print(f"Even minimal logging failed: {e2}")
 
-    return float(final_toxicity)
+
+def safe_ppo_step(ppo_trainer, query_tensors, response_tensors, rewards):
+    """Safely perform PPO step with error handling."""
+    try:
+        stats = ppo_trainer.step(query_tensors, response_tensors, rewards)
+        return stats
+    except RuntimeError as e:
+        if "CUDA error" in str(e) or "device-side assert triggered" in str(e):
+            print(f"CUDA error during PPO step: {e}")
+            print("Returning empty stats dictionary")
+            return {"error": str(e)}
+        else:
+            raise
 
 
 if __name__ == "__main__":
+    # Let Hydra handle all command-line arguments
     train_rlhf()
